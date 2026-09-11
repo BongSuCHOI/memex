@@ -19,6 +19,11 @@
  *    successful removal the loop gets one more acquisition attempt, so a single
  *    CLI invocation actually performs the write it was asked for. v3 ended the
  *    loop right after the delete and raised `OverlayLockedError` anyway.
+ *  - Reclaimers are serialized by `<lock>.reclaim`. The re-check and the `unlink`
+ *    that reclaims an abandoned lock are two syscalls, and the gap between them
+ *    is cross-process: a competitor that recovered and acquired in there had its
+ *    LIVE lock deleted. Re-checking harder cannot fix a gap between the check and
+ *    the act — only one reclaimer at a time can.
  *
  * A LIVE holder is never stolen from, in any branch.
  */
@@ -50,6 +55,18 @@ export declare class OverlayInvalidError extends Error {
 }
 /** Test-only: forget this process's unreadable-lock observations. */
 export declare function resetOverlayLockObservations(): void;
+/**
+ * How long a reclaim mutex may be held before a dead holder's is broken.
+ *
+ * It is held for two syscalls in production, so anything in seconds is already
+ * orders of magnitude of slack; it exists only so a reclaimer killed between the
+ * `link` and the `unlink` cannot wedge the overlay for ever.
+ */
+export declare const RECLAIM_MUTEX_TTL_MS = 2000;
+/** Wait before re-looking when another reclaimer is inside the mutex. */
+export declare const RECLAIM_RETRY_MS = 30;
+/** Test-only: install (or clear with `null`) the re-check/unlink interleave hook. */
+export declare function setReclaimInterleaveHook(hook: (() => Promise<void>) | null): void;
 /**
  * Run `body` under the overlay's write lock. Read-modify-write AND the whole
  * async validation happen inside.
@@ -213,9 +230,11 @@ export declare function rollbackOverlay(overlay: OverlayName, revision: number, 
  */
 export declare function clearQuarantine(patternId?: string, opts?: {
     surface?: Surface;
+    dryRun?: boolean;
 }): Promise<{
     cleared: number;
     ids: string[];
+    dryRun: boolean;
 }>;
 /** Where the overlay files live — for `gate show` and doctor detail lines. */
 export declare function overlayPaths(): {

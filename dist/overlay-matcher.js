@@ -373,14 +373,23 @@ export function disabledMatcher() {
 const QUARANTINE_SCHEMA = "memex.overlay-quarantine";
 const QUARANTINE_VERSION = 1;
 /**
- * Quarantine rows this process could not persist.
+ * Quarantine rows this process is holding outside the file.
  *
  * The write is best-effort — a read-only data root must not turn a slow pattern
  * into a hung hook — but the EXCLUSION is not: an entry that failed to reach the
  * file still drops the pattern from matching in this process. Only the
  * cross-process visibility degrades.
+ *
+ * A row that DID reach the file is a mirror of it, not a second source of truth.
+ * Keeping mirrors alive for ever made a long-running process ignore another
+ * process's `quarantine clear` — and worse, put the cleared row back in the file
+ * on its next write. `persistedKeys` is what tells the two apart: a mirror whose
+ * row is gone from a readable file was cleared elsewhere and is dropped, while an
+ * unpersisted fallback row survives because nothing has recorded it anywhere yet.
  */
 const memoryQuarantine = new Map();
+/** Keys of `memoryQuarantine` that a successful write put in the file. */
+const persistedKeys = new Set();
 let memoryGeneration = 0;
 export function quarantineKey(patternId, sourceSha8) {
     return `${patternId}|${sourceSha8}`;
@@ -389,22 +398,49 @@ export function quarantineKey(patternId, sourceSha8) {
 export function quarantineMemoryGeneration() {
     return memoryGeneration;
 }
+/**
+ * The file's rows, and whether the file could be READ AS A LIST at all.
+ *
+ * `readable: false` is not "the list is empty": an absent or damaged file says
+ * nothing about what an operator cleared, so it must not be mistaken for a
+ * deliberate clear (see `pruneMirroredMemory`). For matching, both still mean "no
+ * pattern is quarantined" — the SAFE default for the gate (a live rule keeps
+ * working), and the extraction side never relies on this file to decide what to
+ * forbid.
+ */
 function readQuarantineFile() {
     try {
         const parsed = JSON.parse(fs.readFileSync(overlayQuarantinePath(), "utf8"));
         if (parsed?.schema !== QUARANTINE_SCHEMA)
-            return [];
+            return { readable: false, entries: [] };
         if (Number(parsed.version) !== QUARANTINE_VERSION)
-            return [];
+            return { readable: false, entries: [] };
         if (!Array.isArray(parsed.entries))
-            return [];
-        return parsed.entries.filter(isQuarantineEntry);
+            return { readable: false, entries: [] };
+        return { readable: true, entries: parsed.entries.filter(isQuarantineEntry) };
     }
     catch {
-        // Absent or damaged: no pattern is quarantined. This is the SAFE default for
-        // the gate (a live rule keeps working) and the extraction side never relies
-        // on this file to decide what to forbid.
-        return [];
+        return { readable: false, entries: [] };
+    }
+}
+/**
+ * Drop the mirrors the file no longer has.
+ *
+ * Only for a file that was readable: a row this process persisted and that is now
+ * absent was cleared by someone else, and honouring that is the whole point of
+ * `quarantine clear` being a cross-process command. Unpersisted rows stay — they
+ * are the read-only-data-root fallback and exist nowhere but here.
+ */
+function pruneMirroredMemory(file) {
+    if (!file.readable)
+        return;
+    const present = new Set(file.entries.map((entry) => quarantineKey(entry.pattern_id, entry.source_sha8)));
+    for (const key of [...memoryQuarantine.keys()]) {
+        if (!persistedKeys.has(key) || present.has(key))
+            continue;
+        memoryQuarantine.delete(key);
+        persistedKeys.delete(key);
+        memoryGeneration++;
     }
 }
 function isQuarantineEntry(value) {
@@ -415,10 +451,17 @@ function isQuarantineEntry(value) {
         typeof entry.pattern_id === "string" && entry.pattern_id.length > 0 &&
         typeof entry.source_sha8 === "string");
 }
-/** File ∪ in-memory fallback, newest last, deduplicated by (pattern_id, sha8). */
+/**
+ * File ∪ in-memory fallback, newest last, deduplicated by (pattern_id, sha8).
+ *
+ * The file is re-read on every call — there is deliberately no cache here, so a
+ * `quarantine clear` in another process is visible to the next read in this one.
+ */
 export function readQuarantine() {
+    const file = readQuarantineFile();
+    pruneMirroredMemory(file);
     const merged = new Map();
-    for (const entry of readQuarantineFile()) {
+    for (const entry of file.entries) {
         merged.set(quarantineKey(entry.pattern_id, entry.source_sha8), entry);
     }
     for (const [key, entry] of memoryQuarantine)
@@ -431,6 +474,8 @@ export function isQuarantinedPattern(entries, patternId, source, flags) {
 }
 /** Attempts a single `quarantinePattern` makes when the file moves under it. */
 const QUARANTINE_WRITE_ATTEMPTS = 3;
+/** A write mutex with a dead holder, older than this, is broken. */
+export const QUARANTINE_MUTEX_TTL_MS = 2000;
 /** File identity at one instant: inode, mtime, size. `null` when absent. */
 function quarantineFileStamp() {
     try {
@@ -440,6 +485,155 @@ function quarantineFileStamp() {
     catch {
         return null;
     }
+}
+/* -------------------------------------------------------------------------- */
+/* Write mutex                                                                 */
+/* -------------------------------------------------------------------------- */
+/**
+ * Serialize the writers of the quarantine file.
+ *
+ * A stamp compare-and-swap narrows the read-merge-rename race; it cannot close
+ * it. Whatever instant the stamp is read at, the `rename` is a LATER syscall, and
+ * a second writer that passed the same check in between has its rows overwritten
+ * by ours — silently, because a new process cannot tell a lost row from a row
+ * that was never there. So the window has to be owned, not measured.
+ *
+ * It is a separate primitive from `overlay-admin.ts`'s lock on purpose: this path
+ * is synchronous (it is called from the matcher's own result handling, where an
+ * `await` is not available) and it must never block a prompt, so failing to
+ * acquire degrades to the in-memory fallback instead of waiting.
+ */
+function quarantineMutexPath() {
+    return `${overlayQuarantinePath()}.lock`;
+}
+/** EPERM means the process exists and belongs to someone else: still alive. */
+function pidAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0)
+        return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch (error) {
+        return error.code === "EPERM";
+    }
+}
+/** Short synchronous pause — this whole path runs without an event loop turn. */
+function sleepSync(ms) {
+    try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    }
+    catch {
+        const until = Date.now() + ms;
+        while (Date.now() < until) { /* no synchronous sleep available here */ }
+    }
+}
+/** A mutex is recoverable only when its holder is gone AND it is past the TTL. */
+function quarantineMutexIsDead(mutexPath) {
+    let pid = -1;
+    let at = 0;
+    try {
+        const parsed = JSON.parse(fs.readFileSync(mutexPath, "utf8"));
+        pid = Number(parsed.pid);
+        at = Number(parsed.at);
+    }
+    catch {
+        pid = -1;
+        at = 0;
+    }
+    if (Number.isInteger(pid) && pid > 0 && pidAlive(pid))
+        return false;
+    if (!Number.isFinite(at) || at <= 0) {
+        try {
+            at = fs.statSync(mutexPath).mtimeMs;
+        }
+        catch {
+            return false;
+        }
+    }
+    return Date.now() - at > QUARANTINE_MUTEX_TTL_MS;
+}
+/** The payload to release with, or `null` when another writer holds it. */
+function acquireQuarantineMutex() {
+    const mutexPath = quarantineMutexPath();
+    const payload = JSON.stringify({ pid: process.pid, at: Date.now() });
+    const staging = `${mutexPath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+        fs.mkdirSync(path.dirname(mutexPath), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(staging, payload, { mode: 0o600 });
+        try {
+            // Atomic create-if-absent, the same discipline as the overlay lock.
+            fs.linkSync(staging, mutexPath);
+            return payload;
+        }
+        catch (error) {
+            if (error.code !== "EEXIST")
+                return null;
+            if (!quarantineMutexIsDead(mutexPath))
+                return null;
+            try {
+                fs.unlinkSync(mutexPath);
+            }
+            catch { /* another writer broke it first */ }
+            try {
+                fs.linkSync(staging, mutexPath);
+            }
+            catch {
+                return null;
+            }
+            return holdsOurMutex(mutexPath, payload) ? payload : null;
+        }
+    }
+    catch {
+        return null;
+    }
+    finally {
+        try {
+            fs.unlinkSync(staging);
+        }
+        catch { /* never created, or linked away */ }
+    }
+}
+function holdsOurMutex(mutexPath, payload) {
+    try {
+        return fs.readFileSync(mutexPath, "utf8") === payload;
+    }
+    catch {
+        return false;
+    }
+}
+/** Release the mutex — only ever OUR own. */
+function releaseQuarantineMutex(payload) {
+    const mutexPath = quarantineMutexPath();
+    if (!holdsOurMutex(mutexPath, payload))
+        return;
+    try {
+        fs.unlinkSync(mutexPath);
+    }
+    catch { /* already broken */ }
+}
+/**
+ * Run `body` as the only writer of the quarantine file.
+ *
+ * Returns `unavailable` when the mutex could not be taken. Waiting is not an
+ * option on a prompt path, and the caller already has a correct degraded mode:
+ * the in-memory row keeps the pattern excluded here.
+ */
+function withQuarantineMutex(body, unavailable) {
+    for (let attempt = 0; attempt < QUARANTINE_WRITE_ATTEMPTS; attempt++) {
+        const payload = acquireQuarantineMutex();
+        if (payload === null) {
+            sleepSync(5 * (attempt + 1));
+            continue;
+        }
+        try {
+            return body();
+        }
+        finally {
+            releaseQuarantineMutex(payload);
+        }
+    }
+    return unavailable;
 }
 /**
  * Replace the file with `entries`.
@@ -486,16 +680,16 @@ function writeQuarantineAtomic(entries, expectedStamp) {
 /**
  * Record a quarantined pattern.
  *
- * The merge is a set union keyed on (pattern_id, source_sha8), but a union built
- * in local memory is NOT enough on its own: two processes that read the same
- * previous file and then both rename lose whichever entry the later rename did not
- * know about. So the write is read-merge-write with a compare-and-swap on the
- * file's identity and a retry when it moved.
+ * The merge is a set union keyed on (pattern_id, source_sha8), and two things make
+ * it safe across processes. The whole read-merge-rename runs inside the write
+ * mutex, so no second writer can pass the same stamp check and overwrite our rows
+ * between our check and our rename; the stamp compare-and-swap stays as the
+ * backstop for a writer that predates the mutex or ignores it.
  *
- * The in-memory row is also kept after a successful write, not dropped. It is this
- * process's own guarantee that the pattern stays excluded here even if a later
- * writer elsewhere overwrites the file — losing the row would silently re-enable a
- * pattern that already burned its budget.
+ * A row that reached the file is then a MIRROR of it (`persistedKeys`), not a
+ * second source of truth: `pruneMirroredMemory` drops it when a readable file no
+ * longer has it, so another process's `quarantine clear` is honoured here instead
+ * of being undone by our next write.
  */
 export function quarantinePattern(entry) {
     const key = quarantineKey(entry.pattern_id, entry.source_sha8);
@@ -503,21 +697,36 @@ export function quarantinePattern(entry) {
         memoryQuarantine.set(key, entry);
         memoryGeneration++;
     }
-    for (let attempt = 0; attempt < QUARANTINE_WRITE_ATTEMPTS; attempt++) {
-        const stamp = quarantineFileStamp();
-        const merged = new Map();
-        for (const existing of readQuarantineFile()) {
-            merged.set(quarantineKey(existing.pattern_id, existing.source_sha8), existing);
-        }
-        for (const [memoryEntryKey, memoryEntry] of memoryQuarantine)
-            merged.set(memoryEntryKey, memoryEntry);
-        let entries = [...merged.values()];
-        if (entries.length > QUARANTINE_MAX_ENTRIES) {
-            entries = entries.slice(entries.length - QUARANTINE_MAX_ENTRIES);
-        }
-        if (writeQuarantineAtomic(entries, stamp))
+    // A fresh quarantine decision, not a mirror: it must survive the prune below
+    // even when the file this process last wrote has since been cleared.
+    persistedKeys.delete(key);
+    withQuarantineMutex(() => {
+        for (let attempt = 0; attempt < QUARANTINE_WRITE_ATTEMPTS; attempt++) {
+            const stamp = quarantineFileStamp();
+            const file = readQuarantineFile();
+            pruneMirroredMemory(file);
+            const merged = new Map();
+            for (const existing of file.entries) {
+                merged.set(quarantineKey(existing.pattern_id, existing.source_sha8), existing);
+            }
+            for (const [memoryEntryKey, memoryEntry] of memoryQuarantine)
+                merged.set(memoryEntryKey, memoryEntry);
+            let entries = [...merged.values()];
+            if (entries.length > QUARANTINE_MAX_ENTRIES) {
+                entries = entries.slice(entries.length - QUARANTINE_MAX_ENTRIES);
+            }
+            if (!writeQuarantineAtomic(entries, stamp))
+                continue;
+            // The file now holds these rows, so this process's copies of them are
+            // mirrors from here on.
+            for (const written of entries) {
+                const writtenKey = quarantineKey(written.pattern_id, written.source_sha8);
+                if (memoryQuarantine.has(writtenKey))
+                    persistedKeys.add(writtenKey);
+            }
             return;
-    }
+        }
+    }, undefined);
 }
 /**
  * Replace the persisted set. Owned by src/overlay-admin.ts (`clearQuarantine`,
@@ -528,13 +737,26 @@ export function replaceQuarantine(entries) {
     for (const key of [...memoryQuarantine.keys()]) {
         if (!keep.has(key)) {
             memoryQuarantine.delete(key);
+            persistedKeys.delete(key);
             memoryGeneration++;
         }
     }
-    return writeQuarantineAtomic(entries, undefined);
+    // Inside the mutex too: an operator's replace must not land between a
+    // concurrent `quarantinePattern`'s stamp check and its rename.
+    return withQuarantineMutex(() => {
+        const ok = writeQuarantineAtomic(entries, undefined);
+        if (ok) {
+            for (const key of keep) {
+                if (memoryQuarantine.has(key))
+                    persistedKeys.add(key);
+            }
+        }
+        return ok;
+    }, false);
 }
 /** Test-only: forget the in-memory fallback rows of this process. */
 export function resetQuarantineMemory() {
+    persistedKeys.clear();
     if (memoryQuarantine.size === 0)
         return;
     memoryQuarantine.clear();
