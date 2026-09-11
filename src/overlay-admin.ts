@@ -1152,20 +1152,25 @@ export async function rollbackOverlay(
  */
 export async function clearQuarantine(
   patternId?: string,
-  opts: { surface?: Surface } = {},
-): Promise<{ cleared: number; ids: string[] }> {
+  opts: { surface?: Surface; dryRun?: boolean } = {},
+): Promise<{ cleared: number; ids: string[]; dryRun: boolean }> {
   const entries = readQuarantine();
   const dropped = patternId ? entries.filter((entry) => entry.pattern_id === patternId) : entries;
   const keep = patternId ? entries.filter((entry) => entry.pattern_id !== patternId) : [];
   const ids = [...new Set(dropped.map((entry) => entry.pattern_id))];
-  if (ids.length === 0) return { cleared: 0, ids: [] };
+  const dryRun = opts.dryRun === true;
+  if (ids.length === 0) return { cleared: 0, ids: [], dryRun };
+  // The selection above is the whole answer a dry run needs, and it is computed
+  // here rather than in the CLI so the preview cannot drift from the act. A dry
+  // run writes NOTHING — not the file, and not the audit line either.
+  if (dryRun) return { cleared: dropped.length, ids, dryRun: true };
   replaceQuarantine(keep);
   appendUiAuditLine("gate.quarantine-clear", {
     id: patternId ?? "all",
     surface: opts.surface ?? "cli",
     cleared: dropped.length,
   });
-  return { cleared: dropped.length, ids };
+  return { cleared: dropped.length, ids, dryRun: false };
 }
 
 /** Where the overlay files live — for `gate show` and doctor detail lines. */

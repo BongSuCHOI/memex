@@ -1006,7 +1006,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기. `--all-dead`, `--kind`, `--dry-run` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex model-work` | `status [budget-id]`, `resume <budget-id> --new-run` | [§17](#17-모델-작업-예산과-대기-진단) |
 | `memex models` (0.7.0 #31) | 모델 작업에 쓸 모델·추론 강도 선택: `show\|set\|reset\|test`. `set`은 `--model`·`--reasoning`(`unset`으로 플래그 제거), `test`는 `--timeout-ms`(기본 `60000`). 모두 `--json` | [§21](#21-모델-선택-070-31) |
-| `memex gate` (0.7.0 #29) | 회수 게이트 오버레이: `show\|patterns\|words\|test\|replay\|validate\|history\|quarantine\|reset\|rollback`. 쓰기 동사는 `--dry-run`·`--expect-revision` | [§22](#221-회수-게이트-오버레이-memex-gate) |
+| `memex gate` (0.7.0 #29) | 회수 게이트 오버레이: `show\|patterns\|words\|test\|replay\|validate\|history\|quarantine\|reset\|rollback`. 쓰기 동사는 `--dry-run`·`--expect-revision`(`quarantine clear`는 `--dry-run`만) | [§22](#221-회수-게이트-오버레이-memex-gate) |
 | `memex extract` (0.7.0 #30) | 추출 규칙 오버레이(추출 자체는 하지 않습니다): `rules show\|validate\|set\|test\|history\|reset\|rollback\|reextract`, 그리고 모델을 쓰는 `eval` | [§22](#222-추출-규칙-오버레이-memex-extract) |
 | `memex doctor` | 의존성·빌드·Codex home·hook 등록/관측·주입 출력·recall provenance·sync export 진단 (`--json`) | [§13](#13-진단) |
 | `memex home` | 해석된 Memex data root 출력 (`--json`) | [§10](#10-저장-위치와-sync) |
@@ -1348,7 +1348,7 @@ memex gate replay [--limit <n>] [--project <path>]
 memex gate validate [--file <path>]
 memex gate history [--limit <n>]
 memex gate quarantine list
-memex gate quarantine clear [<pattern-id>|--all]
+memex gate quarantine clear [<pattern-id>|--all] [--dry-run]
 memex gate reset [--intent <intent>] --yes
 memex gate rollback --to <revision>
 ```
@@ -1365,13 +1365,18 @@ memex gate rollback --to <revision>
 `quarantine list`. `test`와 `replay`는 **모델도 embedding도 호출하지 않고** inject 로그·recall
 영수증·세션 상태를 **쓰지 않습니다**.
 
-**쓰기 동사**(`patterns add|disable|enable`, `words add|remove`, `reset`, `rollback`,
-`quarantine clear`)는 오버레이 쓰기 lock을 잡고 `revision`을 올리며 rollback 스냅숏을 남기고
-`logs/ui-audit.jsonl`과 `overlays/history.jsonl`에 메타데이터 1줄을 적습니다(규칙 본문은 남기지
-않습니다). `--dry-run`은 검증만 하고 **아무것도 쓰지 않으며** 현재 revision을 박은 재실행 명령을
-출력합니다. `--expect-revision <n>`은 그 사이 오버레이가 다른 곳에서 바뀌었으면 쓰기를 거절합니다
+**쓰기 동사**(`patterns add|disable|enable`, `words add|remove`, `reset`, `rollback`)는 오버레이
+쓰기 lock을 잡고 `revision`을 올리며 rollback 스냅숏을 남기고 `logs/ui-audit.jsonl`과
+`overlays/history.jsonl`에 메타데이터 1줄을 적습니다(규칙 본문은 남기지 않습니다). `--dry-run`은
+검증만 하고 **아무것도 쓰지 않으며** 현재 revision을 박은 재실행 명령을 출력합니다.
+`--expect-revision <n>`은 그 사이 오버레이가 다른 곳에서 바뀌었으면 쓰기를 거절합니다
 (exit `1`, `OVERLAY_STALE`). `reset`은 파일을 지우지 않고 **빈 문서를 다음 revision으로** 쓰므로
 그 자체를 되돌릴 수 있습니다.
+
+`quarantine clear`는 쓰기 동사지만 오버레이 문서가 아니라 `overlays/quarantine.json`을 씁니다.
+따라서 **revision도 rollback 스냅숏도 `--expect-revision`도 없습니다** — 핀으로 박을 revision이
+애초에 없습니다. `--dry-run`은 지원합니다: 무엇이 풀릴지 출력하고 파일도 감사 로그도 건드리지
+않습니다. 실제로 풀 때만 `logs/ui-audit.jsonl`에 1줄을 남깁니다.
 
 #### 실행 시간 상자와 격리
 
