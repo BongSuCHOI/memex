@@ -51,6 +51,15 @@ data root(`MEMEX_HOME` > `$XDG_CONFIG_HOME/memex` > `~/.config/memex`)의 파일
 없으면 `MEMEX_HOME`을 격리하지 않은 스위트가 실 루트에 129 MB를 남기고, 임시 data root를 쓰는
 스위트는 루트마다 한 번씩 내려받습니다. 새 테스트가 모델을 적재한다면 둘 중 하나를 따르십시오.
 
+**e2e도 캐시 고정** (0.7.3, #114). e2e 스크립트 5개(`install`·`marketplace`·`package-runtime`·
+`lifecycle`·`web-ui-browser`)는 각자 임시 `MEMEX_HOME`을 쓰므로 고정이 없으면 **실행마다** 129 MB를
+내려받습니다 — 0.6.9 게이트의 `package-runtime-e2e` 1차 실패가 이것입니다. 다섯 스크립트는 첫 spawn
+전에 `scripts/e2e-model-cache-pin.mjs`의 `pinModelCacheForE2E()`를 호출해 위와 같은 체크아웃 캐시에
+고정합니다. 규칙은 셋입니다: 호출자가 `MEMEX_MODEL_CACHE_DIR`를 이미 지정했으면 그 값이 이기고,
+체크아웃 캐시가 비어 있거나 중단된 다운로드면 게이트는 **내려받지 않고** `memex deps warm`을 안내하며
+즉시 exit 1 하며, `MEMEX_EMBEDDING_STUB=1`에서는 가중치를 요구하지 않습니다. 새 e2e 스크립트도 같은 한
+줄을 넣으십시오(`test/e2e-model-cache-pin-slice.test.mjs`가 다섯 스크립트 모두에서 이를 확인합니다).
+
 변경 범위에 따라 plugin validation, browser E2E, benchmark, specialized regression suite를 추가합니다.
 Memex Workspace UI surface를 변경한 release는 다음 gate도 포함합니다.
 
@@ -189,6 +198,8 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | `test/maintenance-wave-lineage.test.ts` | rollover 계보가 `root_wave_id`/`run_seq` 컬럼으로 표현되는지, 자식이 root wave id를 물려받는지, 기존 중첩 `:run:<uuid>` id가 rolling-cap 연결을 잃지 않고 정규화되는지 (#42), `<root>#<n>`과 `<root>#<n>:run:<uuid>`가 서로 다른 run으로 갈라지고 UNIQUE 인덱스 생성 실패가 DB 열기를 막지 않는지 (#72) |
 | `test/derived-lane-skip.test.ts`, `test/derived-lane-skip-e2e.test.ts` | P0/P1 조기 반환이 지속되는 연속 skip 카운터가 되는지, 같은 사유 3회 뒤 derived lane이 한 번 통과하는지, `memex status`에 `Derived lanes: skipped …`로 드러나는지 (#43) |
 | `test/evidence-receipt-backfill.test.ts` | `memex backfill receipts`가 model 없이 누락 영수증만 재구성하는지, `recordLocalMeaningEvidence` 실패가 보고되는지, sync-import가 영수증을 삭제하지 않고 `peer-authority`로 강등하는지 (#45) |
+| `test/e2e-model-cache-pin-slice.test.mjs` (0.7.3) | e2e 5개가 첫 spawn 전에 모델 캐시를 체크아웃에 고정하는지, 빈 캐시·중단된 다운로드에서 다운로드 대신 `memex deps warm`을 안내하며 exit 1 하는지, 호출자의 `MEMEX_MODEL_CACHE_DIR`와 `MEMEX_EMBEDDING_STUB=1` 예외, 진단이 캐시 디렉터리를 만들지 않는지 (#114) |
+| `test/backfill-stage-failure-slice.test.mjs` (0.7.3) | `memex backfill`의 단계 실패가 하위 오류의 message/code/signal과 워커 출력 꼬리를 함께 내는지, `all`과 단일 단계의 문구 구분, embeddings 실패의 `memex doctor`/`memex deps warm` 안내, 첫 실패 뒤 남은 단계가 시작되지 않는지 (#114) |
 | `ui/test/guidance.test.cjs` | `src/`의 `throw new *Error(...)` 문자열과 skip 사유·terminal 상태 enum을 추출해 전부 실패 클래스에 매핑되거나 대장에 명시돼 있는지, 매핑되지 않은 오류가 원인을 지어내지 않는지 (#23) |
 | `ui/test/help.test.cjs` | 메뉴·배지·관리 명령·범위 옵션에 도움말 항목이 있는지와, 인용한 문서 앵커가 실제 헤딩으로 존재하는지 (#28) |
 

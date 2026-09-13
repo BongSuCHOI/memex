@@ -4,8 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pinModelCacheForE2E } from "./e2e-model-cache-pin.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// #114: pin the embedding model cache at the checkout BEFORE the first spawn,
+// so the temporary data root below never becomes a 129 MB download target.
+pinModelCacheForE2E("package-runtime-e2e");
 const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), "memex-package-e2e-"));
 const CODEX_HOME = path.join(TEMP, "codex-home");
 const DATA_ROOT = path.join(TEMP, "data");

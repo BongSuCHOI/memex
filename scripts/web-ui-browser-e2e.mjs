@@ -6,6 +6,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pinModelCacheForE2E } from "./e2e-model-cache-pin.mjs";
 // #109 L5: expectations come from the shipped dictionaries, never from a second
 // copy of the prose. One `L` object is built here and used by BOTH sides — the
 // injected probe string and the Node assertion block — so `--lang en` and
@@ -14,6 +15,9 @@ import { setLocale, t, tn } from "../ui/public/i18n/index.mjs";
 import { loadDictionary } from "../ui/public/i18n/load.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// #114: pin the embedding model cache at the checkout BEFORE the first spawn,
+// so the temporary data root below never becomes a 129 MB download target.
+pinModelCacheForE2E("web-ui-browser-e2e");
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 // Product default is en, so the gate's default is en too. ko is one explicit
 // release-gate run: `node scripts/web-ui-browser-e2e.mjs --lang ko`.
