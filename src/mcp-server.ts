@@ -53,6 +53,7 @@ import {
   getRelatedFactsInScope,
 } from "./ontology-db.js";
 import { askAvatar } from "./avatar-responder.js";
+import { BUILTIN_FACT_KINDS, CUSTOM_FACT_KIND_ID } from "./extraction-rules.js";
 import path from "path";
 import fs from "fs";
 import { readArchiveFile, resolveArchiveFile } from "./archive-io.js";
@@ -148,6 +149,31 @@ const ShowConversationInputSchema = z
   })
   .strict();
 
+/**
+ * `facts.category` as a FILTER value (post-0.7.5 review P2 #1).
+ *
+ * The column holds the five built-ins plus whatever custom kinds the extraction
+ * rules overlay defines, so an enum of five made those stored rows unreachable
+ * through `search_facts`: the request was refused before the search ran. The
+ * filter therefore accepts any id of the custom-kind SHAPE — the overlay's own
+ * `CUSTOM_FACT_KIND_ID` — instead of a fixed list, because this process cannot
+ * know which overlay the caller's machine has (and a kind deleted from the
+ * overlay still labels facts already stored under it). Anything outside that
+ * shape is still refused, so a typo like `Runbook` or `run-book` fails loudly
+ * rather than returning an empty result set.
+ */
+const FactCategoryFilter = z
+  .string()
+  .refine(
+    (value) =>
+      (BUILTIN_FACT_KINDS as readonly string[]).includes(value) ||
+      CUSTOM_FACT_KIND_ID.test(value),
+    {
+      message:
+        "category must be one of the five built-in kinds or a custom kind id (lowercase a-z, 0-9 and _, 2-24 chars, starting with a letter)",
+    },
+  );
+
 const SearchFactsInputSchema = z
   .object({
     query: z
@@ -171,9 +197,7 @@ const SearchFactsInputSchema = z
     include_hot_evidence: z.boolean().default(false),
     hot_before: z.string().datetime().optional(),
     hot_before_evidence_id: z.string().max(128).optional(),
-    category: z
-      .enum(["decision", "preference", "pattern", "knowledge", "constraint"])
-      .optional(),
+    category: FactCategoryFilter.optional(),
     include_revisions: z.boolean().default(false),
     limit: z.number().int().min(1).max(50).default(10),
   })
@@ -480,7 +504,7 @@ export function getToolDefinitions() {
     {
       name: "search_facts",
       description:
-        "Search extracted facts with explicit project/workspace/workstream/session/global/all scope. Optionally returns separately labeled recent Hot Evidence.",
+        "Search extracted facts with explicit project/workspace/workstream/session/global/all scope. Optionally returns separately labeled recent Hot Evidence. `category` accepts the five built-in kinds and any custom fact kind defined by this machine's extraction-rules overlay (custom_fact_kinds), because those ids are stored in facts.category verbatim.",
       inputSchema: {
         type: "object",
         properties: {
@@ -506,16 +530,15 @@ export function getToolDefinitions() {
             description:
               'Explicit project/workspace/workstream/session/global/all scope; the matching stable ID is required except for global/all.',
           },
+          // Not an enum: `facts.category` also holds the extraction-rules
+          // overlay's custom kind ids, and an enum of five refused those
+          // filters before the search ran (post-0.7.5 review P2 #1).
           category: {
             type: "string",
-            enum: [
-              "decision",
-              "preference",
-              "pattern",
-              "knowledge",
-              "constraint",
-            ],
-            description: "Filter by fact category",
+            pattern: CUSTOM_FACT_KIND_ID.source,
+            description:
+              `Filter by fact category: one of the built-in kinds (${BUILTIN_FACT_KINDS.join(", ")}) ` +
+              "or a custom fact kind id defined in this machine's extraction-rules overlay.",
           },
           include_revisions: {
             type: "boolean",

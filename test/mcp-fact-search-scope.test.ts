@@ -103,6 +103,60 @@ describe('MCP scope-aware fact search', () => {
     expect(text).not.toContain('decision crowd');
   });
 
+  /**
+   * Post-0.7.5 review P2 #1 — the `category` filter used to be an enum of the
+   * five built-ins, so a fact the extractor had stored under an overlay-defined
+   * kind was unreachable: the request was refused before the search ran. The
+   * filter now accepts the custom-kind id SHAPE, and still refuses anything
+   * outside it so a typo cannot silently become an empty result set.
+   */
+  it('search_facts filters by a custom fact kind and still refuses a malformed id', async () => {
+    insertFact(db, {
+      fact: 'The deployment runbook starts with draining the queue.',
+      category: 'runbook',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: new Array(384).fill(0.101),
+    });
+    insertFact(db, {
+      fact: 'The deployment decision was to keep one queue.',
+      category: 'decision',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding,
+    });
+
+    const accepted = await handleToolCall('search_facts', {
+      query: 'deployment',
+      scope: 'global',
+      category: 'runbook',
+    });
+    expect(accepted.isError).not.toBe(true);
+    expect(accepted.content[0].text).toContain('runbook starts with draining');
+    expect(accepted.content[0].text).not.toContain('deployment decision was');
+
+    // Unknown SHAPE is still rejected — uppercase, hyphens, too short/long.
+    for (const category of ['Runbook', 'run-book', 'r', 'a'.repeat(25), '', 7]) {
+      const refused = await handleToolCall('search_facts', {
+        query: 'deployment',
+        scope: 'global',
+        category,
+      });
+      expect(refused.isError, `category ${JSON.stringify(category)}`).toBe(true);
+    }
+
+    // The published schema agrees with the runtime validator.
+    const tool = getToolDefinitions().find((t) => t.name === 'search_facts');
+    const category = (tool?.inputSchema as {
+      properties: { category: { enum?: string[]; pattern?: string } };
+    }).properties.category;
+    expect(category.enum).toBeUndefined();
+    expect(new RegExp(category.pattern!).test('runbook')).toBe(true);
+    expect(new RegExp(category.pattern!).test('Runbook')).toBe(false);
+  });
+
   it('labels lexical-only fact hits without reporting semantic similarity', async () => {
     insertFact(db, {
       fact: 'E_QUEUE_LEASE_EXPIRED is handled by acquireLease.',
