@@ -3,7 +3,7 @@ const {ko}=require('./helpers/locale.cjs');
 require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 /** Page modules render to strings, so the browser HTML is checked without a DOM. */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
-const {name,badge,eventRow,syncOrigin,syncOriginTag,setCustomFactKinds,syncCustomFactKinds}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
+const {name,badge,eventRow,syncOrigin,syncOriginTag,setCustomFactKinds,syncCustomFactKinds,customFactKinds}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
 const details=require('../public/details.mjs');
 const activityPage=require('../public/pages/activity.mjs');const conversationsPage=require('../public/pages/conversations.mjs');
 const facts=require('../public/pages/facts.mjs');const taxonomyPage=require('../public/pages/taxonomy.mjs');const settingsPage=require('../public/pages/settings.mjs');
@@ -411,6 +411,37 @@ test('오버레이 초기화 뒤 재조회하면 종류 칩과 배지 라벨이 
   setCustomFactKinds([{id:'runbook',label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}]);
   assert.equal(await syncCustomFactKinds(async()=>{throw new Error('서버 연결 실패');}),false);
   assert.equal(name('runbook'),'운영 절차','재조회 실패가 라벨을 지웠다');
+ }finally{setCustomFactKinds([]);}
+});
+
+/**
+ * 0.7.6 후속 검토 P2 #3 — 늦게 도착한 재조회 응답이 삭제된 종류를 되살렸다.
+ *
+ * SSE `change`와 `invalidate()`가 겹치면 재조회가 동시에 두 개 뜨고, 응답 순서는 보장되지
+ * 않는다. 세대를 검사하지 않으면 "초기화 뒤의 빈 목록"이 먼저 도착해 칩을 지운 다음 그 전에
+ * 시작한 옛 목록이 나중에 도착해 지운 칩을 되돌린다. 여기서는 Promise 완료 순서를 직접
+ * 제어해 그 순서를 재현한다.
+ */
+test('나중에 시작한 재조회가 이긴다 — 늦게 도착한 옛 응답은 레지스트리를 되살리지 않는다',async()=>{
+ const RUNBOOK=[{id:'runbook',label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}];
+ try{
+  setCustomFactKinds(RUNBOOK);
+  let releaseOld;
+  const oldResponse=new Promise(resolve=>{releaseOld=()=>resolve(RUNBOOK);});
+  // 1) 먼저 시작한 재조회(옛 목록). 아직 응답하지 않는다.
+  const older=syncCustomFactKinds(()=>oldResponse);
+  // 2) 나중에 시작한 재조회(초기화 뒤의 빈 목록)가 **먼저** 완료된다.
+  assert.equal(await syncCustomFactKinds(async()=>[]),true,'최신 응답이 적용되지 않았다');
+  assert.deepEqual(customFactKinds(),[],'최신 빈 응답이 레지스트리를 비우지 못했다');
+  // 3) 이제 옛 응답이 도착한다 — 버려져야 한다.
+  releaseOld();
+  assert.equal(await older,false,'낡은 응답이 재렌더를 요구했다');
+  assert.deepEqual(customFactKinds(),[],'늦게 도착한 옛 응답이 삭제된 종류를 되살렸다');
+  assert.equal(name('runbook'),'runbook','삭제된 종류의 라벨이 되살아났다');
+
+  // 세대는 소모되지 않는다: 다음 재조회는 정상적으로 적용된다.
+  assert.equal(await syncCustomFactKinds(async()=>RUNBOOK),true,'다음 재조회가 막혔다');
+  assert.equal(name('runbook'),'운영 절차');
  }finally{setCustomFactKinds([]);}
 });
 

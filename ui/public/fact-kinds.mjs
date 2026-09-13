@@ -44,6 +44,16 @@ export function setCustomFactKinds(kinds){
 const fingerprint=()=>JSON.stringify([...registry.values()]);
 
 /**
+ * 시작한 재조회의 세대. **가장 마지막에 시작한 요청만** 결과를 꽂을 수 있다.
+ *
+ * 0.7.6 후속 검토 P2 #3 — SSE `change`와 `invalidate()`가 겹치면 재조회가 동시에 두 개 뜬다.
+ * 응답 도착 순서는 보장되지 않으므로, 초기화 뒤의 **빈 목록**이 먼저 오고 그 전에 시작한
+ * **옛 목록**이 나중에 오면 방금 지운 칩·라벨이 되살아났다. 세대가 다른 응답은 버린다 —
+ * 늦게 온 것이 더 최신이라는 근거가 없기 때문이다.
+ */
+let syncGeneration=0;
+
+/**
  * 레지스트리를 다시 읽어 꽂는다. 종류 목록이 **실제로 달라졌을 때만** true를 돌려주므로
  * 호출자가 불필요한 재렌더를 하지 않는다.
  *
@@ -54,8 +64,13 @@ const fingerprint=()=>JSON.stringify([...registry.values()]);
  * @returns {Promise<boolean>} 종류 목록이 달라졌는가
  */
 export async function syncCustomFactKinds(load){
+ const mine=++syncGeneration;
  const before=fingerprint();
- try{setCustomFactKinds(await load());}catch{return false;}
+ let kinds;
+ try{kinds=await load();}catch{return false;}
+ // 더 나중에 시작한 재조회가 이미 있다면 이 응답은 낡았다. 꽂지 않고 재렌더도 요구하지 않는다.
+ if(mine!==syncGeneration)return false;
+ setCustomFactKinds(kinds);
  return fingerprint()!==before;
 }
 
