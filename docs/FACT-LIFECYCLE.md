@@ -264,6 +264,10 @@ recall text는 authority가 아니며 cardinality에도 포함하지 않습니�
 프로젝트 override는 `preferred_language`만 덮어쓰고 **나머지 제약은 전역과 합집합**입니다. 다른 곳에
 한 줄을 더해 전역 금지를 느슨하게 만드는 경로를 두지 않기 위해서입니다.
 
+`preferred_language`는 #123부터 **기본값(대화 언어를 따름)의 override**입니다. 규칙 블록에는 더 이상
+렌더되지 않고 [§10 추출 언어](#10-기억-언어와-kr-translation)의 언어 절 하나로 나갑니다 — 그래서
+`preferred_language`만 들어 있는 규칙 파일은 규칙 블록 자체를 만들지 않습니다.
+
 **금지 후보는 탈락이지 실패가 아닙니다.** 예외도, `extraction_failed_ranges` 행도, 소모된 attempt도
 없고 같은 배치의 다른 후보는 정상 저장됩니다. 대화 archive는 그대로입니다 — 규칙이 금지하는 것은
 **기억**이고 **이력**이 아닙니다. 감사는 후보마다가 아니라 커밋당 1줄이고 id·개수·해시만 남깁니다.
@@ -583,7 +587,43 @@ embedding과 stale-vector 복구는 계속 수행합니다. 자동 번역이나 
 분류 overlay는 pending으로 유지합니다. 호출별 usage가 빠진 경우 전체 합계를 완전 관측으로
 해석하지 않습니다. 실제 한도와 재개 방법은 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단)를 따릅니다.
 
-## 10. KR translation
+## 10. 기억 언어와 KR translation
+
+### 추출 언어 (#123)
+
+추출은 **대화의 언어로 fact를 씁니다**. 판정은 결정론적입니다 — 추출 창의 **사람 메시지**
+글자 수 다수결(Hangul 음절 vs Latin 문자)이고, 동률이면 마지막 사람 메시지의 언어, 셀 글자가
+없으면 **판정 없음**입니다. 코드 블록·인라인 코드·URL은 세기 전에 제거하고 assistant 메시지와
+tool 결과는 애초에 세지 않습니다(`src/extraction-language.ts`).
+
+우선순위는 `preferred_language`(명시 override) > 창 언어 판정 > **절 없음**(모델 자유)입니다.
+판정된 언어는 한 문장으로 프롬프트 **뒤에 덧붙기만** 합니다 —
+
+```text
+## Fact language
+Write `fact` (and subject_key stays snake_case ASCII) in Korean; keep code identifiers, paths and product names verbatim.
+```
+
+`EXTRACTION_SYSTEM_PROMPT`는 바이트 단위로 그대로이므로 `policy_version`
+(`precision-durability-v4`)의 뜻이 바뀌지 않고, 언어는 스케줄 키에 **섞이지 않습니다** —
+대화 언어 판정이 달라졌다고 전량 재추출이 일어나지는 않습니다. 적용된 언어는 영수증으로
+`extraction_targets.fact_language`(`ko`/`en`/`mixed`/NULL, nullable, 로컬 전용, sync 대상 아님)에
+남습니다. `mixed`는 한 claim의 창들이 서로 다른 언어로 판정된 경우입니다.
+
+**글자 수 다수결의 알려진 편향**: Hangul 음절 1자는 Latin 문자 2–3자 분량이므로 영어 제품명이
+섞인 짧은 한국어 문장(`Flutter 상태관리는 Riverpod으로 결정했습니다.` = Hangul 13 : Latin 15)은
+영어로 판정됩니다. 가중치는 승인된 정책이 아니라 넣지 않았고, 대신 counts를 노출해
+`test/extraction-language.test.ts`가 이 동작을 명시적으로 고정합니다. 당장의 탈출구는
+`preferred_language`입니다.
+
+기존 fact는 다시 쓰지 않습니다. 이 정책은 **새로 추출되는 fact부터** 적용됩니다.
+
+### KR translation (레거시 표시 경로)
+
+`fact_kr`는 이제 **이 정책 이전에 영어로 저장된 fact를 한국어로 보여 주기 위한 레거시 경로**입니다.
+새 fact는 대화 언어로 저장되므로 `fact_kr`를 새로 만들지 않습니다(추출 프롬프트는 예나 지금이나
+`fact_kr` 방출을 금지합니다). 아래 스크립트와 `vec_facts_kr`,
+`prefs.preferTranslatedFacts`는 기존 영어 fact를 위해 그대로 유지합니다.
 
 `fact_kr`는 local derived state이며 sync하지 않습니다. 자동 SessionStart translation은 수행하지 않습니다. 번역 모델 호출 비용을 명시적으로 통제하기 위해 현재는 수동 스크립트를 사용합니다.
 

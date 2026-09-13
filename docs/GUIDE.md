@@ -1429,7 +1429,7 @@ memex gate rollback --to <revision>
 
 | 항목 | 집행 | 상한 |
 | --- | --- | --- |
-| `preferred_language` (`ko`/`en`/미지정) | 프롬프트 절 | — |
+| `preferred_language` (`ko`/`en`/미지정) | 프롬프트 절 — **기본값의 override** | — |
 | `exclude_topics` | **프롬프트 절뿐 — 아무것도 강제하지 않습니다** | 24개, 항목당 2–80자 |
 | `never_extract_patterns` | **저장 경계에서 결정론적 차단** | 32개 |
 | `always_treat_as_decision_patterns` | **프롬프트 절뿐** | 16개 |
@@ -1438,6 +1438,20 @@ memex gate rollback --to <revision>
 `fact_text`·`evidence`·`both`(기본)입니다. 정규식 제한은 게이트 오버레이와 같고 note는 200자입니다.
 프로젝트 override는 `preferred_language`만 덮어쓰고 **나머지 세 제약은 전역과 합집합**입니다 —
 다른 곳에 한 줄을 더해 전역 금지를 느슨하게 만드는 경로를 두지 않기 위해서입니다.
+
+**언어 기본값(#123)**: `preferred_language`를 지정하지 않아도 추출은 **대화의 언어**로 fact를
+씁니다. 추출 창의 사람 메시지 글자 수 다수결(코드 블록·URL 제외)로 정하고, 동률이면 마지막 사람
+메시지, 셀 글자가 없으면 절을 붙이지 않습니다. 즉 `preferred_language`는 이 기본값을 덮는
+**override**입니다. `memex extract rules show`의 `Language` 줄이 현재 유효한 값을 그대로 찍습니다.
+
+```text
+Language     follows the conversation (override: preferred_language)
+```
+
+적용된 언어는 `extraction_targets.fact_language`(`ko`/`en`/`mixed`/NULL, 로컬 전용, sync 대상
+아님)에 영수증으로 남습니다. 기존에 영어로 저장된 fact는 다시 쓰지 않으며 `fact_kr`
+(`node scripts/translate-facts.mjs`, `prefs.preferTranslatedFacts`)는 그 기존 fact를 위한 레거시
+표시 경로로 남습니다 — 새 fact에는 생성하지 않습니다.
 
 프롬프트 절은 내장 프롬프트를 **고치지 않고 덧붙이기만** 하며(`policy_version`은 그대로), 의미
 검증기 프롬프트는 오버레이가 있든 없든 바이트 단위로 동일합니다.

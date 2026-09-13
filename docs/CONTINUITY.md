@@ -29,6 +29,8 @@
 
 `extraction_targets.rules_hash` (0.7.0, nullable): claim 시점에 적용된 추출 규칙 오버레이의 지문입니다. **보고용이고 로컬 전용**(sync 대상 아님)이며 스케줄 키(`policy_version`)에 **섞이지 않습니다** — 섞으면 규칙 한 글자가 전량 재추출이 됩니다. 규칙이 달라진 완료 대상을 다시 열려면 `memex extract rules reextract`를 명시적으로 호출하고, 그때도 `policy_version`은 그대로입니다. 규칙의 적용 시점 계약(claim 스냅숏 ∪ 저장 직전 최신 유효 규칙)은 [FACT-LIFECYCLE.md §3](FACT-LIFECYCLE.md#추출-규칙-오버레이-070-30)에 있습니다.
 
+`extraction_targets.fact_language` (#123, nullable): 그 claim이 실제로 어떤 언어 절로 추출했는지입니다(`ko`/`en`/`mixed`/NULL). `rules_hash`와 같은 계약 — **보고용·로컬 전용**이고 `policy_version`에 섞이지 않습니다. 언어는 창(window)마다 판정하므로 한 claim의 창들이 갈리면 `mixed`로 남기고, 마지막 창의 언어로 덮어쓰지 않습니다. 판정 규칙은 [FACT-LIFECYCLE.md §10](FACT-LIFECYCLE.md#10-기억-언어와-kr-translation)에 있습니다.
+
 ## 4. Work Capsule과 tail baton (§4.2, §14)
 
 `work_capsules`(workstream-scoped, `authority = context-only`): objective/current_state/verified_progress(evidence 필수)/hypotheses/blockers/open_questions/next_actions. Compact/resume 출력은 현재 목표·확인된 결과·미검증 가설·최근 정정·막힌 지점·다음 행동·근거 위치를 구분합니다. Capsule이 없으면 deterministic tail baton을 사용합니다. 미소비 workstream evidence나 미완료 capture/Capsule 작업이 있으면 `stale/context-only` 표시와 최신 source/pending 상태를 함께 냅니다. 과거 superseded 작업은 현재 상태를 stale로 만들지 않습니다. Work context 예산을 먼저 확보하고 최종 wrapper 크기까지 확인합니다. Sequence coverage와 replay 계약은 [SCHEMA.md](SCHEMA.md#sequence-cursors-schema-v7)에 있습니다. 어느 것도 fact evidence로 재진입하지 않습니다.
