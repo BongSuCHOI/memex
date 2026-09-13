@@ -476,6 +476,12 @@ async function cmdShow() {
         schedulingPolicyVersion: policy.scheduling,
         enforcementPoints: [...EXTRACTION_RULE_ENFORCEMENT_POINTS],
         rules: loaded.global,
+        // Issue #123 — the effective default is not in the overlay, so --json has
+        // to carry it or a consumer cannot tell "unset" from "nothing decides".
+        language: {
+            default: "conversation",
+            override: loaded.global.preferredLanguage,
+        },
         quarantine: quarantined,
         issues: loaded.issues,
         heldJobs: report.heldJobs,
@@ -496,6 +502,12 @@ async function cmdShow() {
         row("Effective", "The rules in force when a job is claimed ride in its prompt,"),
         `${CONTINUE}and never_extract patterns are re-read from the file at the storage boundary.`,
         `${CONTINUE}→ a tightened restriction applies at once; a relaxed one from the next job on.`,
+        // Issue #123 — the effective DEFAULT, which is not in the overlay file at
+        // all. Without this line an operator reading `preferred language unset`
+        // below would conclude that nothing decides the language.
+        row("Language", loaded.global.preferredLanguage === null
+            ? "follows the conversation (override: preferred_language)"
+            : `${loaded.global.preferredLanguage} — preferred_language overrides the default, which follows the conversation`),
         ...ruleSummaryLines(loaded.global),
         ...(quarantined.length > 0
             ? [
@@ -753,7 +765,7 @@ function simulationLines(report, rules) {
         lines.push(`    decision hints (model-only)  ${report.advisoryOnly.decisionHints.join(" · ")}`);
     }
     if (report.advisoryOnly.preferredLanguage !== null) {
-        lines.push(`    preferred language (model-only)  ${report.advisoryOnly.preferredLanguage}`);
+        lines.push(`    preferred language (model-only)  ${report.advisoryOnly.preferredLanguage} — an override; the default follows the conversation`);
     }
     return lines;
 }

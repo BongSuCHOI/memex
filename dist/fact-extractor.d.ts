@@ -157,6 +157,12 @@ export interface ExtractFactsOptions {
             payloadFingerprint: string;
             error: string;
         }>;
+        /**
+         * Issue #123 — the language clause this page actually ran under: `ko`, `en`,
+         * `mixed` when the claim's windows disagreed, or `null` when no clause was
+         * appended. Reporting only; the owner stamps it on `extraction_targets`.
+         */
+        appliedLanguage?: "ko" | "en" | "mixed" | null;
     };
     /** Evaluation seam: production callers use callMemoryModel by default. */
     modelCall?: FactExtractionModelCall;

@@ -697,7 +697,13 @@ export function resolveExtractionRules(projectId, loaded = loadExtractionRules()
         .map((issue) => String(issue.params?.id ?? "")));
     return resolveFromDoc(loaded.doc, projectId, loaded.hash, quarantinedHints);
 }
-/** True when this rule set has nothing to say. The prompt clause is then empty. */
+/**
+ * True when this rule set has nothing to say at all — used by the CLI summaries.
+ *
+ * Since #123 this is NOT the same test as "the overlay block is empty": a rule
+ * set holding only `preferred_language` is not empty, but it renders no overlay
+ * block, because the language it carries travels in the language clause instead.
+ */
 export function isEmptyExtractionRules(rules) {
     return (rules.preferredLanguage === null &&
         rules.excludeTopics.length === 0 &&
@@ -732,8 +738,16 @@ function formatRegex(pattern) {
  * composer then returns the base prompt unchanged.
  */
 export function renderExtractionConstraintClause(rules) {
-    if (isEmptyExtractionRules(rules))
+    // Issue #123 — `preferred_language` no longer renders HERE. It is an override
+    // of the conversation-language default, and both travel in the one language
+    // clause `appendExtractionLanguageClause` appends after this block. A rule set
+    // whose only content is the language therefore renders no overlay block at
+    // all, instead of a restriction preamble with nothing to restrict.
+    if (rules.excludeTopics.length === 0 &&
+        rules.neverExtract.length === 0 &&
+        rules.decisionHints.length === 0) {
         return "";
+    }
     const lines = [
         "## User rule overlay (local, operator-authored)",
         `rules_hash: ${rules.hash ?? "unknown"}`,
@@ -750,10 +764,6 @@ export function renderExtractionConstraintClause(rules) {
     for (const pattern of rules.decisionHints) {
         lines.push(`- Prefer statements matching ${formatRegex(pattern)} as category=decision when the evidence allows it`);
     }
-    if (rules.preferredLanguage === "ko")
-        lines.push("- Prefer fact_kr in Korean");
-    if (rules.preferredLanguage === "en")
-        lines.push("- Prefer fact in English");
     return lines.join("\n");
 }
 /**

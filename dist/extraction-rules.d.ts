@@ -196,7 +196,13 @@ export declare function currentExtractionRulesRevision(): number;
 export declare function resetExtractionRulesCache(): void;
 /** The effective rules for one project — what the clause and the block set use. */
 export declare function resolveExtractionRules(projectId: string | null, loaded?: LoadedExtractionRules): ResolvedExtractionRules;
-/** True when this rule set has nothing to say. The prompt clause is then empty. */
+/**
+ * True when this rule set has nothing to say at all — used by the CLI summaries.
+ *
+ * Since #123 this is NOT the same test as "the overlay block is empty": a rule
+ * set holding only `preferred_language` is not empty, but it renders no overlay
+ * block, because the language it carries travels in the language clause instead.
+ */
 export declare function isEmptyExtractionRules(rules: ResolvedExtractionRules): boolean;
 /**
  * Render the bounded structured block the extractor already consumes.

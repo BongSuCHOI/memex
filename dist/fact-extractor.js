@@ -9,8 +9,9 @@ import { isLlmWorkdirPath } from "./paths.js";
 import { classifyAndLinkFact } from "./ontology-classifier.js";
 import { createHash } from "node:crypto";
 import { freshClaimPredicate, getExtractionConfig, } from "./pending-extraction.js";
-import { claimExtractionTargetWithReason, commitExtractionPage, ensureExtractionTarget, FACT_EXTRACTION_POLICY_VERSION, readExtractionTargetItems, recordExtractionFailure, renewMemoryJobLease, setExtractionTargetRulesHash, supersedeStaleExtractionTarget, } from "./continuity-store.js";
+import { claimExtractionTargetWithReason, commitExtractionPage, ensureExtractionTarget, FACT_EXTRACTION_POLICY_VERSION, readExtractionTargetItems, recordExtractionFailure, renewMemoryJobLease, setExtractionTargetFactLanguage, setExtractionTargetRulesHash, supersedeStaleExtractionTarget, } from "./continuity-store.js";
 import { deferMemoryJobForModelBudget, findExhaustedModelBudgetForClaim, isAutomaticOntologyEnabled, isModelBudgetExhausted, releaseExtractionClaimOnHold, withResolvedModelWorkContext, HOLD_REASONS, } from "./model-budget.js";
+import { appendExtractionLanguageClause, detectWindowLanguage, resolveExtractionLanguage, summarizeAppliedLanguages, } from "./extraction-language.js";
 import { buildBlockSet, composeEffectivePolicyVersion, composeExtractionSystemPrompt, extractionMatcherAvailable, extractionRulesPreClaimBlock, loadExtractionRules, reloadExtractionRulesIfChanged, resolveExtractionRules, unionNeverExtract, } from "./extraction-rules.js";
 import { oneShotMatcher } from "./overlay-matcher.js";
 export const EXTRACTION_POLICY_VERSION = "precision-durability-v4";
@@ -1758,6 +1759,12 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     // string object as before, so an installation with no rules sends a
     // byte-identical prompt.
     const extractionSystemPrompt = composeExtractionSystemPrompt(EXTRACTION_SYSTEM_PROMPT, options?.extractionRules);
+    // Issue #123 §1 — the language clause is resolved PER WINDOW and appended
+    // last, because the conversation language is a property of the window, not of
+    // the session. `preferred_language` overrides it; with neither, no clause is
+    // appended and the prompt is byte-identical to the one sent before #123.
+    const preferredLanguage = options?.extractionRules?.preferredLanguage ?? null;
+    const appliedLanguages = [];
     const allFacts = [];
     const factIndexByKey = new Map();
     // transient(공급자 장애·빈 응답)로 실패한 window. >0 이면 이 세션은 "처리 완료"가 아니다.
@@ -1783,9 +1790,15 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
             options.observability.max_referent_candidates = Math.max(options.observability.max_referent_candidates, referentCandidates.length);
         }
         const prompt = buildExtractionPrompt(window, referentCandidates);
+        const { language } = resolveExtractionLanguage(preferredLanguage, detectWindowLanguage(window));
+        appliedLanguages.push(language);
+        if (options?.progress) {
+            options.progress.appliedLanguage = summarizeAppliedLanguages(appliedLanguages);
+        }
+        const windowSystemPrompt = appendExtractionLanguageClause(extractionSystemPrompt, language);
         renewLease?.(); // window 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
         try {
-            const response = await modelCall(extractionSystemPrompt, prompt);
+            const response = await modelCall(windowSystemPrompt, prompt);
             const extracted = parseJsonResponse(response);
             if (Array.isArray(extracted)) {
                 const structurallyAccepted = [];
@@ -2741,6 +2754,8 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
         processedThroughRowid: target.fromRowid,
         budgetExhausted: false,
         irreducibleFailures: [],
+        /** Issue #123 — filled per window by the extractor, stamped once below. */
+        appliedLanguage: null,
     };
     const contextWatermark = claimed.target.cursorOrdinal > 0
         ? db.prepare(`
@@ -2824,6 +2839,10 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
         }
         throw error;
     }
+    // Issue #123 — the receipt for the language half of the prompt, next to the
+    // rules_hash receipt above. Reporting only, and written after the model work
+    // because only the finished page knows whether its windows agreed.
+    setExtractionTargetFactLanguage(db, target.targetId, progress.appliedLanguage);
     if (progress.irreducibleFailures.length > 0) {
         const failed = progress.irreducibleFailures[0];
         const failedIds = new Set(failed.exchangeIds);
