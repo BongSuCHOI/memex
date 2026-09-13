@@ -335,6 +335,32 @@ function rulesEditorCard(rules){
  <p class="caption mt">${esc(t('overlays.rules.editor.caption'))}</p></section>`;
 }
 
+/**
+ * #121 — 사용자 정의 fact 종류. 이번 릴리스는 **읽기 전용 목록**이다.
+ *
+ * 편집이 파일·CLI에만 있는 것은 미완성이 아니라 의도다: 종류 id는 그대로 `facts.category`에
+ * 저장돼 이미 쌓인 기억을 가리키므로, id를 화면에서 고치거나 지우는 순간 그 값으로 저장된
+ * 기억들이 정의 없는 라벨을 달게 된다. 그 마이그레이션 경로가 생기기 전까지 이 화면은 무엇이
+ * 정의돼 있는지만 말한다.
+ *
+ * 라벨은 사전이 아니라 오버레이가 갖는다 — 두 언어를 나란히 보여 주는 이유도 그것이다.
+ */
+function customKindsCard(rules,limits){
+ const kinds=rules.resolved?.customFactKinds||[];
+ const builtin=(rules.builtinFactKinds||[]).map(id=>`<code>${esc(id)}</code>`).join(' · ');
+ return `<section class="card pad mt" id="rules-kinds"><div class="spread"><h2>${esc(t('overlays.rules.kinds.title'))}</h2>
+  <span class="caption">${esc(t('overlays.rules.kinds.count',{n:number(kinds.length),limit:number(limits?.rules?.counts?.customFactKinds??0)}))}</span></div>
+ <p class="caption mt">${esc(t('overlays.rules.kinds.body'))}</p>
+ ${builtin?`<p class="caption mt">${esc(t('overlays.rules.kinds.builtin'))} ${builtin}</p>`:''}
+ ${kinds.length?table([esc(t('overlays.rules.kinds.col.id')),esc(t('overlays.rules.kinds.col.label')),
+   esc(t('overlays.rules.kinds.col.description')),esc(t('overlays.rules.kinds.col.hint'))],
+   kinds.map(kind=>`<tr><td class="nowrap"><code>${esc(kind.id)}</code></td>
+    <td class="nowrap">${esc(kind.label_en)} / ${esc(kind.label_ko)}</td>
+    <td>${esc(kind.description)}</td><td>${esc(kind.extraction_hint||'—')}</td></tr>`))
+  :`<p class="caption mt">${esc(t('overlays.rules.kinds.empty'))}</p>`}
+ <p class="caption mt">${esc(t('overlays.rules.kinds.readOnly'))}</p></section>`;
+}
+
 function clauseCard(rules){
  const clause=rules.clause||{chars:0,text:''};
  return `<section class="card pad mt" id="rules-clause"><h2>${esc(t('overlays.rules.clause.title'))}</h2>
@@ -394,7 +420,7 @@ function rulesView(ctx,data){
  ${heldJobsBanner(rules.drift)}
  ${rules.issues?.length?`<div class="card pad mt">${renderIssues(rules.issues)}</div>`:''}
  ${quarantineCard(rules.quarantined||[],'rules')}
- ${rulesFactsCard(rules)}${rulesEditorCard(rules)}${clauseCard(rules)}${simulateCard(rules)}${driftCard(rules)}${historyCard(rules,'rules')}`;
+ ${rulesFactsCard(rules)}${rulesEditorCard(rules)}${customKindsCard(rules,data.limits)}${clauseCard(rules)}${simulateCard(rules)}${driftCard(rules)}${historyCard(rules,'rules')}`;
 }
 
 /* ── 탭 본문 ─────────────────────────────────────────────────────────────────── */

@@ -142,14 +142,17 @@ describe("schema validation", () => {
     expect(codes(rulesDoc([], { preferred_language: "kr" }))).toContain("LANGUAGE_UNKNOWN");
   });
 
-  it("ignores an unknown field as a WARNING, so 0.7.1 can add one", () => {
-    // `custom_fact_kinds` is out of scope by decision; 0.7.0 must ignore it
-    // quietly rather than refuse the whole file and hold extraction.
-    const result = validateExtractionRulesDoc(rulesDoc([], { custom_fact_kinds: ["x"] }));
+  it("ignores an unknown field as a WARNING, so a later version can add one", () => {
+    // A field this build does not know must be ignored QUIETLY rather than refuse
+    // the whole file and hold extraction — that is what lets 0.7.x add an item
+    // without 0.7.0 stopping every extraction on a machine that saw the new file.
+    // (`custom_fact_kinds` used to be that field; #121 made it real, and its own
+    // suite asserts the rule set it is subject to now.)
+    const result = validateExtractionRulesDoc(rulesDoc([], { threshold_overrides: { recall: 1 } }));
     expect(result.ok).toBe(true);
     const issue = result.issues.find((i) => i.code === "OVERLAY_UNKNOWN_FIELD");
     expect(issue?.severity).toBe("warning");
-    expect(issue?.path).toBe("custom_fact_kinds");
+    expect(issue?.path).toBe("threshold_overrides");
   });
 });
 
@@ -237,6 +240,9 @@ describe("the constraint clause (§3.2)", () => {
       { id: "user.9c1e4d07", source: "\\bsk-[A-Za-z0-9_-]{16,}", flags: "", scope: "both" as const },
     ],
     decisionHints: [{ id: "user.dec1", source: "(확정|최종 결정)", flags: "" }],
+    // #121 — this suite pins the clause WITHOUT custom kinds; their own block is
+    // asserted in extraction-rules-custom-kinds.test.ts.
+    customFactKinds: [],
   };
 
   it("renders deterministically and says restrictions only go one way", () => {

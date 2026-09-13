@@ -39,6 +39,7 @@ import {
   emptyExtractionRulesDoc,
   emptyLoadedExtractionRules,
   extractionRulesDocHash,
+  BUILTIN_FACT_KINDS,
   isEmptyExtractionRules,
   loadExtractionRules,
   overlaysDisabled,
@@ -85,6 +86,12 @@ The extraction-rules overlay adds your own RESTRICTIONS to fact extraction:
 topics to stay away from, regexes that must never be stored, decision hints and a
 preferred language. Restrictions only ever suppress — nothing here can widen what
 the built-in policy accepts.
+
+'custom_fact_kinds' is the one item that adds rather than removes, and it adds a
+LABEL only: up to 8 of your own category values on top of decision, preference,
+pattern, knowledge and constraint. A kind renames what a fact is called; it never
+lowers the evidence bar and never makes an ineligible candidate eligible. Edit
+them in the rules file ('rules set'), not with a dedicated verb.
 
 READ-ONLY verbs: show, validate, test, history, and every --dry-run. They call no
 model and no embedding, and write neither the overlay nor the database.
@@ -583,6 +590,33 @@ function ruleSummaryLines(rules: ResolvedExtractionRules): string[] {
   }
   for (const hint of rules.decisionHints) {
     lines.push(`${CONTINUE}hint      ${pad(hint.id, 20)}/${hint.source}/${hint.flags ?? ""}`);
+  }
+  lines.push(...customKindLines(rules));
+  return lines;
+}
+
+/**
+ * #121 — the custom fact kinds, listed with the id that actually lands in
+ * `facts.category` so an operator can paste it straight into a search filter.
+ *
+ * Editing them is file-based this release (`rules set`); there is no
+ * `rules kind add`, and this listing says so rather than implying one exists.
+ */
+function customKindLines(rules: ResolvedExtractionRules): string[] {
+  if (rules.customFactKinds.length === 0) return [];
+  const lines = [
+    row(
+      "Fact kinds",
+      `${rules.customFactKinds.length} custom kind(s) on top of the five built-ins ` +
+        `(${BUILTIN_FACT_KINDS.join(", ")}) — edit them with 'memex extract rules set <file>'`,
+    ),
+  ];
+  for (const kind of rules.customFactKinds) {
+    lines.push(`${CONTINUE}kind      ${pad(kind.id, 20)}${kind.label_en} / ${kind.label_ko}`);
+    lines.push(`${CONTINUE}          ${pad("", 20)}${kind.description}`);
+    if (kind.extraction_hint) {
+      lines.push(`${CONTINUE}          ${pad("", 20)}hint: ${kind.extraction_hint}`);
+    }
   }
   return lines;
 }

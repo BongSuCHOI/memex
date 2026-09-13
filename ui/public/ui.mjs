@@ -1,5 +1,7 @@
 import {badgeHelp,helpFor,docsNotice} from './help.mjs';
-import {t,tHtml,tn,intlTag,localeTag} from './i18n/index.mjs';
+import {customFactKindLabel,customFactKind} from './fact-kinds.mjs';
+import {t,tHtml,tn,intlTag,localeTag,hasKey} from './i18n/index.mjs';
+export {setCustomFactKinds,customFactKinds,customFactKind,customFactKindLabel} from './fact-kinds.mjs';
 export const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={
  grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
@@ -39,7 +41,13 @@ export const icon=(name,cls='')=>`<svg class="icon ${esc(cls)}" viewBox="0 0 24 
  */
 export const name=v=>{
  if(v===null||v===undefined||v==='')return t('common.unknown');
- const key=`badge.${v}.label`;const out=t(key);
+ const key=`badge.${v}.label`;
+ // #121 — 사용자 정의 fact 종류는 사전이 아니라 오버레이가 라벨을 갖는다. **사전이 먼저다**:
+ // 내장 배지 키가 항상 이기므로 사전 1:1 계약(ui/test/help.test.cjs)이 런타임 종류 때문에
+ // 흔들리지 않는다. `hasKey`로 먼저 거르는 이유는 "없는 키" 경고 때문이다 — 운영자가 정의한
+ // 종류는 애초에 사전에 있을 수 없으므로, 그 경고를 남기면 진짜로 빠진 코어 enum 키가 묻힌다.
+ if(!hasKey(key)){const custom=customFactKindLabel(v,localeTag());if(custom)return custom;}
+ const out=t(key);
  return out===key?String(v):out;
 };
 // 계층은 src/fact-management.ts factTierOf()와 같은 순서로 읽는다: scope_type이 먼저, 그다음 promotion_state.
@@ -58,7 +66,7 @@ export function tierExplain(f,project){const tier=tierOf(f),branch=tierBranch(f)
  return t('tier.project.explain',{project:project||t('common.allProjects')});}
 export const tierBadge=(f,project)=>`<span class="tag outline" data-tier="${esc(tierOf(f))}" title="${esc(tierExplain(f,project))}">${esc(tierLabel(f))}</span>`;
 export const tierHiddenTotal=hidden=>hidden?Number(hidden.workstream||0)+Number(hidden.workspace||0):0;
-export function badge(v,override){const color=override||(/^(active|completed|processed|injected|emitted|observed|CREATED|VALIDATED)$/.test(v)?'green':/^(failed|dead|error|failed-visible|CONTRADICTED|INCIDENT)$/.test(v)?'red':/^(running|processing|retry|reserved|pending|partial|prepared|cancelling|timed-out)$/.test(v)?'amber':/^(CHANGED|decision)$/.test(v)?'blue':v==='preference'?'purple':'');// 배지는 상태의 한국어 이름과, 그 상태가 무엇을 뜻하는지의 한 줄 설명(#28)을 함께 싣는다.
+export function badge(v,override){const color=override||(/^(active|completed|processed|injected|emitted|observed|CREATED|VALIDATED)$/.test(v)?'green':/^(failed|dead|error|failed-visible|CONTRADICTED|INCIDENT)$/.test(v)?'red':/^(running|processing|retry|reserved|pending|partial|prepared|cancelling|timed-out)$/.test(v)?'amber':/^(CHANGED|decision)$/.test(v)?'blue':v==='preference'?'purple':customFactKind(v)?'outline':'');// 배지는 상태의 한국어 이름과, 그 상태가 무엇을 뜻하는지의 한 줄 설명(#28)을 함께 싣는다.
 const tip=badgeHelp(v);return `<span class="tag ${esc(color)}"${tip?` title="${esc(tip)}"`:''}>${esc(name(v))}</span>`;}
 /**
  * 문서 링크 옆의 한 줄 고지. `docs/*.md` 13편은 전부 한국어이고 영문판이 없으므로 en UI도 같은

@@ -286,6 +286,65 @@ test('validate names the path and severity of every issue and exits 1 on errors'
   assert.equal(asJson(versioned).issues[0].code, 'OVERLAY_VERSION_UNSUPPORTED');
 });
 
+/**
+ * #121 — `custom_fact_kinds` through the real CLI.
+ *
+ * `show` has to print the ID, not just the label: the id is the value stored in
+ * `facts.category`, so it is what an operator pastes into a search or a filter.
+ * A listing that only showed "Runbook step" would leave them guessing.
+ *
+ * `validate` has to REFUSE a collision with a built-in rather than warn. The
+ * overlay is fail-closed, and a kind called `decision` would silently reinterpret
+ * every memory already stored under that value.
+ */
+test('show lists custom fact kinds, and set/validate accept and refuse them', (t) => {
+  const fixture = isolated(t);
+  const KINDS = [
+    {
+      id: 'runbook',
+      label_en: 'Runbook step',
+      label_ko: '운영 절차',
+      description: 'A recovery step an operator must follow.',
+      extraction_hint: 'the human describes a repeatable recovery action',
+    },
+    { id: 'postmortem', label_en: 'Postmortem finding', label_ko: '사후 분석 결과', description: 'A conclusion after an incident.' },
+  ];
+
+  const good = candidate(fixture, 'kinds.json', { custom_fact_kinds: KINDS });
+  ok(fixture, ['rules', 'set', good, '--yes']);
+  assert.deepEqual(readRules(fixture).custom_fact_kinds, KINDS);
+
+  const shown = ok(fixture, ['rules', 'show']);
+  assert.match(shown.stdout, /2 custom kind\(s\) on top of the five built-ins/);
+  assert.match(shown.stdout, /\(decision, preference, pattern, knowledge, constraint\)/);
+  // The id — the stored value — and both labels.
+  assert.match(shown.stdout, /kind\s+runbook\s+Runbook step \/ 운영 절차/);
+  assert.match(shown.stdout, /A recovery step an operator must follow\./);
+  assert.match(shown.stdout, /hint: the human describes a repeatable recovery action/);
+  assert.match(shown.stdout, /kind\s+postmortem\s+Postmortem finding \/ 사후 분석 결과/);
+
+  const payload = asJson(ok(fixture, ['rules', 'show', '--json']));
+  assert.deepEqual(payload.rules.customFactKinds, KINDS);
+  assert.equal(payload.limits.counts.customFactKinds, 8);
+
+  // A collision with a built-in is an ERROR with the row's path, not a warning.
+  const collide = candidate(fixture, 'collide.json', {
+    custom_fact_kinds: [KINDS[0], { ...KINDS[1], id: 'decision' }],
+  });
+  const refused = run(fixture, ['rules', 'validate', collide, '--json']);
+  assert.equal(refused.status, 1);
+  const issue = asJson(refused).issues.find((entry) => entry.code === 'KIND_ID_RESERVED');
+  assert.equal(issue.severity, 'error');
+  assert.equal(issue.path, 'custom_fact_kinds[1].id');
+  assert.equal(issue.key, 'overlays.issue.kindIdReserved');
+
+  // …and a refused `set` changes nothing that is already applied.
+  const before = fs.readFileSync(fixture.rulesFile, 'utf8');
+  const rejected = run(fixture, ['rules', 'set', collide, '--expect-revision', '1', '--yes']);
+  assert.equal(rejected.status, 1);
+  assert.equal(fs.readFileSync(fixture.rulesFile, 'utf8'), before, 'a refused set rewrote the overlay');
+});
+
 test('set refuses an invalid document and writes nothing', (t) => {
   const fixture = isolated(t);
   const bad = candidate(fixture, 'bad.json', {

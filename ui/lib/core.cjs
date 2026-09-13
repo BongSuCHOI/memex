@@ -606,6 +606,30 @@ class Core {
       });
     }finally{if(write)this.overlayBusy=false;}
   }
+  /**
+   * #121 — 사용자 정의 fact 종류. `/api/v2/bootstrap`이 매 부팅에 한 번 싣는다.
+   *
+   * 배지·종류 칩이 **모든 화면에서** 이 라벨을 써야 하므로 오버레이 탭이 아니라 부트스트랩에
+   * 있다. 화면 하나(관리 › 오버레이)를 열어야 다른 화면의 배지가 고쳐지는 구조는 "기억 목록에
+   * 왜 id가 그대로 떠 있나"로 돌아온다.
+   *
+   * **절대 던지지 않는다.** 코어를 빌드하지 않았거나 오버레이가 깨져 있으면 빈 목록이고, 그러면
+   * 종류는 코어 원문(id)으로 표시된다 — 부트스트랩이 신규 사용자가 가장 먼저 보는 응답이라
+   * 여기서의 실패는 화면 전체를 막는다. 오버레이가 유효하지 않다는 사실은 관리 › 오버레이의
+   * `issues[]`와 doctor가 말하는 쪽이 옳다.
+   */
+  async customFactKinds(){
+    try{
+      return await this.pinned(async()=>{
+        if(!fs.existsSync(path.join(this.root,'dist','extraction-rules.js')))return [];
+        const rules=await this.module('extraction-rules');
+        const loaded=rules.loadExtractionRules();
+        // 전역 규칙만 — 부트스트랩에는 프로젝트 범위가 없고, 프로젝트 오버라이드는 전역에
+        // **추가만** 하므로(§3.1 합집합) 전역이 모든 화면이 공유하는 하한이다.
+        return rules.resolveExtractionRules(null,loaded).customFactKinds.map(kind=>({...kind}));
+      });
+    }catch{return [];}
+  }
   /** 오버레이 모듈은 없을 수 있다 — 코어를 빌드하지 않은 설치에서 503의 사유가 이것이다. */
   async overlayModule(name){
     if(!fs.existsSync(path.join(this.root,'dist',name+'.js')))
@@ -658,7 +682,9 @@ class Core {
         schema:rules.EXTRACTION_RULES_OVERLAY_SCHEMA,version:rules.EXTRACTION_RULES_OVERLAY_VERSION,
         doc:loadedRules.doc,emptyDoc:rules.emptyExtractionRulesDoc(),
         resolved:{preferredLanguage:resolved.preferredLanguage,excludeTopics:resolved.excludeTopics,
-          neverExtract:resolved.neverExtract,decisionHints:resolved.decisionHints},
+          neverExtract:resolved.neverExtract,decisionHints:resolved.decisionHints,
+          customFactKinds:resolved.customFactKinds},
+        builtinFactKinds:[...rules.BUILTIN_FACT_KINDS],
         clause:(text=>({chars:text.length,text}))(rules.renderExtractionConstraintClause(resolved)),
         // 검증기·증거 기준은 오버레이가 건드릴 수 없다 — 화면이 그 사실을 단정으로 말한다.
         verifierUnchanged:true,

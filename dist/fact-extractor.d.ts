@@ -123,7 +123,15 @@ export declare function buildExtractionWindows<T extends ExtractionPromptExchang
 export declare function selectLongRangeReferentCandidates(localExchanges: ExtractionValidationExchange[], sessionExchanges: ExtractionValidationExchange[]): LongRangeReferentCandidate[];
 export declare function buildExtractionPrompt(exchanges: ExtractionPromptExchange[], referentCandidates?: LongRangeReferentCandidate[]): string;
 export type FactExtractionModelCall = (systemPrompt: string, userMessage: string) => Promise<string>;
-export type FactExtractionCandidateRejectionReason = "invalid_schema" | "invalid_evidence" | "not_durable" | "grounding_rule" | "confidence" | "semantic_verifier";
+export type FactExtractionCandidateRejectionReason = "invalid_schema" | "invalid_evidence" | "not_durable" | "grounding_rule" | "confidence" | "semantic_verifier"
+/**
+ * #121 — the category is a well-formed kind id that the CURRENT rules do not
+ * define. Its own reason rather than `invalid_schema`, because it is not a
+ * malformed candidate: the operator deleted the kind, or never defined it.
+ * The candidate is dropped with an audit line and extraction continues —
+ * this is never a failure and never consumes an attempt.
+ */
+ | "unknown_fact_kind";
 /** Optional, in-memory extraction telemetry. Production callers do not pass
  * this object; the evaluation harness uses it without adding durable schema. */
 export interface FactExtractionObservability {
@@ -138,6 +146,7 @@ export interface FactExtractionObservability {
     rejected_grounding_rule: number;
     rejected_confidence: number;
     rejected_semantic_verifier: number;
+    rejected_unknown_fact_kind: number;
     grounding_explicit: number;
     grounding_verified: number;
     grounding_inferred: number;
@@ -189,7 +198,9 @@ export interface ExtractFactsOptions {
  * never qualifies. Any invalid declaration rejects the whole candidate.
  */
 export declare function validateExtractedObservationCandidate(candidate: unknown, exchanges: ExtractionValidationExchange[]): ExtractedObservation | null;
-export declare function validateExtractedFactCandidate(candidate: unknown, exchanges: ExtractionValidationExchange[], referentCandidates?: LongRangeReferentCandidate[]): ExtractedFact | null;
+export declare function validateExtractedFactCandidate(candidate: unknown, exchanges: ExtractionValidationExchange[], referentCandidates?: LongRangeReferentCandidate[], 
+/** #121 — see `validateExtractedFactCandidateDetailed`. Empty = built-ins only. */
+customFactKinds?: ReadonlySet<string>): ExtractedFact | null;
 export declare function buildFactEntailmentVerifierPrompt(candidates: ExtractedFact[], exchanges: ExtractionValidationExchange[], referentCandidates?: LongRangeReferentCandidate[]): string;
 /**
  * Validate verifier-reported semantic usage and make it the canonical local

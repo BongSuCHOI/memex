@@ -3,7 +3,7 @@ const {ko}=require('./helpers/locale.cjs');
 require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 /** Page modules render to strings, so the browser HTML is checked without a DOM. */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
-const {name,badge,eventRow,syncOrigin,syncOriginTag}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
+const {name,badge,eventRow,syncOrigin,syncOriginTag,setCustomFactKinds}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
 const details=require('../public/details.mjs');
 const activityPage=require('../public/pages/activity.mjs');const conversationsPage=require('../public/pages/conversations.mjs');
 const facts=require('../public/pages/facts.mjs');const taxonomyPage=require('../public/pages/taxonomy.mjs');const settingsPage=require('../public/pages/settings.mjs');
@@ -363,4 +363,32 @@ test('보류가 아닌 대기 작업에는 보류 배지도 링크도 붙지 않
  assert(!html.includes(ko['activity.jobs.hold.next']),'보류가 아닌 작업에 보류 안내가 붙음');
  for(const reason of Object.keys(HOLD_OWNER_TAB))assert(!html.includes(ko['common.job.hold.'+reason]),'보류 배지가 붙음: '+reason);
  assert(!html.includes('/settings?tab=models'),'불필요한 모델 설정 링크가 생김');
+});
+
+/**
+ * #121 — 사용자 정의 fact 종류가 기억 페이지에 나타나는 두 자리.
+ *
+ * 칩의 값과 배지의 값이 **같은 문자열**이어야 한다는 것이 핵심이다: 그 문자열이 곧
+ * `facts.category`에 저장된 값이고 서버가 `f.category=?`로 거르는 값이다. 칩 라벨과 필터 값이
+ * 갈라지면 "이 배지가 붙은 기억만 보기"가 조용히 0건이 된다.
+ */
+test('기억 페이지의 종류 칩은 내장 5종 뒤에 사용자 정의 종류를 붙이고 값은 저장된 category다',async()=>{
+ setCustomFactKinds([{id:'runbook',label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}]);
+ try{
+  const {html}=await renderFacts('category=runbook',{facts:factsPage([row({category:'runbook'})])});
+  assert(html.includes('data-param-value="runbook"'),'사용자 정의 종류 칩이 없음');
+  assert(html.includes('>운영 절차</button>'),'칩 라벨이 오버레이 라벨이 아님');
+  // 내장 5종 뒤다 — 순서가 뒤집히면 익숙한 유형이 낯선 것 뒤로 밀린다.
+  assert(html.indexOf('data-param-value="knowledge"')<html.indexOf('data-param-value="runbook"'));
+  assert(/class="filter-chip active" data-param-key="category" data-param-value="runbook"/.test(html),'선택 상태가 반영되지 않음');
+  // 선택된 칩과 행의 배지가 같은 라벨·설명을 쓴다.
+  assert(html.includes('<span class="tag outline" title="운영 절차입니다.">운영 절차</span>'),'행 배지가 오버레이 라벨·설명을 쓰지 않음');
+ }finally{setCustomFactKinds([]);}
+});
+
+test('정의되지 않은 종류로 저장된 기억은 코어 원문 그대로 보이고 칩도 만들지 않는다',async()=>{
+ setCustomFactKinds([]);
+ const {html}=await renderFacts('',{facts:factsPage([row({category:'postmortem'})])});
+ assert(html.includes('>postmortem</span>'),'모르는 종류의 이름을 지어냄');
+ assert(!html.includes('data-param-value="postmortem"'),'정의되지 않은 종류로 칩을 만듦');
 });

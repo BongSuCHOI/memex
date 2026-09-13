@@ -47,8 +47,38 @@ export const EXTRACTION_RULES_LIMITS = Object.freeze({
         neverExtractPatterns: 32,
         decisionPatterns: 16,
         projectOverrides: 32,
+        customFactKinds: 8,
+        customFactKindChars: Object.freeze({ label: 40, description: 200, hint: 200 }),
     }),
 });
+/* -------------------------------------------------------------------------- */
+/* Custom fact kinds (#121)                                                    */
+/* -------------------------------------------------------------------------- */
+/**
+ * The five values `facts.category` has always held.
+ *
+ * Named here rather than imported from `fact-extractor.ts` on purpose: this
+ * module is a DB-free leaf that the Web UI loads without the extractor, and the
+ * extractor's own `FACT_CATEGORIES` set is the runtime check. A custom kind id
+ * that collides with one of these is refused, so the two lists can never
+ * disagree about what a built-in means.
+ */
+export const BUILTIN_FACT_KINDS = Object.freeze([
+    "decision",
+    "preference",
+    "pattern",
+    "knowledge",
+    "constraint",
+]);
+/**
+ * A custom kind id. Lowercase snake_case, 2–24 characters.
+ *
+ * The same shape as a built-in category, because the id IS what lands in
+ * `facts.category`: it travels through search filters, exports, sync payloads
+ * and the `category = ?` predicates unchanged, so anything a built-in value can
+ * survive a custom one has to survive too.
+ */
+export const CUSTOM_FACT_KIND_ID = /^[a-z][a-z0-9_]{1,23}$/;
 /** The four enforcement points the storage boundary covers (§3.3). */
 export const EXTRACTION_RULE_ENFORCEMENT_POINTS = Object.freeze([
     "fact_insert",
@@ -64,6 +94,7 @@ const EMPTY_RESOLVED = Object.freeze({
     excludeTopics: Object.freeze([]),
     neverExtract: Object.freeze([]),
     decisionHints: Object.freeze([]),
+    customFactKinds: Object.freeze([]),
 });
 const EMPTY_RULES = Object.freeze({
     present: false,
@@ -95,6 +126,7 @@ export function emptyExtractionRulesDoc() {
         exclude_topics: [],
         never_extract_patterns: [],
         always_treat_as_decision_patterns: [],
+        custom_fact_kinds: [],
         project_overrides: {},
     };
 }
@@ -115,6 +147,16 @@ function ruleSetForHash(rules) {
             id: pattern.id,
             source: pattern.source,
             flags: pattern.flags ?? "",
+        })),
+        // #121 — labels and the hint are IN the hash. They change the prompt clause
+        // and the stored badge text, so a target extracted before a relabel really
+        // was extracted under different rules, and the drift report should say so.
+        custom_fact_kinds: (rules.custom_fact_kinds ?? []).map((kind) => ({
+            id: kind.id,
+            label_en: kind.label_en,
+            label_ko: kind.label_ko,
+            description: kind.description,
+            extraction_hint: kind.extraction_hint ?? "",
         })),
     };
 }
@@ -165,6 +207,7 @@ const KNOWN_TOP_LEVEL = new Set([
     "exclude_topics",
     "never_extract_patterns",
     "always_treat_as_decision_patterns",
+    "custom_fact_kinds",
     "project_overrides",
 ]);
 const KNOWN_RULE_KEYS = new Set([
@@ -172,15 +215,13 @@ const KNOWN_RULE_KEYS = new Set([
     "exclude_topics",
     "never_extract_patterns",
     "always_treat_as_decision_patterns",
+    "custom_fact_kinds",
 ]);
 function validateRuleSet(raw, at, emit, seenIds) {
     const out = {};
     const prefix = at === "" ? "" : `${at}.`;
     for (const key of Object.keys(raw)) {
         if (at !== "" && !KNOWN_RULE_KEYS.has(key)) {
-            // `custom_fact_kinds` is deliberately out of scope (a binding decision):
-            // `facts.category`, the ontology labels, the UI badge and the candidate
-            // validator would all have to move together. Ignored, never refused.
             emit("warning", "OVERLAY_UNKNOWN_FIELD", `unknown field "${key}" is ignored by this build`, {
                 path: `${prefix}${key}`,
                 params: { field: key },
@@ -297,7 +338,127 @@ function validateRuleSet(raw, at, emit, seenIds) {
         }
     }
     out.always_treat_as_decision_patterns = hints;
+    out.custom_fact_kinds = parseCustomFactKinds(raw.custom_fact_kinds, prefix, emit);
     return out;
+}
+/**
+ * #121 — `custom_fact_kinds`.
+ *
+ * Every failure is an ERROR rather than a dropped row. A kind id is written into
+ * `facts.category`, so a half-applied list would leave stored memories labelled
+ * with an id the overlay no longer defines, and the badge would fall back to the
+ * raw string forever. The whole overlay refusing to load (and extraction holding)
+ * is the recoverable outcome; a silently narrower kind list is not.
+ *
+ * Ids are scoped per rule set exactly like patterns, so a project override may
+ * repeat the global list; `resolveFromDoc` unions the two with the global entry
+ * winning on a collision.
+ */
+function parseCustomFactKinds(raw, prefix, emit) {
+    const kinds = [];
+    if (raw === undefined)
+        return kinds;
+    const at = `${prefix}custom_fact_kinds`;
+    if (!Array.isArray(raw)) {
+        emit("error", "OVERLAY_NOT_OBJECT", "`custom_fact_kinds` must be an array", { path: at });
+        return kinds;
+    }
+    const { customFactKinds: limit, customFactKindChars: chars } = EXTRACTION_RULES_LIMITS.counts;
+    if (raw.length > limit) {
+        emit("error", "KIND_COUNT_EXCEEDED", `${raw.length} custom fact kinds (limit ${limit})`, {
+            path: at,
+            params: { count: raw.length, limit },
+        });
+    }
+    const seen = new Set();
+    raw.forEach((entry, index) => {
+        const where = `${at}[${index}]`;
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+            emit("error", "OVERLAY_NOT_OBJECT", "each custom fact kind must be an object", {
+                path: where,
+                row: index,
+            });
+            return;
+        }
+        const item = entry;
+        const id = typeof item.id === "string" ? item.id : "";
+        if (!CUSTOM_FACT_KIND_ID.test(id)) {
+            emit("error", "KIND_ID_INVALID", "a custom fact kind id must be 2-24 characters of lowercase a-z, 0-9 and _, starting with a letter", { path: `${where}.id`, row: index, field: "id", params: { id } });
+            return;
+        }
+        if (BUILTIN_FACT_KINDS.includes(id)) {
+            // The built-in five are what the extraction policy itself defines. A kind
+            // that shadowed one would change the meaning of every fact already stored
+            // under that value, retroactively and invisibly.
+            emit("error", "KIND_ID_RESERVED", `"${id}" is a built-in fact category and cannot be redefined`, {
+                path: `${where}.id`,
+                row: index,
+                field: "id",
+                params: { id, builtin: [...BUILTIN_FACT_KINDS] },
+            });
+            return;
+        }
+        if (seen.has(id)) {
+            emit("error", "KIND_DUPLICATE_ID", `duplicate custom fact kind id ${id}`, {
+                path: `${where}.id`,
+                row: index,
+                field: "id",
+                params: { id },
+            });
+            return;
+        }
+        const line = (value, max) => {
+            if (typeof value !== "string")
+                return null;
+            const text = value.trim();
+            if (text.length === 0 || text.length > max || CONTROL_CHARS.test(text) || text.includes("\n")) {
+                return null;
+            }
+            return text;
+        };
+        const labelEn = line(item.label_en, chars.label);
+        const labelKo = line(item.label_ko, chars.label);
+        if (labelEn === null || labelKo === null) {
+            // BOTH labels are required. The UI picks one by locale with no fallback to
+            // the other language, because a Korean badge reading "Runbook" (or the raw
+            // id) is how an operator stops trusting the label at all.
+            emit("error", "KIND_LABEL_INVALID", `label_en and label_ko are required, each a single line of at most ${chars.label} characters`, { path: `${where}.label_en`, row: index, field: "label_en", params: { id, limit: chars.label } });
+            return;
+        }
+        const description = line(item.description, chars.description);
+        if (description === null) {
+            emit("error", "KIND_DESCRIPTION_INVALID", `description is required, a single line of at most ${chars.description} characters`, {
+                path: `${where}.description`,
+                row: index,
+                field: "description",
+                params: { id, limit: chars.description },
+            });
+            return;
+        }
+        let hint;
+        if (item.extraction_hint !== undefined) {
+            const parsed = line(item.extraction_hint, chars.hint);
+            if (parsed === null) {
+                emit("error", "KIND_HINT_INVALID", `extraction_hint must be a single line of at most ${chars.hint} characters`, {
+                    path: `${where}.extraction_hint`,
+                    row: index,
+                    field: "extraction_hint",
+                    params: { id, limit: chars.hint },
+                });
+                return;
+            }
+            hint = parsed;
+        }
+        seen.add(id);
+        kinds.push({
+            id,
+            label_en: labelEn,
+            label_ko: labelKo,
+            description,
+            ...(hint === undefined ? {} : { extraction_hint: hint }),
+        });
+    });
+    return kinds;
 }
 function parsePattern(entry, where, index, emit, seenIds, kind) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
@@ -684,6 +845,11 @@ function resolveFromDoc(doc, projectId, hash, quarantinedHints) {
             doc.always_treat_as_decision_patterns ?? [],
             override?.always_treat_as_decision_patterns ?? [],
         ]).filter((hint) => !quarantinedHints.has(hint.id)),
+        // #121 — a union like every other list, and the GLOBAL entry wins a
+        // collision (`dedupe` keeps the first). A project override may add kinds; it
+        // may not quietly relabel a global one for one project, which would put two
+        // different badge texts on the same stored `facts.category` value.
+        customFactKinds: dedupe([doc.custom_fact_kinds ?? [], override?.custom_fact_kinds ?? []]),
     };
 }
 /** The effective rules for one project — what the clause and the block set use. */
@@ -708,7 +874,8 @@ export function isEmptyExtractionRules(rules) {
     return (rules.preferredLanguage === null &&
         rules.excludeTopics.length === 0 &&
         rules.neverExtract.length === 0 &&
-        rules.decisionHints.length === 0);
+        rules.decisionHints.length === 0 &&
+        rules.customFactKinds.length === 0);
 }
 /* -------------------------------------------------------------------------- */
 /* Prompt clause (§3.2)                                                        */
@@ -729,6 +896,35 @@ const CLAUSE_PREAMBLE = [
 ].join("\n");
 function formatRegex(pattern) {
     return `/${pattern.source}/${pattern.flags ?? ""}`;
+}
+/**
+ * #121 — the custom kind block, rendered AFTER the built-in category list.
+ *
+ * The five built-ins stay in `EXTRACTION_SYSTEM_PROMPT`, byte-identical; this
+ * block only adds values the operator defined. The wording has to keep the
+ * clause's monotonic promise honest: a custom kind is a LABEL for a candidate
+ * that already cleared every gate above, never a way to admit one that did not.
+ * Extraction of a fact that fails the durability or evidence bar is still
+ * nothing, whatever its category would have been.
+ *
+ * Deterministic: the kinds render in file order, so a no-op re-save produces a
+ * byte-identical prompt and `rules_hash` keeps meaning what it means.
+ */
+export function renderCustomFactKindLines(rules) {
+    if (rules.customFactKinds.length === 0)
+        return [];
+    const lines = [
+        "- Additional category values are defined on this machine. They extend the five built-in",
+        "  categories (decision, preference, pattern, knowledge, constraint); they do not replace",
+        "  them and they never make a candidate eligible that the gates above reject. Use one only",
+        "  when it fits the meaning better than every built-in, and keep every other field the same:",
+    ];
+    for (const kind of rules.customFactKinds) {
+        lines.push(`  - category="${kind.id}" (${kind.label_en}): ${kind.description}` +
+            (kind.extraction_hint ? ` Use when: ${kind.extraction_hint}` : ""));
+    }
+    lines.push("  Omit subject_key for these categories — the built-in slot prefixes do not cover them.");
+    return lines;
 }
 /**
  * Render the bounded structured block the extractor already consumes.
@@ -764,6 +960,7 @@ export function renderExtractionConstraintClause(rules) {
     for (const pattern of rules.decisionHints) {
         lines.push(`- Prefer statements matching ${formatRegex(pattern)} as category=decision when the evidence allows it`);
     }
+    lines.push(...renderCustomFactKindLines(rules));
     return lines.join("\n");
 }
 /**
@@ -810,6 +1007,51 @@ export function unionNeverExtract(snapshot, latest) {
             out[index] = { ...kept, scope: merged };
     }
     return out;
+}
+/* -------------------------------------------------------------------------- */
+/* Accepted fact kinds (#121) — the same union rule as never_extract (G2)       */
+/* -------------------------------------------------------------------------- */
+/** Ids only, in snapshot-then-latest order, first definition winning. */
+export function unionCustomFactKinds(snapshot, latest) {
+    const out = [];
+    const seen = new Set();
+    for (const kind of [...snapshot, ...latest]) {
+        if (seen.has(kind.id))
+            continue;
+        seen.add(kind.id);
+        out.push(kind);
+    }
+    return out;
+}
+/**
+ * Which custom ids the candidate validator may accept right now.
+ *
+ * `claim snapshot ∪ the latest valid rules`, the same union `never_extract` uses
+ * and for the same reason read in the other direction: a kind DELETED from the
+ * file mid-run must not start dropping candidates from a job that was claimed
+ * while it existed (that would burn a model call and lose the fact), and a kind
+ * ADDED mid-run is safe to honour immediately. So removal takes effect from the
+ * next claim and addition from the next read — automatically, with no CAS.
+ *
+ * Never throws and never reads the database: an unreadable or invalid file just
+ * contributes nothing, leaving the snapshot in force.
+ */
+export function acceptedCustomFactKindIds(snapshot) {
+    const ids = new Set();
+    for (const kind of snapshot?.customFactKinds ?? [])
+        ids.add(kind.id);
+    try {
+        const latest = loadExtractionRules();
+        if (latest.doc) {
+            for (const kind of resolveExtractionRules(snapshot?.projectId ?? null, latest).customFactKinds) {
+                ids.add(kind.id);
+            }
+        }
+    }
+    catch {
+        /* the snapshot alone is a correct answer; a broken file is not a reason to drop */
+    }
+    return ids;
 }
 /** `both` dominates; two different single scopes together are `both`. */
 function strictestScope(a, b) {
@@ -1025,6 +1267,7 @@ function ruleCounts(doc) {
         exclude_topics: parsed.doc.exclude_topics?.length ?? 0,
         never_extract: parsed.doc.never_extract_patterns?.length ?? 0,
         decision_hints: parsed.doc.always_treat_as_decision_patterns?.length ?? 0,
+        custom_fact_kinds: parsed.doc.custom_fact_kinds?.length ?? 0,
         project_overrides: Object.keys(parsed.doc.project_overrides ?? {}).length,
     };
 }
@@ -1095,7 +1338,8 @@ export function extractionRulesChecks(heldJobs = []) {
     else {
         const count = (rules.global.excludeTopics.length) +
             (rules.global.neverExtract.length) +
-            (rules.global.decisionHints.length);
+            (rules.global.decisionHints.length) +
+            (rules.global.customFactKinds.length);
         const applied = `applied: ${rules.hash} rev ${rules.revision}, ${count} rule(s)`;
         checks.push(warnings.length > 0
             ? {
