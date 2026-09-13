@@ -82,6 +82,26 @@ export declare function classifyWindowLanguage(exchanges: readonly HumanTextSour
 /** The answer alone. `null` means "this window does not decide". */
 export declare function detectWindowLanguage(exchanges: readonly HumanTextSource[] | null | undefined): ExtractionLanguage | null;
 /**
+ * The same weighted-majority reading of ONE string — the language a stored
+ * sentence is already written in.
+ *
+ * Shares `humanProse` and the Hangul weight with the window classifier on
+ * purpose: `scripts/translate-facts.mjs` uses it to skip facts that are already
+ * Korean, and a fact full of English identifiers ("Riverpod으로 결정했습니다")
+ * has to read the same way there as it does in the extraction window. `null`
+ * means "this string does not decide" (no counted characters, or an exact tie),
+ * and a caller that must not act on a guess should treat it as "unknown".
+ */
+export declare function classifyTextLanguage(text: string | null | undefined): {
+    language: ExtractionLanguage | null;
+    hangul: number;
+    latin: number;
+    koScore: number;
+    enScore: number;
+};
+/** `classifyTextLanguage` without the counts. */
+export declare function detectTextLanguage(text: string | null | undefined): ExtractionLanguage | null;
+/**
  * `preferred_language` (explicit operator override) beats detection, detection
  * beats nothing, and "nothing" means no clause at all.
  */

@@ -31,6 +31,8 @@ import {
   BUILTIN_FACT_KINDS,
   CUSTOM_FACT_KIND_ID,
   EXTRACTION_RULES_LIMITS,
+  RESERVED_FACT_KIND_IDS,
+  UI_BADGE_RESERVED_IDS,
   acceptedCustomFactKindIds,
   composeExtractionSystemPrompt,
   emptyExtractionRulesDoc,
@@ -109,6 +111,58 @@ describe("custom_fact_kinds — schema", () => {
       expect(errorCodes(result.issues)).toContain("KIND_ID_RESERVED");
       expect(result.doc).toBeNull();
     }
+  });
+
+  /**
+   * Post-0.7.5 review P2 #4. `ui.mjs`'s `name()` resolves `badge.<value>.label`
+   * BEFORE an overlay label — deliberately, so a runtime kind cannot shadow a
+   * core enum's name — which meant a kind called `active` validated fine and
+   * then displayed as the STATE "활성" on the badge while the filter chip showed
+   * the operator's own label. Reserving the dictionary's ids is the only fix
+   * that does not weaken that precedence.
+   */
+  it("refuses an id that a badge.* dictionary key already names", async () => {
+    for (const id of ["active", "running", "failed", "global", "workspace", "sync"]) {
+      expect(CUSTOM_FACT_KIND_ID.test(id)).toBe(true); // the shape is fine; the NAME is taken
+      const result = validateExtractionRulesDoc(doc([{ ...RUNBOOK, id }]));
+      expect(result.ok, id).toBe(false);
+      expect(errorCodes(result.issues)).toContain("KIND_ID_RESERVED");
+      expect(result.doc).toBeNull();
+      const issue = result.issues.find((entry) => entry.code === "KIND_ID_RESERVED");
+      expect(issue?.params).toMatchObject({ id, reservedByBadge: true });
+    }
+    // A built-in still reports as a built-in, not as a badge name.
+    const builtin = validateExtractionRulesDoc(doc([{ ...RUNBOOK, id: "decision" }]));
+    expect(
+      builtin.issues.find((entry) => entry.code === "KIND_ID_RESERVED")?.params,
+    ).toMatchObject({ reservedByBadge: false });
+    // A kind the dictionary does NOT name is still accepted.
+    expect(validateExtractionRulesDoc(doc([RUNBOOK, POSTMORTEM])).ok).toBe(true);
+  });
+
+  /**
+   * The reservation list is DERIVED, not maintained: this is the derivation.
+   * Adding a `badge.*` key to the dictionary reserves the id, and this
+   * assertion is what makes that true — the constant lives in core because the
+   * validator is synchronous and must not need the UI bundle at runtime.
+   */
+  it("reserves exactly the ids the badge dictionaries name", async () => {
+    const ids = new Set<string>();
+    for (const locale of ["en", "ko"]) {
+      const dict = (await import(`../ui/public/i18n/badge/${locale}.mjs`)).default as Record<
+        string,
+        string
+      >;
+      for (const key of Object.keys(dict)) {
+        const match = /^badge\.(.+)\.(label|help)$/.exec(key);
+        expect(match, key).not.toBeNull();
+        ids.add(match![1]);
+      }
+    }
+    expect(ids.size).toBeGreaterThan(60);
+    expect([...UI_BADGE_RESERVED_IDS].sort()).toEqual([...ids].sort());
+    for (const builtin of BUILTIN_FACT_KINDS) expect(RESERVED_FACT_KIND_IDS.has(builtin)).toBe(true);
+    for (const id of ids) expect(RESERVED_FACT_KIND_IDS.has(id)).toBe(true);
   });
 
   it("refuses an id that is not lowercase snake_case of 2-24 characters", () => {

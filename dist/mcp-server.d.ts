@@ -221,7 +221,7 @@ export declare function getToolDefinitions(): ({
             };
             category: {
                 type: string;
-                enum: string[];
+                pattern: string;
                 description: string;
             };
             include_revisions: {
@@ -294,7 +294,7 @@ export declare function getToolDefinitions(): ({
             category: {
                 type: string;
                 description: string;
-                enum?: undefined;
+                pattern?: undefined;
             };
             include_relations: {
                 type: string;

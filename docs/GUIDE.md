@@ -1485,6 +1485,10 @@ memex gate config reset                             # 덮어쓴 임계값 전부
 
 내장 유형은 `decision`·`preference`·`pattern`·`knowledge`·`constraint` 다섯 개이고, 그 위에 최대
 8개를 더할 수 있습니다. **다섯 개 중 하나와 같은 id는 거부**됩니다(`KIND_ID_RESERVED`).
+같은 코드로, Web UI 배지 사전이 이미 쓰는 이름(`active`·`running`·`failed`·`global`·`workspace` 등
+모든 `badge.*` id)도 거부됩니다. 배지 라벨은 사전이 오버레이보다 먼저이므로, 그런 id를 허용하면
+기억 배지에는 상태 이름("활성")이, 유형 칩에는 운영자의 라벨이 떠서 같은 `facts.category` 값이
+화면에서 두 가지로 읽힙니다.
 
 ```jsonc
 "custom_fact_kinds": [

@@ -108,6 +108,105 @@ export const BUILTIN_FACT_KINDS = Object.freeze([
 export const CUSTOM_FACT_KIND_ID = /^[a-z][a-z0-9_]{1,23}$/;
 
 /**
+ * Every id the Web UI's `badge.*` dictionary already names — states, tiers,
+ * job kinds, scopes, event kinds and the five built-in categories.
+ *
+ * Why a custom kind may not take one of these (post-0.7.5 review P2 #4): the
+ * UI's `name()` resolves a `badge.<value>.label` BEFORE an overlay label, and it
+ * has to, or a runtime kind could shadow a core enum's name. So a kind called
+ * `active` validated fine and then displayed as "활성" on the memory badge while
+ * the filter chip showed the operator's own label — the same stored
+ * `facts.category` value reading as two different things on one screen. The
+ * reservation is the only place that can prevent it, because the label
+ * precedence itself is not negotiable.
+ *
+ * NOT hand-maintained: `test/extraction-rules-custom-kinds.test.ts` derives this
+ * set from `ui/public/i18n/badge/{en,ko}.mjs` key lists and fails if the two
+ * disagree, so adding a badge key adds the reservation. The list lives here
+ * rather than being read from the dictionary at runtime because the validator is
+ * synchronous core that must not depend on the UI bundle being present.
+ */
+export const UI_BADGE_RESERVED_IDS: readonly string[] = Object.freeze([
+  "active",
+  "ASSERTED",
+  "cancelled",
+  "cancelling",
+  "capsule_update",
+  "capture_index",
+  "CHANGED",
+  "completed",
+  "CONSOLIDATED",
+  "consolidator",
+  "constraint",
+  "CONTRADICTED",
+  "CONTRADICTS",
+  "CREATED",
+  "dead",
+  "DEACTIVATED",
+  "decision",
+  "deduped",
+  "DEMOTED",
+  "emitted",
+  "error",
+  "extract",
+  "extractor",
+  "fact_extract",
+  "failed",
+  "failed-visible",
+  "global",
+  "inactive",
+  "INCIDENT",
+  "INFLUENCES",
+  "injected",
+  "knowledge",
+  "LEGACY",
+  "legacy-project",
+  "no-inject",
+  "no-match",
+  "NOT_PROVEN",
+  "observed",
+  "ontology",
+  "partial",
+  "pattern",
+  "pending",
+  "preference",
+  "prepared",
+  "processed",
+  "processing",
+  "project",
+  "project-current",
+  "PROMOTED",
+  "REACTIVATED",
+  "RELATION_CREATED",
+  "RELATION_REMOVED",
+  "reserved",
+  "RESTORED",
+  "RETIRED",
+  "retry",
+  "REVERT_REQUESTED",
+  "REVERTED",
+  "running",
+  "skipped",
+  "superseded",
+  "SUPERSEDES",
+  "SUPPORTS",
+  "sync",
+  "SYNC_IMPORTED",
+  "timed-out",
+  "unknown",
+  "user",
+  "VALIDATED",
+  "workspace",
+  "workstream",
+]);
+
+/** The ids a custom kind may never take: the built-in five ∪ every `badge.*` id. */
+export const RESERVED_FACT_KIND_IDS: ReadonlySet<string> = new Set<string>([
+  ...BUILTIN_FACT_KINDS,
+  ...UI_BADGE_RESERVED_IDS,
+]);
+
+/**
  * One operator-defined fact kind (#121).
  *
  * A kind is a FACT CATEGORY, not a taxonomy category: it says what sort of
@@ -552,16 +651,28 @@ function parseCustomFactKinds(raw: unknown, prefix: string, emit: Emit): CustomF
       );
       return;
     }
-    if ((BUILTIN_FACT_KINDS as readonly string[]).includes(id)) {
+    if (RESERVED_FACT_KIND_IDS.has(id)) {
       // The built-in five are what the extraction policy itself defines. A kind
       // that shadowed one would change the meaning of every fact already stored
-      // under that value, retroactively and invisibly.
-      emit("error", "KIND_ID_RESERVED", `"${id}" is a built-in fact category and cannot be redefined`, {
-        path: `${where}.id`,
-        row: index,
-        field: "id",
-        params: { id, builtin: [...BUILTIN_FACT_KINDS] },
-      });
+      // under that value, retroactively and invisibly. Every other `badge.*` id
+      // is reserved for the same reason one step removed: the Web UI resolves a
+      // dictionary badge label BEFORE an overlay label, so a kind called
+      // `active` would be validated here and then displayed under the core
+      // enum's name (post-0.7.5 review P2 #4).
+      const builtin = (BUILTIN_FACT_KINDS as readonly string[]).includes(id);
+      emit(
+        "error",
+        "KIND_ID_RESERVED",
+        builtin
+          ? `"${id}" is a built-in fact category and cannot be redefined`
+          : `"${id}" is a reserved status name in the Web UI badge dictionary and cannot be a fact kind`,
+        {
+          path: `${where}.id`,
+          row: index,
+          field: "id",
+          params: { id, builtin: [...BUILTIN_FACT_KINDS], reservedByBadge: !builtin },
+        },
+      );
       return;
     }
     if (seen.has(id)) {

@@ -65,7 +65,15 @@ function humanProse(raw) {
         return "";
     return (text
         // Fenced blocks first, terminated or running to the end of the message.
-        .replace(/(`{3,}|~{3,})[\s\S]*?(?:\1|$)/g, " ")
+        //
+        // The CLOSING fence has to be a line of its own — the same fence run and
+        // nothing else on the line. Without that condition a `"```"` literal
+        // INSIDE the block closes it, and the rest of the code is then counted as
+        // the human's prose: a Korean question about a JavaScript file flips to
+        // `en` on the strength of its own identifiers (post-0.7.5 review P2 #2).
+        // The fence run is matched by backreference, so ``` never closes ````` and
+        // a `~~~` block is never closed by a backtick line.
+        .replace(/(`{3,}|~{3,})[^\n]*(?:[\s\S]*?\n[ \t]*\1[ \t]*(?=\n|$)|[\s\S]*)/g, " ")
         // Then inline spans, which the fence pass can no longer be confused by.
         .replace(/`[^`\n]*`/g, " ")
         .replace(/\b(?:https?|ftp|file):\/\/\S+/gi, " ")
@@ -125,6 +133,32 @@ export function classifyWindowLanguage(exchanges) {
 /** The answer alone. `null` means "this window does not decide". */
 export function detectWindowLanguage(exchanges) {
     return classifyWindowLanguage(exchanges).language;
+}
+/**
+ * The same weighted-majority reading of ONE string — the language a stored
+ * sentence is already written in.
+ *
+ * Shares `humanProse` and the Hangul weight with the window classifier on
+ * purpose: `scripts/translate-facts.mjs` uses it to skip facts that are already
+ * Korean, and a fact full of English identifiers ("Riverpod으로 결정했습니다")
+ * has to read the same way there as it does in the extraction window. `null`
+ * means "this string does not decide" (no counted characters, or an exact tie),
+ * and a caller that must not act on a guess should treat it as "unknown".
+ */
+export function classifyTextLanguage(text) {
+    const counts = countChars(humanProse(text));
+    const koScore = counts.hangul * HANGUL_WEIGHT;
+    const enScore = counts.latin;
+    const shape = { hangul: counts.hangul, latin: counts.latin, koScore, enScore };
+    if (counts.hangul === 0 && counts.latin === 0)
+        return { language: null, ...shape };
+    if (koScore === enScore)
+        return { language: null, ...shape };
+    return { language: koScore > enScore ? "ko" : "en", ...shape };
+}
+/** `classifyTextLanguage` without the counts. */
+export function detectTextLanguage(text) {
+    return classifyTextLanguage(text).language;
 }
 /**
  * `preferred_language` (explicit operator override) beats detection, detection

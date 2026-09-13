@@ -112,7 +112,10 @@ test('사용자 정의 fact 종류는 사전이 아니라 오버레이 라벨로
  // 등록되지 않은 종류는 코어 원문 그대로다.
  assert.equal(name('postmortem'),'postmortem');
  assert.equal(help.badgeHelp('postmortem'),null);
- // 내장 배지 키와 겹치면 사전이 이긴다.
+ // 내장 배지 키와 겹치면 사전이 이긴다. 이 우선순위는 바꾸지 않는다 — 런타임 종류가 코어 enum의
+ // 이름을 가리는 쪽이 더 나쁘다. 대신 `active` 같은 id는 **코어 검증기가 거절한다**:
+ // `RESERVED_FACT_KIND_IDS`(= 내장 5종 ∪ 모든 `badge.*` id)이므로 오버레이에 저장될 수 없다
+ // (0.7.5 후속 검토 P2 #4 · test/extraction-rules-custom-kinds.test.ts).
  setCustomFactKinds([{id:'active',label_en:'Never wins',label_ko:'절대 이기지 않음',description:'x'}]);
  assert.equal(name('active'),ko['badge.active.label']);
  assert.equal(help.badgeHelp('active'),ko['badge.active.help']);
