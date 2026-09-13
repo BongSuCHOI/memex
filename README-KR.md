@@ -2,7 +2,7 @@
 
 **Codex를 위한 로컬 우선 장기 기억 계층입니다.** 대화를 모으고, 남길 가치가 있는 결정을 증류하고, 각 기억을 그것을 증명한 대화 턴에 묶어, 필요한 순간에 다시 꺼내 씁니다.
 
-[![Release](https://img.shields.io/badge/release-0.7.5-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.7.6-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
