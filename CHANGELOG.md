@@ -2,6 +2,29 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.8 - 2026-09-14
+
+Hotfixes for the three findings of the post-release review of 0.7.7, all in the
+custom-fact-kinds UI path.
+
+### Custom fact kinds
+
+- The kinds registry takes its request generation before the fetch starts, so a
+  debounced re-sync that arrives late can no longer override a newer, emptier
+  answer. (#121)
+- One precedence rule everywhere: a global definition wins on an id collision,
+  as the extractor already resolved it. A project override that redefines a
+  global id differently is now refused with `KIND_ID_SHADOWS_GLOBAL` (with its
+  path) instead of being silently ignored; the registry and the UI follow the
+  same rule, and an id that exists only in projects still resolves per
+  project. (#121)
+- Filter chips take their label from the definition they already hold, so a
+  project-only kind shows its label instead of its raw id. (#121)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.7 - 2026-09-14
 
 Hotfixes for the five findings of the post-release review of 0.7.6.

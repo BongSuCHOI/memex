@@ -295,6 +295,7 @@ export default {
   "overlays.issue.kindIdInvalid": "종류 id는 영문 소문자로 시작하는 a-z·0-9·_ 2~24자입니다.",
   "overlays.issue.kindIdReserved": "내장 유형과 같은 id는 다시 정의할 수 없습니다.",
   "overlays.issue.kindDuplicateId": "두 사용자 정의 종류가 같은 id를 씁니다.",
+  "overlays.issue.kindIdShadowsGlobal": "전역에 이미 있는 종류 id는 프로젝트에서 다시 정의할 수 없습니다.",
   "overlays.issue.kindLabelInvalid": "종류에는 영어·한국어 라벨이 모두 필요하며 각각 짧은 한 줄이어야 합니다.",
   "overlays.issue.kindDescriptionInvalid": "종류에는 무엇을 뜻하는지 한 줄 설명이 필요합니다.",
   "overlays.issue.kindHintInvalid": "추출 힌트는 200자 이내의 한 줄이어야 합니다.",

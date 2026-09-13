@@ -299,6 +299,7 @@ export default {
   "overlays.issue.kindIdInvalid": "A kind id is 2 to 24 characters of lowercase a-z, 0-9 and _, starting with a letter.",
   "overlays.issue.kindIdReserved": "That id is one of the built-in categories and cannot be redefined.",
   "overlays.issue.kindDuplicateId": "Two custom memory kinds share the same id.",
+  "overlays.issue.kindIdShadowsGlobal": "A kind id the global list already defines cannot be redefined by a project.",
   "overlays.issue.kindLabelInvalid": "A kind needs both an English and a Korean label, each a single short line.",
   "overlays.issue.kindDescriptionInvalid": "A kind needs a one-line description of what it means.",
   "overlays.issue.kindHintInvalid": "An extraction hint is a single line of at most 200 characters.",

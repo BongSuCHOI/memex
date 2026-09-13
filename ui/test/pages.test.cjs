@@ -442,16 +442,60 @@ test('전체 보기에서 같은 종류 id를 가진 기억은 각자 자기 프
  }finally{setCustomFactKinds([]);}
 });
 
-test('프로젝트 정의가 없으면 전역 정의가 대체값이고, 그것도 없으면 코어 원문이다',()=>{
+test('전역 정의는 override가 없는 프로젝트의 대체값이고, 그것도 없으면 코어 원문이다',()=>{
  setCustomFactKinds([
-  {id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'공용 운영 절차입니다.'},
-  {id:'runbook',global:false,projects:['/work/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'베타의 복구 절차입니다.'}]);
+  {id:'runbook',global:true,projects:['/work/beta'],label_en:'Runbook step',label_ko:'운영 절차',description:'공용 운영 절차입니다.'}]);
  try{
-  assert.equal(name('runbook','/work/beta'),'베타 운영 절차','프로젝트 정의가 이기지 않았다');
+  assert.equal(name('runbook','/work/beta'),'운영 절차','전역 정의를 그대로 쓰는 프로젝트가 라벨을 못 찾았다');
   assert.equal(name('runbook','/work/gamma'),'운영 절차','override가 없는 프로젝트가 전역 정의로 떨어지지 않았다');
   assert.equal(name('runbook',null),'운영 절차','글로벌 기억이 전역 정의를 쓰지 않았다');
   setCustomFactKinds([KINDS_BY_PROJECT[0]]);
   assert.equal(name('runbook','/work/gamma'),'runbook','대체할 전역 정의가 없는데 남의 라벨을 빌려 썼다');
+ }finally{setCustomFactKinds([]);}
+});
+
+/**
+ * 0.7.7 후속 검토 P2 #2 — 우선순위는 화면과 추출기에서 **하나**여야 한다.
+ *
+ * 추출기의 `resolveFromDoc()`는 전역 우선으로 중복을 지우므로 프로젝트 override가 전역 id의 뜻을
+ * 바꿀 수 없다. UI가 프로젝트를 먼저 보면 같은 `facts.category` 값이 프롬프트에서는 전역 정의로
+ * 추출되고 화면에서는 프로젝트의 라벨·설명으로 읽힌다 — 저장된 값의 의미가 둘로 갈린다. 서버는
+ * 이제 그런 override를 `KIND_ID_SHADOWS_GLOBAL`로 거부하고 레지스트리도 전역 행에 프로젝트 이름만
+ * 더하지만, 그 조합이 들어와도 화면은 추출기와 같은 답을 해야 한다.
+ */
+test('전역 정의가 있는 id는 프로젝트 override가 아니라 전역 정의로 표시된다',async()=>{
+ setCustomFactKinds([
+  {id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'공용 운영 절차입니다.'},
+  {id:'runbook',global:false,projects:['/work/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'베타의 복구 절차입니다.'}]);
+ try{
+  const {html}=await renderFacts('',{facts:factsPage([row({category:'runbook',scope_project:'/work/beta'})])});
+  // 라벨과 툴팁은 **같은 정의**에서 와야 하고, 그 정의는 추출기가 쓴 전역 정의다.
+  assert(html.includes('<span class="tag outline" title="공용 운영 절차입니다.">운영 절차</span>'),
+   '기억 배지가 추출기와 다른 정의를 씀');
+  assert(!html.includes('베타 운영 절차'),'프로젝트 override가 전역 정의를 가렸다');
+  assert.equal(name('runbook','/work/beta'),'운영 절차','라벨이 전역 정의를 쓰지 않음');
+  // 전역 정의가 **없는** id는 여전히 프로젝트가 고른다(0.7.6 후속 검토 P2 #4).
+  setCustomFactKinds(KINDS_BY_PROJECT);
+  assert.equal(name('runbook','/work/beta'),'베타 운영 절차','전역 정의가 없는데 프로젝트 정의를 쓰지 않았다');
+ }finally{setCustomFactKinds([]);}
+});
+
+/**
+ * 0.7.7 후속 검토 P2 #3 — 칩은 정의를 이미 들고 있는데 id로 다시 조회했다.
+ *
+ * 조회 키는 `(project, id)`이고 칩에는 프로젝트가 없다. 그래서 프로젝트 override에만 있는 종류는
+ * 라벨이 있는데도 전역 정의 없음으로 떨어져 원시 id로 떴다. 칩은 범위와 무관하게 id마다 하나이므로
+ * 프로젝트 범위와 전체 보기 둘 다에서 같은 실패였다.
+ */
+test('프로젝트 override에만 있는 종류도 칩에 그 정의의 라벨로 뜬다',async()=>{
+ setCustomFactKinds([{id:'runbook',global:false,projects:['/work/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'베타의 복구 절차입니다.'}]);
+ try{
+  for(const scope of [{scope:'all'},{scope:'project',project:'/work/beta'}]){
+   const {html}=await facts.render(ctx('',{taxonomy:TAXONOMY,facts:factsPage([row({category:'runbook',scope_project:'/work/beta'})])},{scope}));
+   assert(html.includes('data-param-value="runbook">베타 운영 절차</button>'),
+    scope.scope+' 범위: 칩 라벨이 오버레이 라벨이 아님');
+   assert(!/data-param-value="runbook">runbook</.test(html),scope.scope+' 범위: 칩이 원시 id로 떴다');
+  }
  }finally{setCustomFactKinds([]);}
 });
 
@@ -532,6 +576,39 @@ test('서버 지문이 그대로면 목록을 꽂지도 다시 그리지도 않�
   // 지문이 달라지면 그때 적용한다.
   assert.equal(await scheduleCustomFactKindsSync(async()=>({customFactKinds:[],hash:'h2'}),1),true,'지문이 달라졌는데 적용하지 않았다');
   assert.equal(name('runbook'),'runbook');
+ }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
+});
+
+/**
+ * 0.7.7 후속 검토 P2 #1 — 세대 검사가 디바운스 경로를 지나지 않았다.
+ *
+ * 세대를 `load()`가 **끝난 뒤에** 떼면 먼저 출발한 조회가 늦게 도착하면서 더 큰 번호를 받는다.
+ * 그래서 초기화 뒤의 빈 목록이 먼저 적용되고도 그 전에 시작한 옛 목록이 나중에 도착해
+ * 레지스트리와 서버 지문을 함께 되살렸다. 여기서는 두 디바운스 조회의 완료 순서를 뒤집는다.
+ */
+test('디바운스된 재조회도 세대를 지킨다 — 먼저 시작해 늦게 도착한 응답은 버려진다',async()=>{
+ const RUNBOOK=[{id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}];
+ try{
+  setCustomFactKinds([]);setCustomFactKindsHash(null);
+  let releaseOld;
+  const oldPayload=new Promise(resolve=>{releaseOld=()=>resolve({customFactKinds:RUNBOOK,hash:'hA'});});
+  // A: 먼저 시작한 조회. 타이머는 발화했고 응답은 아직 오지 않았다.
+  const older=scheduleCustomFactKindsSync(()=>oldPayload,1);
+  await new Promise(resolve=>setTimeout(resolve,10));
+  // B: 나중에 시작한 조회(초기화 뒤의 빈 목록)가 **먼저** 완료된다.
+  assert.equal(await scheduleCustomFactKindsSync(async()=>({customFactKinds:[],hash:'hB'}),1),false,
+   '이미 비어 있는 레지스트리를 바꿨다고 보고했다');
+  // 이제 A의 응답이 도착한다 — 버려져야 한다.
+  releaseOld();
+  assert.equal(await older,false,'낡은 응답이 재렌더를 요구했다');
+  assert.deepEqual(customFactKinds(),[],'늦게 도착한 옛 응답이 삭제된 종류를 되살렸다');
+  assert.equal(name('runbook'),'runbook','삭제된 종류의 라벨이 되살아났다');
+  // 서버 지문도 낡은 응답이 덮지 않았다 — hB가 그대로여야 같은 지문의 다음 알림이 적용을 건너뛴다.
+  let applied=false;
+  assert.equal(await scheduleCustomFactKindsSync(async()=>{applied=true;return {customFactKinds:RUNBOOK,hash:'hB'};},1),false,
+   '낡은 응답이 서버 지문을 자기 것으로 덮었다');
+  assert(applied,'로더는 불렸어야 한다');
+  assert.deepEqual(customFactKinds(),[],'지문이 같은데 목록을 갈아 끼웠다');
  }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
 });
 

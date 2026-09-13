@@ -1481,8 +1481,10 @@ memex gate config reset                             # 덮어쓴 임계값 전부
 `fact_text`·`evidence`·`both`(기본)입니다. 정규식 제한은 게이트 오버레이와 같고 note는 200자입니다.
 프로젝트 override는 `preferred_language`만 덮어쓰고 **나머지 네 항목은 전역과 합집합**입니다 —
 다른 곳에 한 줄을 더해 전역 금지를 느슨하게 만드는 경로를 두지 않기 위해서입니다.
-(`custom_fact_kinds`의 합집합에서 id가 겹치면 **전역 정의가 이깁니다**. 프로젝트마다 같은 id의 라벨이
-달라지면 이미 저장된 같은 `facts.category` 값에 두 이름이 붙습니다.)
+(`custom_fact_kinds`의 합집합에서 id가 겹치면 **전역 정의가 이깁니다**. 그래서 전역에 있는 id를
+프로젝트 override가 **다르게** 정의하면 `KIND_ID_SHADOWS_GLOBAL`로 거부합니다 — 쓴 라벨이 조용히
+무시되는 대신 어디를 고쳐야 하는지 알려 주는 쪽입니다. 전역 정의를 **그대로** 반복하는 것은
+"이 프로젝트도 그 종류를 씁니다"라는 뜻이므로 허용됩니다.)
 
 #### `custom_fact_kinds` — 나만의 기억 유형
 
