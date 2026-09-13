@@ -260,7 +260,10 @@ memex facts delete --id <full-uuid> --hard --yes
 - `memex facts edit --source-exchange <id>`는 수정의 근거가 되는 exchange를 명시합니다.
 - edit는 revision과 semantic derived-state invalidation을 하나의 transaction으로 처리합니다.
 - deactivate/restore는 의미 편집과 독립적인 lifecycle event입니다.
-- hard delete는 full UUID, `--hard`, `--yes`가 모두 필요합니다.
+- hard delete는 full UUID, `--hard`, `--yes`가 모두 필요합니다. 되돌릴 수 없습니다: 한 transaction에서
+  fact, 그 revision, Chronicle 기록, vector, ontology relation까지 지우고 `fact_tombstones`/
+  `chronicle_tombstones`만 남깁니다. tombstone은 다른 기기의 sync replay가 그 행을 되살리지 못하게
+  막는 표식이며 `restore` 대상이 아닙니다. 이력을 남기고 싶다면 `deactivate`를 쓰십시오.
 - `migrate-tiers`는 `--dry-run` 또는 `--apply` 중 하나가 반드시 필요하며 자동 실행되지 않습니다. `--json`을 붙이면 후보와 적용 결과를 JSON으로 출력합니다.
 
 ## 8. MCP와 skills
@@ -414,7 +417,7 @@ MEMEX_MODEL_CACHE_DIR
 
 ### 두 번째 맥 설정 절차 (크로스디바이스 동기화)
 
-크로스디바이스 동기화는 **기본 off**입니다. 켜기 전에는 아무것도 기기 밖으로 나가지 않습니다.
+크로스디바이스 동기화는 **기본 off**입니다. 켜기 전에는 기억 상태가 본인 data root 밖 어디에도 쓰이지 않고 다른 기기에 닿지도 않습니다. (모델 작업은 별개입니다 — 추출·온톨로지 분류는 동기화 여부와 무관하게 Codex 모델 provider로 대화 본문을 보냅니다.)
 
 ```bash
 # 1) 두 기기 모두: 본인 계정의 공유 폴더를 지정하고 켠다
