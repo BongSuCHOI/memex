@@ -362,10 +362,25 @@ export declare function unionCustomFactKinds(snapshot: readonly CustomFactKind[]
  * costs a raw id on screen, which is the failure this exists to prevent. Global
  * wins a colliding id, exactly like `resolveExtractionRules`, and `projects`
  * records which overrides asked for a kind the global set does not define.
+ *
+ * BUT an id is not a definition (post-0.7.6 review P2 #4). The validator lets two
+ * projects define `runbook` with different labels and different meanings, and
+ * merging them under the id alone made the screen show whichever file order put
+ * first — project beta's fact was labelled with project alpha's word, and
+ * reordering the overrides silently changed what the screen said a stored value
+ * MEANT. So the registry is keyed by `(project, id)`: the global definition is
+ * the fallback entry (`project: null`), and a project override contributes its
+ * OWN entry whenever its definition actually differs from the global one. An
+ * override that repeats the global definition verbatim adds nothing but its name
+ * to `projects`, so the common case still ships one row per id.
  */
-export declare function customFactKindRegistry(loaded?: LoadedExtractionRules): Array<CustomFactKind & {
+export type CustomFactKindRegistryEntry = CustomFactKind & {
+    /** True for the file's global definition — the fallback when no override matches. */
+    global: boolean;
+    /** Every project whose override asks for this id with THIS definition. */
     projects: string[];
-}>;
+};
+export declare function customFactKindRegistry(loaded?: LoadedExtractionRules): CustomFactKindRegistryEntry[];
 /**
  * Which custom ids the candidate validator may accept right now.
  *
