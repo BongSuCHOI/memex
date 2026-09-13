@@ -412,6 +412,7 @@ describe("doctor checks and the benchmark observation", () => {
       recall_gate: "absent",
       extraction_rules: "absent",
       quarantine: "absent",
+      config: "absent",
       disabled_by_env: false,
     });
     writeRules(root, rulesDoc([{ id: "p", source: "sk-[a-z]{4,}" }]));
@@ -421,8 +422,36 @@ describe("doctor checks and the benchmark observation", () => {
     // merely claiming it was clean.
     expect(observeOverlayBenchmarkEnvironment()).toMatchObject({
       extraction_rules: "present",
+      config: "absent",
       disabled_by_env: true,
     });
+  });
+
+  it("observes recall-gate THRESHOLDS separately from the gate file (#120)", () => {
+    const gateFile = path.join(root, "overlays", "recall-gate.json");
+    const gateDoc = (config: unknown): string =>
+      JSON.stringify({
+        schema: "memex.recall-gate-overlay",
+        version: 1,
+        revision: 1,
+        patterns: { add: [], disable: [] },
+        ...(config === undefined ? {} : { config }),
+      });
+    fs.mkdirSync(path.dirname(gateFile), { recursive: true });
+
+    // A gate overlay with no thresholds: the FILE is present, `config` is not.
+    fs.writeFileSync(gateFile, gateDoc(undefined));
+    expect(observeOverlayBenchmarkEnvironment()).toMatchObject({ recall_gate: "present", config: "absent" });
+    // An empty block is not an override either.
+    fs.writeFileSync(gateFile, gateDoc({}));
+    expect(observeOverlayBenchmarkEnvironment()).toMatchObject({ config: "absent" });
+    // One threshold is enough: AC_PERF_03 is no longer a clean-room measurement.
+    fs.writeFileSync(gateFile, gateDoc({ coherentMargin: 0.2 }));
+    expect(observeOverlayBenchmarkEnvironment()).toMatchObject({ config: "present" });
+    // Observed from the FILE, so an unparseable document claims no thresholds
+    // rather than throwing and losing the rest of the observation.
+    fs.writeFileSync(gateFile, "{ not json");
+    expect(observeOverlayBenchmarkEnvironment()).toMatchObject({ recall_gate: "present", config: "absent" });
   });
 });
 

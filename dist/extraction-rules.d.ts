@@ -344,6 +344,16 @@ export interface OverlayBenchmarkObservation {
     recall_gate: "present" | "absent";
     extraction_rules: "present" | "absent";
     quarantine: "present" | "absent";
+    /**
+     * Issue #120 — whether the recall-gate overlay declares threshold overrides.
+     *
+     * A separate observation from `recall_gate` because it answers a different
+     * question: not "was a rule file there" but "did the gate run on the built-in
+     * numbers". AC_PERF_03 is a gate measurement, so a moved `safetyRefreshInterval`
+     * or `coherentMargin` changes how many prompts retrieve at all — a receipt that
+     * did not record this could not be compared with another machine's.
+     */
+    config: "present" | "absent";
     disabled_by_env: boolean;
 }
 /**
