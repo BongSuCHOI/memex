@@ -907,6 +907,38 @@ export function validateExtractionRulesDoc(
     }
   }
 
+  // #121 / post-0.7.7 review P2 #2 — a project override may ADD a kind; it may
+  // not REDEFINE a global one. `resolveFromDoc()` dedupes global-first, so such
+  // an override never reaches the extractor: the operator's label would be
+  // written down and silently never used, and the Web UI — which has to agree
+  // with the extractor about what a stored `facts.category` value MEANS — would
+  // have two honest answers and no way to choose. Refusing here leaves ONE rule
+  // ("the global definition wins") instead of two that disagree. Repeating the
+  // global definition VERBATIM stays legal: it says nothing new, and that is how
+  // an override declares "this project uses that kind too".
+  const globalKindShapes = new Map(
+    (global.custom_fact_kinds ?? []).map((kind) => [kind.id, factKindShape(kind)] as const),
+  );
+  if (globalKindShapes.size > 0) {
+    for (const [project, rules] of Object.entries(overrides)) {
+      (rules.custom_fact_kinds ?? []).forEach((kind, index) => {
+        const globalShape = globalKindShapes.get(kind.id);
+        if (globalShape === undefined || globalShape === factKindShape(kind)) return;
+        emit(
+          "error",
+          "KIND_ID_SHADOWS_GLOBAL",
+          `"${kind.id}" is already defined globally; a project override may repeat that definition but not change it`,
+          {
+            path: `project_overrides.${project}.custom_fact_kinds[${index}].id`,
+            row: index,
+            field: "id",
+            params: { id: kind.id, project },
+          },
+        );
+      });
+    }
+  }
+
   const ok = !issues.some((issue) => issue.severity === "error");
   void opts.forWrite; // every rule here matters equally on load and on write
   return {
@@ -1491,10 +1523,15 @@ export function unionCustomFactKinds(
  * first — project beta's fact was labelled with project alpha's word, and
  * reordering the overrides silently changed what the screen said a stored value
  * MEANT. So the registry is keyed by `(project, id)`: the global definition is
- * the fallback entry (`project: null`), and a project override contributes its
- * OWN entry whenever its definition actually differs from the global one. An
- * override that repeats the global definition verbatim adds nothing but its name
- * to `projects`, so the common case still ships one row per id.
+ * the fallback entry (`project: null`), and two overrides that spell a kind the
+ * global set does NOT define differently get a row each.
+ *
+ * What never gets a second row is an id the GLOBAL list defines (post-0.7.7
+ * review P2 #2). `resolveFromDoc()` resolves that collision global-first for
+ * every project, so a project row would let the screen name a definition the
+ * extraction prompt never carried. `KIND_ID_SHADOWS_GLOBAL` refuses a DIFFERING
+ * override at the door; here such a project simply joins the global row's
+ * `projects`, exactly as an override that repeats the definition verbatim does.
  */
 export type CustomFactKindRegistryEntry = CustomFactKind & {
   /** True for the file's global definition — the fallback when no override matches. */
@@ -1521,6 +1558,13 @@ export function customFactKindRegistry(
   // Keyed by the DEFINITION, so two overrides that spell the same kind the same
   // way share one row and two that disagree get one row each.
   const at = new Map<string, number>();
+  // Where each id's GLOBAL definition sits, so an override of that id joins it
+  // instead of getting a row of its own (post-0.7.7 review P2 #2): the extractor
+  // resolves such a collision global-first, and a second row would let the Web UI
+  // say something the extraction prompt never said. `KIND_ID_SHADOWS_GLOBAL`
+  // already refuses a DIFFERING override at the door; this keeps the display
+  // registry honest for whatever reaches it anyway.
+  const globalAt = new Map<string, number>();
   const doc = loaded.doc;
   if (!doc) return out;
   for (const kind of doc.custom_fact_kinds ?? []) {
@@ -1528,6 +1572,7 @@ export function customFactKindRegistry(
     // resolves it for the extractor.
     if (out.some((entry) => entry.id === kind.id)) continue;
     at.set(factKindShape(kind), out.length);
+    globalAt.set(kind.id, out.length);
     out.push({ ...kind, global: true, projects: [] });
   }
   for (const [projectId, override] of Object.entries(doc.project_overrides ?? {})) {
@@ -1537,7 +1582,9 @@ export function customFactKindRegistry(
       claimed.add(kind.id);
       // Same definition as one already registered — global or another project's
       // — so there is nothing to disambiguate: record that this project uses it.
-      const index = at.get(factKindShape(kind));
+      // An id the GLOBAL list defines resolves to that definition for every
+      // project, whatever this override says, so it joins the global row too.
+      const index = globalAt.get(kind.id) ?? at.get(factKindShape(kind));
       if (index !== undefined) {
         if (!out[index].projects.includes(projectId)) out[index].projects.push(projectId);
         continue;

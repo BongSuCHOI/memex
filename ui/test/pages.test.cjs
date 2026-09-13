@@ -442,12 +442,11 @@ test('전체 보기에서 같은 종류 id를 가진 기억은 각자 자기 프
  }finally{setCustomFactKinds([]);}
 });
 
-test('프로젝트 정의가 없으면 전역 정의가 대체값이고, 그것도 없으면 코어 원문이다',()=>{
+test('전역 정의는 override가 없는 프로젝트의 대체값이고, 그것도 없으면 코어 원문이다',()=>{
  setCustomFactKinds([
-  {id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'공용 운영 절차입니다.'},
-  {id:'runbook',global:false,projects:['/work/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'베타의 복구 절차입니다.'}]);
+  {id:'runbook',global:true,projects:['/work/beta'],label_en:'Runbook step',label_ko:'운영 절차',description:'공용 운영 절차입니다.'}]);
  try{
-  assert.equal(name('runbook','/work/beta'),'베타 운영 절차','프로젝트 정의가 이기지 않았다');
+  assert.equal(name('runbook','/work/beta'),'운영 절차','전역 정의를 그대로 쓰는 프로젝트가 라벨을 못 찾았다');
   assert.equal(name('runbook','/work/gamma'),'운영 절차','override가 없는 프로젝트가 전역 정의로 떨어지지 않았다');
   assert.equal(name('runbook',null),'운영 절차','글로벌 기억이 전역 정의를 쓰지 않았다');
   setCustomFactKinds([KINDS_BY_PROJECT[0]]);
@@ -456,13 +455,31 @@ test('프로젝트 정의가 없으면 전역 정의가 대체값이고, 그것�
 });
 
 /**
- * 0.7.6 후속 검토 P2 #3 — 늦게 도착한 재조회 응답이 삭제된 종류를 되살렸다.
+ * 0.7.7 후속 검토 P2 #2 — 우선순위는 화면과 추출기에서 **하나**여야 한다.
  *
- * SSE `change`와 `invalidate()`가 겹치면 재조회가 동시에 두 개 뜨고, 응답 순서는 보장되지
- * 않는다. 세대를 검사하지 않으면 "초기화 뒤의 빈 목록"이 먼저 도착해 칩을 지운 다음 그 전에
- * 시작한 옛 목록이 나중에 도착해 지운 칩을 되돌린다. 여기서는 Promise 완료 순서를 직접
- * 제어해 그 순서를 재현한다.
+ * 추출기의 `resolveFromDoc()`는 전역 우선으로 중복을 지우므로 프로젝트 override가 전역 id의 뜻을
+ * 바꿀 수 없다. UI가 프로젝트를 먼저 보면 같은 `facts.category` 값이 프롬프트에서는 전역 정의로
+ * 추출되고 화면에서는 프로젝트의 라벨·설명으로 읽힌다 — 저장된 값의 의미가 둘로 갈린다. 서버는
+ * 이제 그런 override를 `KIND_ID_SHADOWS_GLOBAL`로 거부하고 레지스트리도 전역 행에 프로젝트 이름만
+ * 더하지만, 그 조합이 들어와도 화면은 추출기와 같은 답을 해야 한다.
  */
+test('전역 정의가 있는 id는 프로젝트 override가 아니라 전역 정의로 표시된다',async()=>{
+ setCustomFactKinds([
+  {id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'공용 운영 절차입니다.'},
+  {id:'runbook',global:false,projects:['/work/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'베타의 복구 절차입니다.'}]);
+ try{
+  const {html}=await renderFacts('',{facts:factsPage([row({category:'runbook',scope_project:'/work/beta'})])});
+  // 라벨과 툴팁은 **같은 정의**에서 와야 하고, 그 정의는 추출기가 쓴 전역 정의다.
+  assert(html.includes('<span class="tag outline" title="공용 운영 절차입니다.">운영 절차</span>'),
+   '기억 배지가 추출기와 다른 정의를 씀');
+  assert(!html.includes('베타 운영 절차'),'프로젝트 override가 전역 정의를 가렸다');
+  assert.equal(name('runbook','/work/beta'),'운영 절차','라벨이 전역 정의를 쓰지 않음');
+  // 전역 정의가 **없는** id는 여전히 프로젝트가 고른다(0.7.6 후속 검토 P2 #4).
+  setCustomFactKinds(KINDS_BY_PROJECT);
+  assert.equal(name('runbook','/work/beta'),'베타 운영 절차','전역 정의가 없는데 프로젝트 정의를 쓰지 않았다');
+ }finally{setCustomFactKinds([]);}
+});
+
 test('나중에 시작한 재조회가 이긴다 — 늦게 도착한 옛 응답은 레지스트리를 되살리지 않는다',async()=>{
  const RUNBOOK=[{id:'runbook',label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}];
  try{

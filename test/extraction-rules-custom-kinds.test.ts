@@ -250,8 +250,13 @@ describe("custom_fact_kinds — resolution", () => {
       root,
       doc([RUNBOOK], {
         project_overrides: {
+          // A project may ADD a kind and may repeat a global one VERBATIM. Writing
+          // a DIFFERENT definition for a global id is refused outright
+          // (`KIND_ID_SHADOWS_GLOBAL`), because global still wins the collision and
+          // the operator's unused label would otherwise silently disagree with the
+          // badge — see "refuses a project override that redefines a global kind id".
           "/p": {
-            custom_fact_kinds: [{ ...RUNBOOK, label_en: "Override wins?" }, POSTMORTEM],
+            custom_fact_kinds: [{ ...RUNBOOK }, POSTMORTEM],
           },
         },
       }),
@@ -260,8 +265,6 @@ describe("custom_fact_kinds — resolution", () => {
     expect(loaded.issues.filter((issue) => issue.severity === "error")).toEqual([]);
     const resolved = resolveExtractionRules("/p", loaded);
     expect(resolved.customFactKinds.map((kind) => kind.id)).toEqual(["runbook", "postmortem"]);
-    // A project may ADD a kind; it may not relabel a global one, or the same
-    // stored `facts.category` value would carry two different badge texts.
     expect(resolved.customFactKinds[0].label_en).toBe(RUNBOOK.label_en);
     expect(resolveExtractionRules(null, loaded).customFactKinds.map((k) => k.id)).toEqual(["runbook"]);
   });
@@ -357,14 +360,90 @@ describe("custom_fact_kinds — resolution", () => {
     writeRules(
       root,
       doc([RUNBOOK], {
-        project_overrides: { "/work/beta": { custom_fact_kinds: [{ ...RUNBOOK, label_ko: "베타 운영 절차" }] } },
+        project_overrides: { "/work/beta": { custom_fact_kinds: [{ ...RUNBOOK }] } },
       }),
     );
     const registry = customFactKindRegistry(loadExtractionRules());
     expect(registry.map((kind) => [kind.label_ko, kind.global, kind.projects])).toEqual([
-      ["운영 절차", true, []],
-      ["베타 운영 절차", false, ["/work/beta"]],
+      ["운영 절차", true, ["/work/beta"]],
     ]);
+    for (const project of [null, "/work/beta", "/work/gamma"]) {
+      const resolved = resolveExtractionRules(project, loadExtractionRules()).customFactKinds;
+      expect(resolved.map((k) => k.label_ko)).toEqual(["운영 절차"]);
+    }
+  });
+
+  /**
+   * Post-0.7.7 review P2 #2 — ONE precedence rule, in the extractor and on screen.
+   *
+   * `resolveFromDoc()` dedupes global-first, so a project override that redefines a
+   * global id never reached the extractor — but the display registry gave it a row
+   * of its own and the Web UI preferred it. The same stored `facts.category` value
+   * was extracted under the global definition and then displayed, label AND
+   * tooltip, under the project's. The file is refused now, with a path to the row.
+   */
+  it("refuses a project override that redefines a global kind id, and points at the row", () => {
+    const shadow = { ...RUNBOOK, label_ko: "베타 운영 절차", description: "Beta's own recovery step." };
+    const result = validateExtractionRulesDoc(
+      doc([RUNBOOK], { project_overrides: { "/work/beta": { custom_fact_kinds: [POSTMORTEM, shadow] } } }),
+    );
+    expect(errorCodes(result.issues)).toContain("KIND_ID_SHADOWS_GLOBAL");
+    const issue = result.issues.find((entry) => entry.code === "KIND_ID_SHADOWS_GLOBAL");
+    expect(issue?.path).toBe("project_overrides./work/beta.custom_fact_kinds[1].id");
+    expect(issue?.row).toBe(1);
+    expect(issue?.field).toBe("id");
+    expect(issue?.params).toMatchObject({ id: "runbook", project: "/work/beta" });
+    expect(result.doc).toBeNull();
+
+    // Repeating the global definition verbatim is NOT a redefinition, and an id the
+    // global list does not define stays free for the projects to disagree about.
+    expect(
+      errorCodes(
+        validateExtractionRulesDoc(
+          doc([RUNBOOK], { project_overrides: { "/work/beta": { custom_fact_kinds: [{ ...RUNBOOK }] } } }),
+        ).issues,
+      ),
+    ).not.toContain("KIND_ID_SHADOWS_GLOBAL");
+    expect(
+      errorCodes(
+        validateExtractionRulesDoc(
+          doc([], {
+            project_overrides: {
+              "/work/alpha": { custom_fact_kinds: [{ ...RUNBOOK, label_ko: "알파" }] },
+              "/work/beta": { custom_fact_kinds: [{ ...RUNBOOK, label_ko: "베타" }] },
+            },
+          }),
+        ).issues,
+      ),
+    ).not.toContain("KIND_ID_SHADOWS_GLOBAL");
+  });
+
+  /**
+   * Defence in depth for the same rule: whatever reaches the registry, an id the
+   * global list defines resolves to the GLOBAL definition for every project — the
+   * answer `resolveExtractionRules()` gives the extractor. The Web UI reads this
+   * list, so agreeing here is what makes the badge agree with the prompt.
+   */
+  it("never gives a project row to an id the global list defines", () => {
+    writeRules(root, doc([RUNBOOK]));
+    const loaded = loadExtractionRules();
+    const shadowed = {
+      ...loaded,
+      doc: {
+        ...loaded.doc!,
+        project_overrides: {
+          "/work/beta": { custom_fact_kinds: [{ ...RUNBOOK, label_ko: "베타 운영 절차", description: "Beta's own." }] },
+        },
+      },
+    };
+    const registry = customFactKindRegistry(shadowed);
+    expect(registry.map((kind) => [kind.id, kind.label_ko, kind.global, kind.projects])).toEqual([
+      ["runbook", "운영 절차", true, ["/work/beta"]],
+    ]);
+    // The extractor's answer for that project, unchanged — one definition, one meaning.
+    expect(
+      resolveExtractionRules("/work/beta", shadowed).customFactKinds.map((k) => [k.label_ko, k.description]),
+    ).toEqual([[RUNBOOK.label_ko, RUNBOOK.description]]);
   });
 });
 
