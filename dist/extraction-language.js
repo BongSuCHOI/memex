@@ -51,6 +51,45 @@ export const HANGUL_WEIGHT = 2.5;
 const HANGUL = /[ᄀ-ᇿ㄰-㆏ꥠ-꥿가-힣ힰ-퟿]/gu;
 /** Latin letters, including the accented ranges other Latin-script languages use. */
 const LATIN = /[A-Za-zÀ-ɏ]/gu;
+/** Opening fence run plus its info string, wherever a fence starts. */
+const FENCE_OPEN = /(`{3,}|~{3,})[^\n]*/g;
+/**
+ * Replace every fenced code block with a space, terminated or running to EOF.
+ *
+ * The CLOSING fence has to be a line of its own — the same fence CHARACTER and
+ * nothing else on the line. Without that condition a `"```"` literal INSIDE the
+ * block closes it, and the rest of the code is then counted as the human's
+ * prose: a Korean question about a JavaScript file flips to `en` on the strength
+ * of its own identifiers (post-0.7.5 review P2 #2).
+ *
+ * Length is `>= opener`, not `=== opener` (post-0.7.6 review P2 #2). CommonMark
+ * closes a fence with a run of the same character AT LEAST as long, so ` ``` `
+ * closed by ` ```` ` is a closed block — the old backreference made that an
+ * UNCLOSED one and swallowed the Korean question after it all the way to EOF.
+ * The same fix reads in the other direction too: a shorter run still cannot
+ * close (` ``` ` never closes ` ```` `), and `~~~` is never closed by backticks.
+ *
+ * A closing line may carry up to three leading spaces and any trailing spaces or
+ * tabs, and may end with `\r` — a message pasted with CRLF line endings is the
+ * same message, and treating it as unclosed was the other half of the same bug.
+ */
+function stripFencedBlocks(text) {
+    let out = "";
+    let cursor = 0;
+    FENCE_OPEN.lastIndex = 0;
+    let open;
+    while ((open = FENCE_OPEN.exec(text)) !== null) {
+        const run = open[1];
+        out += text.slice(cursor, open.index) + " ";
+        const bodyAt = open.index + open[0].length;
+        // `run[0]` is a backtick or a tilde — neither is a regex metacharacter.
+        const close = new RegExp(`\\n[ \\t]{0,3}${run[0]}{${run.length},}[ \\t]*\\r?(?=\\n|$)`);
+        const found = close.exec(text.slice(bodyAt));
+        cursor = found ? bodyAt + found.index + found[0].length : text.length;
+        FENCE_OPEN.lastIndex = cursor;
+    }
+    return out + text.slice(cursor);
+}
 /**
  * Remove the parts of a human message that are not the human's prose.
  *
@@ -63,17 +102,9 @@ function humanProse(raw) {
     const text = typeof raw === "string" ? raw : "";
     if (text === "")
         return "";
-    return (text
-        // Fenced blocks first, terminated or running to the end of the message.
-        //
-        // The CLOSING fence has to be a line of its own — the same fence run and
-        // nothing else on the line. Without that condition a `"```"` literal
-        // INSIDE the block closes it, and the rest of the code is then counted as
-        // the human's prose: a Korean question about a JavaScript file flips to
-        // `en` on the strength of its own identifiers (post-0.7.5 review P2 #2).
-        // The fence run is matched by backreference, so ``` never closes ````` and
-        // a `~~~` block is never closed by a backtick line.
-        .replace(/(`{3,}|~{3,})[^\n]*(?:[\s\S]*?\n[ \t]*\1[ \t]*(?=\n|$)|[\s\S]*)/g, " ")
+    return (
+    // Fenced blocks first, terminated or running to the end of the message.
+    stripFencedBlocks(text)
         // Then inline spans, which the fence pass can no longer be confused by.
         .replace(/`[^`\n]*`/g, " ")
         .replace(/\b(?:https?|ftp|file):\/\/\S+/gi, " ")

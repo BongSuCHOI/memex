@@ -1484,30 +1484,67 @@ export function unionCustomFactKinds(
  * costs a raw id on screen, which is the failure this exists to prevent. Global
  * wins a colliding id, exactly like `resolveExtractionRules`, and `projects`
  * records which overrides asked for a kind the global set does not define.
+ *
+ * BUT an id is not a definition (post-0.7.6 review P2 #4). The validator lets two
+ * projects define `runbook` with different labels and different meanings, and
+ * merging them under the id alone made the screen show whichever file order put
+ * first — project beta's fact was labelled with project alpha's word, and
+ * reordering the overrides silently changed what the screen said a stored value
+ * MEANT. So the registry is keyed by `(project, id)`: the global definition is
+ * the fallback entry (`project: null`), and a project override contributes its
+ * OWN entry whenever its definition actually differs from the global one. An
+ * override that repeats the global definition verbatim adds nothing but its name
+ * to `projects`, so the common case still ships one row per id.
  */
+export type CustomFactKindRegistryEntry = CustomFactKind & {
+  /** True for the file's global definition — the fallback when no override matches. */
+  global: boolean;
+  /** Every project whose override asks for this id with THIS definition. */
+  projects: string[];
+};
+
+/** Identity of a definition, not of an id — two kinds are the same iff this is. */
+function factKindShape(kind: CustomFactKind): string {
+  return JSON.stringify([
+    kind.id,
+    kind.label_en ?? "",
+    kind.label_ko ?? "",
+    kind.description ?? "",
+    kind.extraction_hint ?? "",
+  ]);
+}
+
 export function customFactKindRegistry(
   loaded: LoadedExtractionRules = loadExtractionRules(),
-): Array<CustomFactKind & { projects: string[] }> {
-  const out: Array<CustomFactKind & { projects: string[] }> = [];
+): CustomFactKindRegistryEntry[] {
+  const out: CustomFactKindRegistryEntry[] = [];
+  // Keyed by the DEFINITION, so two overrides that spell the same kind the same
+  // way share one row and two that disagree get one row each.
   const at = new Map<string, number>();
-  const add = (kind: CustomFactKind, projectId: string | null): void => {
-    const index = at.get(kind.id);
-    if (index === undefined) {
-      at.set(kind.id, out.length);
-      out.push({ ...kind, projects: projectId === null ? [] : [projectId] });
-      return;
-    }
-    // A later definition never relabels an earlier one; it only records that
-    // this project also uses the id.
-    if (projectId !== null && !out[index].projects.includes(projectId)) {
-      out[index].projects.push(projectId);
-    }
-  };
   const doc = loaded.doc;
   if (!doc) return out;
-  for (const kind of doc.custom_fact_kinds ?? []) add(kind, null);
+  for (const kind of doc.custom_fact_kinds ?? []) {
+    // A duplicate id inside one scope resolves first-wins, exactly as `dedupe()`
+    // resolves it for the extractor.
+    if (out.some((entry) => entry.id === kind.id)) continue;
+    at.set(factKindShape(kind), out.length);
+    out.push({ ...kind, global: true, projects: [] });
+  }
   for (const [projectId, override] of Object.entries(doc.project_overrides ?? {})) {
-    for (const kind of override.custom_fact_kinds ?? []) add(kind, projectId);
+    const claimed = new Set<string>();
+    for (const kind of override.custom_fact_kinds ?? []) {
+      if (claimed.has(kind.id)) continue;
+      claimed.add(kind.id);
+      // Same definition as one already registered — global or another project's
+      // — so there is nothing to disambiguate: record that this project uses it.
+      const index = at.get(factKindShape(kind));
+      if (index !== undefined) {
+        if (!out[index].projects.includes(projectId)) out[index].projects.push(projectId);
+        continue;
+      }
+      at.set(factKindShape(kind), out.length);
+      out.push({ ...kind, global: false, projects: [projectId] });
+    }
   }
   return out;
 }

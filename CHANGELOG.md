@@ -2,6 +2,36 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.7 - 2026-09-14
+
+Hotfixes for the five findings of the post-release review of 0.7.6.
+
+### Custom fact kinds
+
+- The kinds registry is keyed by definition — global plus each project's own —
+  and a fact renders the definition of its own project (`scope_project`), so two
+  projects defining the same id differently no longer share the first one's
+  label. (#121)
+- The registry re-sync applies only the latest started request (a stale
+  response can no longer resurrect a deleted kind), runs against a new
+  lightweight `GET /api/v2/fact-kinds` instead of the whole bootstrap, coalesces
+  bursts with a 250 ms trailing debounce, and skips re-rendering when the
+  overlay hash is unchanged. (#121)
+
+### Memory language
+
+- Fenced-code stripping follows CommonMark: a closing fence may be longer than
+  the opener, indented up to three spaces, and carry trailing spaces or `\r`; an
+  unclosed fence still runs to the end. A Korean question after a block closed
+  with four backticks is no longer discarded. (#123)
+- `scripts/translate-facts.mjs` identifies its entry point by real path, so a
+  same-named wrapper cannot run it by import while a symlinked or `npm run`
+  invocation works. (#123)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.6 - 2026-09-14
 
 Hotfixes for the six findings of the post-release review of 0.7.5.

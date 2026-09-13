@@ -128,6 +128,63 @@ describe("detectWindowLanguage (#123 §1)", () => {
     );
   });
 
+  /**
+   * post-0.7.6 review P2 #2 — the backreference demanded a closing run of the
+   * EXACT same length, and refused a `\r` before the newline. CommonMark closes
+   * a fence with a run of the same character at least as long, so both of these
+   * are closed blocks; treating them as unclosed dropped everything after the
+   * block, including the Korean question the extraction window is about.
+   */
+  const QUESTION = "이 파이프라인 설정을 어떻게 고쳐야 하는지 알려주세요. 배포가 계속 실패합니다.";
+  const CODE = "renderDeploymentPipelineAdapterFactory(configuration, stages);";
+
+  const HANGUL_IN_QUESTION = QUESTION.match(/[가-힣]/g)!.length;
+
+  /** The block is stripped AND the Korean question after it survives untouched. */
+  function expectQuestionSurvived(message: string, note: string): void {
+    const result = classifyWindowLanguage([ex(message)]);
+    expect(result.latin, `${note}: code leaked into the prose count`).toBe(0);
+    expect(result.hangul, `${note}: the question after the block was swallowed`).toBe(
+      HANGUL_IN_QUESTION,
+    );
+    expect(result.language).toBe("ko");
+  }
+
+  it("closes a fence with a LONGER run of the same character (post-0.7.6 P2 #2)", () => {
+    for (const [open, close] of [
+      ["```", "````"],
+      ["```", "``````"],
+      ["~~~", "~~~~"],
+      ["~~~", "~~~~~~"],
+    ]) {
+      expectQuestionSurvived(`${open}js\n${CODE}\n${close}\n${QUESTION}`, `${open} closed by ${close}`);
+    }
+    // The other direction is unchanged: a SHORTER run cannot close.
+    expect(classifyWindowLanguage([ex(`\`\`\`\`\n\`\`\`\n${CODE}\n`)]).language).toBe(null);
+  });
+
+  it("closes a fence on a CRLF line and keeps the prose after it", () => {
+    expectQuestionSurvived(`\`\`\`js\r\n${CODE}\r\n\`\`\`\r\n${QUESTION}\r\n`, "CRLF, equal run");
+    // A longer close on a CRLF line is the combination that failed both ways.
+    expectQuestionSurvived(`\`\`\`\r\n${CODE}\r\n\`\`\`\`\r\n${QUESTION}\r\n`, "CRLF, longer run");
+    expectQuestionSurvived(`~~~\r\n${CODE}\r\n~~~~\r\n${QUESTION}`, "CRLF, tilde, longer run");
+  });
+
+  it("allows trailing spaces and up to three leading spaces on the closing fence", () => {
+    expectQuestionSurvived(`\`\`\`\n${CODE}\n\`\`\`   \n${QUESTION}`, "trailing spaces");
+    expectQuestionSurvived(`   \`\`\`\n${CODE}\n   \`\`\`\n${QUESTION}`, "three-space indent");
+    expectQuestionSurvived(`\`\`\`\n${CODE}\n  \`\`\`\` \r\n${QUESTION}`, "indent + longer + CRLF");
+  });
+
+  it("still runs an unclosed fence to EOF when nothing can close it", () => {
+    // Only a SHORTER run follows, so the block never closes and the Korean tail
+    // is inside the code block — it is not prose and must not be counted.
+    const result = classifyWindowLanguage([ex(`\`\`\`\`\n${CODE}\n\`\`\`\n${QUESTION}`)]);
+    expect(result.hangul).toBe(0);
+    expect(result.latin).toBe(0);
+    expect(result.language).toBe(null);
+  });
+
   it("weights a Hangul syllable at 2.5 Latin letters — the units are not comparable raw", () => {
     // The case the weight exists for. Raw, this sentence is 13 Hangul against 15
     // Latin and would classify as ENGLISH: a plainly Korean sentence, judged

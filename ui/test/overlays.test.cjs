@@ -532,3 +532,27 @@ test('부트스트랩 종류 레지스트리는 프로젝트 override에만 있�
   assert.equal(reset.status.rules.clause.text,'');
   c.close();
 });
+
+/**
+ * 0.7.6 후속 검토 P2 #4 — 두 프로젝트가 같은 id를 다르게 정의하면 정의마다 항목이 하나다.
+ *
+ * id로만 합치면 오버레이 파일에서 먼저 나온 프로젝트의 라벨이 다른 프로젝트의 기억에도 붙고,
+ * 키 순서를 바꾸면 저장된 값의 의미가 바뀐다. 화면은 기억의 `scope_project`로 고르므로
+ * 부트스트랩은 `global`·`projects[]`를 함께 실어야 한다.
+ */
+test('부트스트랩 종류 레지스트리는 프로젝트마다 다른 정의를 따로 싣는다',async()=>{
+  const c=core();
+  const status=await c.overlays('status');
+  const kind=(label)=>({id:'runbook',label_en:label,label_ko:label,description:label+' 설명입니다.'});
+  const doc={...status.rules.emptyDoc,custom_fact_kinds:[],
+    project_overrides:{'/work/alpha':{custom_fact_kinds:[kind('알파 운영 절차')]},
+      '/work/beta':{custom_fact_kinds:[kind('베타 운영 절차')]}}};
+  await c.overlays('set',{overlay:'rules',doc,...(status.rules.present?{expectedRevision:status.rules.revision}:{})});
+
+  const registry=await c.customFactKinds();
+  assert.deepEqual(registry.map(k=>[k.id,k.label_ko,k.global,k.projects]),[
+    ['runbook','알파 운영 절차',false,['/work/alpha']],
+    ['runbook','베타 운영 절차',false,['/work/beta']]],
+    '같은 id의 서로 다른 정의가 하나로 합쳐졌다');
+  c.close();
+});

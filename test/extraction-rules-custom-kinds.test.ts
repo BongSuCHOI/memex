@@ -293,9 +293,9 @@ describe("custom_fact_kinds — resolution", () => {
       doc([RUNBOOK], {
         project_overrides: {
           "project-alpha": { custom_fact_kinds: [POSTMORTEM] },
-          // A project that re-declares a global id only records itself; the
-          // GLOBAL label still wins, exactly as `resolveExtractionRules` does.
-          "project-beta": { custom_fact_kinds: [{ ...RUNBOOK, label_en: "later" }] },
+          // A project that re-declares the global kind VERBATIM says nothing new,
+          // so it adds no row — only its own name to the global entry.
+          "project-beta": { custom_fact_kinds: [{ ...RUNBOOK }] },
         },
       }),
     );
@@ -307,13 +307,64 @@ describe("custom_fact_kinds — resolution", () => {
     const registry = customFactKindRegistry(loaded);
     expect(registry.map((kind) => kind.id)).toEqual(["runbook", "postmortem"]);
     expect(registry[0].label_en).toBe(RUNBOOK.label_en);
+    expect(registry[0].global).toBe(true);
     expect(registry[0].projects).toEqual(["project-beta"]);
+    expect(registry[1].global).toBe(false);
     expect(registry[1].projects).toEqual(["project-alpha"]);
 
     // No rules file at all is an empty registry, never a throw.
     removeRules(root);
     resetExtractionRulesCache();
     expect(customFactKindRegistry(loadExtractionRules())).toEqual([]);
+  });
+
+  /**
+   * Post-0.7.6 review P2 #4 — an id is not a definition.
+   *
+   * The validator accepts the same id in two overrides with different labels and
+   * different meanings, and the extractor already resolves it per project. The
+   * display registry merged them under the id alone, so whichever override the
+   * file happened to list first supplied the label for BOTH projects' facts:
+   * reordering the keys silently changed what the screen said a stored
+   * `facts.category` value MEANT. Each definition gets its own entry.
+   */
+  it("keeps one entry per (project, id) when overrides define an id differently", () => {
+    const alpha = { ...RUNBOOK, label_en: "Alpha runbook", label_ko: "알파 운영 절차", description: "Alpha's own recovery step." };
+    const beta = { ...RUNBOOK, label_en: "Beta runbook", label_ko: "베타 운영 절차", description: "Beta's own recovery step." };
+    writeRules(
+      root,
+      doc([], {
+        project_overrides: {
+          "/work/alpha": { custom_fact_kinds: [alpha] },
+          "/work/beta": { custom_fact_kinds: [beta] },
+        },
+      }),
+    );
+    const registry = customFactKindRegistry(loadExtractionRules());
+    expect(registry.map((kind) => [kind.id, kind.label_ko, kind.global, kind.projects])).toEqual([
+      ["runbook", "알파 운영 절차", false, ["/work/alpha"]],
+      ["runbook", "베타 운영 절차", false, ["/work/beta"]],
+    ]);
+    // Each project's extractor already sees its own definition — the registry now
+    // agrees with it instead of contradicting it.
+    for (const [project, expected] of [["/work/alpha", alpha], ["/work/beta", beta]] as const) {
+      const resolved = resolveExtractionRules(project, loadExtractionRules()).customFactKinds;
+      expect(resolved.map((k) => k.label_ko)).toEqual([expected.label_ko]);
+    }
+  });
+
+  it("keeps a global entry as the fallback for projects that do not override it", () => {
+    writeRules(
+      root,
+      doc([RUNBOOK], {
+        project_overrides: { "/work/beta": { custom_fact_kinds: [{ ...RUNBOOK, label_ko: "베타 운영 절차" }] } },
+      }),
+    );
+    const registry = customFactKindRegistry(loadExtractionRules());
+    expect(registry.map((kind) => [kind.label_ko, kind.global, kind.projects])).toEqual([
+      ["운영 절차", true, []],
+      ["베타 운영 절차", false, ["/work/beta"]],
+    ]);
   });
 });
 

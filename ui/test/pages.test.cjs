@@ -3,7 +3,7 @@ const {ko}=require('./helpers/locale.cjs');
 require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 /** Page modules render to strings, so the browser HTML is checked without a DOM. */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
-const {name,badge,eventRow,syncOrigin,syncOriginTag,setCustomFactKinds,syncCustomFactKinds}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
+const {name,badge,eventRow,syncOrigin,syncOriginTag,setCustomFactKinds,setCustomFactKindsHash,syncCustomFactKinds,scheduleCustomFactKindsSync,FACT_KINDS_SYNC_DEBOUNCE_MS,customFactKinds}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
 const details=require('../public/details.mjs');
 const activityPage=require('../public/pages/activity.mjs');const conversationsPage=require('../public/pages/conversations.mjs');
 const facts=require('../public/pages/facts.mjs');const taxonomyPage=require('../public/pages/taxonomy.mjs');const settingsPage=require('../public/pages/settings.mjs');
@@ -414,12 +414,129 @@ test('오버레이 초기화 뒤 재조회하면 종류 칩과 배지 라벨이 
  }finally{setCustomFactKinds([]);}
 });
 
+/**
+ * 0.7.6 후속 검토 P2 #4 — id 하나가 정의 하나가 아니다.
+ *
+ * 두 프로젝트가 `runbook`을 서로 다른 라벨·설명으로 정의할 수 있는데, 레지스트리가 id로만
+ * 합치면 오버레이 파일에서 먼저 나온 정의가 두 프로젝트의 기억에 모두 붙는다. 전체 보기에서는
+ * 두 프로젝트의 기억이 한 화면에 섞이므로 이 실패가 그대로 보인다.
+ */
+const KINDS_BY_PROJECT=[
+ {id:'runbook',global:false,projects:['/work/alpha'],label_en:'Alpha runbook',label_ko:'알파 운영 절차',description:'알파의 복구 절차입니다.'},
+ {id:'runbook',global:false,projects:['/work/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'베타의 복구 절차입니다.'}];
+
+test('전체 보기에서 같은 종류 id를 가진 기억은 각자 자기 프로젝트의 라벨로 표시된다',async()=>{
+ setCustomFactKinds(KINDS_BY_PROJECT);
+ try{
+  const {html}=await renderFacts('',{facts:factsPage([
+   row({id:'11111111-1111-4111-8111-11111111aaaa',category:'runbook',scope_project:'/work/alpha'}),
+   row({id:'11111111-1111-4111-8111-11111111bbbb',category:'runbook',scope_project:'/work/beta'})])});
+  assert(html.includes('<span class="tag outline" title="알파의 복구 절차입니다.">알파 운영 절차</span>'),'alpha 기억이 자기 프로젝트 라벨을 쓰지 않음');
+  assert(html.includes('<span class="tag outline" title="베타의 복구 절차입니다.">베타 운영 절차</span>'),'beta 기억이 alpha의 라벨로 표시됨');
+  // 칩은 저장된 값 하나당 하나다 — 같은 필터를 두 번 그리지 않는다.
+  assert.equal(html.split('data-param-value="runbook"').length-1,1,'같은 id로 칩을 두 개 그림');
+  // 파일 순서를 뒤집어도 각 기억의 의미는 그대로여야 한다.
+  setCustomFactKinds([KINDS_BY_PROJECT[1],KINDS_BY_PROJECT[0]]);
+  const flipped=await renderFacts('',{facts:factsPage([row({category:'runbook',scope_project:'/work/beta'})])});
+  assert(flipped.html.includes('>베타 운영 절차</span>'),'오버레이 키 순서가 저장된 값의 의미를 바꿨다');
+ }finally{setCustomFactKinds([]);}
+});
+
+test('프로젝트 정의가 없으면 전역 정의가 대체값이고, 그것도 없으면 코어 원문이다',()=>{
+ setCustomFactKinds([
+  {id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'공용 운영 절차입니다.'},
+  {id:'runbook',global:false,projects:['/work/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'베타의 복구 절차입니다.'}]);
+ try{
+  assert.equal(name('runbook','/work/beta'),'베타 운영 절차','프로젝트 정의가 이기지 않았다');
+  assert.equal(name('runbook','/work/gamma'),'운영 절차','override가 없는 프로젝트가 전역 정의로 떨어지지 않았다');
+  assert.equal(name('runbook',null),'운영 절차','글로벌 기억이 전역 정의를 쓰지 않았다');
+  setCustomFactKinds([KINDS_BY_PROJECT[0]]);
+  assert.equal(name('runbook','/work/gamma'),'runbook','대체할 전역 정의가 없는데 남의 라벨을 빌려 썼다');
+ }finally{setCustomFactKinds([]);}
+});
+
+/**
+ * 0.7.6 후속 검토 P2 #3 — 늦게 도착한 재조회 응답이 삭제된 종류를 되살렸다.
+ *
+ * SSE `change`와 `invalidate()`가 겹치면 재조회가 동시에 두 개 뜨고, 응답 순서는 보장되지
+ * 않는다. 세대를 검사하지 않으면 "초기화 뒤의 빈 목록"이 먼저 도착해 칩을 지운 다음 그 전에
+ * 시작한 옛 목록이 나중에 도착해 지운 칩을 되돌린다. 여기서는 Promise 완료 순서를 직접
+ * 제어해 그 순서를 재현한다.
+ */
+test('나중에 시작한 재조회가 이긴다 — 늦게 도착한 옛 응답은 레지스트리를 되살리지 않는다',async()=>{
+ const RUNBOOK=[{id:'runbook',label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}];
+ try{
+  setCustomFactKinds(RUNBOOK);
+  let releaseOld;
+  const oldResponse=new Promise(resolve=>{releaseOld=()=>resolve(RUNBOOK);});
+  // 1) 먼저 시작한 재조회(옛 목록). 아직 응답하지 않는다.
+  const older=syncCustomFactKinds(()=>oldResponse);
+  // 2) 나중에 시작한 재조회(초기화 뒤의 빈 목록)가 **먼저** 완료된다.
+  assert.equal(await syncCustomFactKinds(async()=>[]),true,'최신 응답이 적용되지 않았다');
+  assert.deepEqual(customFactKinds(),[],'최신 빈 응답이 레지스트리를 비우지 못했다');
+  // 3) 이제 옛 응답이 도착한다 — 버려져야 한다.
+  releaseOld();
+  assert.equal(await older,false,'낡은 응답이 재렌더를 요구했다');
+  assert.deepEqual(customFactKinds(),[],'늦게 도착한 옛 응답이 삭제된 종류를 되살렸다');
+  assert.equal(name('runbook'),'runbook','삭제된 종류의 라벨이 되살아났다');
+
+  // 세대는 소모되지 않는다: 다음 재조회는 정상적으로 적용된다.
+  assert.equal(await syncCustomFactKinds(async()=>RUNBOOK),true,'다음 재조회가 막혔다');
+  assert.equal(name('runbook'),'운영 절차');
+ }finally{setCustomFactKinds([]);}
+});
+
 test('app.mjs는 저장·초기화(invalidate)와 SSE 변경에서 종류 레지스트리를 재조회한다',()=>{
  assert(/invalidate\(\)\{[^}]*refreshFactKinds\(\)/.test(APP),'ctx.invalidate()가 종류를 재조회하지 않음');
  assert(/addEventListener\('change',\(\)=>\{[^}]*refreshFactKinds\(\)/.test(APP),'SSE change가 종류를 재조회하지 않음');
  assert(/async function refreshFactKinds\(\)/.test(APP),'refreshFactKinds가 없음');
- assert(/syncCustomFactKinds\(async\(\)=>\{const boot=await request\('bootstrap'\)/.test(APP),
-  '재조회가 부트스트랩 엔드포인트를 다시 읽지 않음');
+ // 0.7.6 후속 검토 P2 #5 — 재조회는 **부트스트랩이 아니라** 종류만 싣는 경로를 읽는다.
+ assert(/scheduleCustomFactKindsSync\(\(\)=>request\('fact-kinds'\)\)/.test(APP),
+  '재조회가 종류 전용 엔드포인트를 쓰지 않음');
+ const refreshBody=APP.slice(APP.indexOf('async function refreshFactKinds'),APP.indexOf('async function boot('));
+ assert(refreshBody&&!refreshBody.includes("request('bootstrap')"),'재조회가 아직 부트스트랩 전체를 다시 읽음');
+ assert(/setCustomFactKindsHash\(bootstrap\.customFactKindsHash\)/.test(APP),
+  '부팅이 서버 지문을 기억하지 않음 — 첫 change에서 불필요한 재렌더가 난다');
+});
+
+/**
+ * 0.7.6 후속 검토 P2 #5 — 모든 변경 이벤트가 전체 집계를 다시 돌렸다.
+ *
+ * SSE `change`는 오버레이 변경만이 아니라 DB·로그 변경에도 뜨고, 요청 병합이 없어 탭 수 ×
+ * 변경 빈도만큼 조회가 나갔다. 연속 알림은 하나로 합쳐지고, 서버 지문이 그대로면 목록을 꽂지도
+ * 다시 그리지도 않아야 한다.
+ */
+test('연속된 변경 알림은 한 번의 조회로 합쳐진다',async()=>{
+ try{
+  setCustomFactKinds([]);setCustomFactKindsHash(null);
+  let calls=0;
+  const load=async()=>{calls++;return {customFactKinds:[{id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}],hash:'h1'};};
+  const results=await Promise.all([1,2,3,4,5].map(()=>scheduleCustomFactKindsSync(load,1)));
+  assert.equal(calls,1,'변경 5건에 조회가 '+calls+'번 나갔다');
+  assert.deepEqual(results,[true,true,true,true,true],'합쳐진 호출이 결과를 받지 못했다(누수)');
+  assert.equal(name('runbook'),'운영 절차','합쳐진 조회가 목록을 꽂지 않았다');
+ }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
+});
+
+test('서버 지문이 그대로면 목록을 꽂지도 다시 그리지도 않는다',async()=>{
+ try{
+  setCustomFactKinds([]);setCustomFactKindsHash(null);
+  const payload={customFactKinds:[{id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}],hash:'h1'};
+  assert.equal(await scheduleCustomFactKindsSync(async()=>payload,1),true,'첫 조회가 적용되지 않았다');
+  // 같은 지문 = 오버레이가 그대로다. 목록을 건드리면 화면이 통째로 다시 그려진다.
+  let applied=false;
+  assert.equal(await scheduleCustomFactKindsSync(async()=>{applied=true;return {customFactKinds:[],hash:'h1'};},1),false,
+   '지문이 같은데 재렌더를 요구했다');
+  assert(applied,'로더는 불렸어야 한다 — 건너뛰는 것은 적용이지 조회가 아니다');
+  assert.equal(name('runbook'),'운영 절차','지문이 같은데 목록을 갈아 끼웠다');
+  // 지문이 달라지면 그때 적용한다.
+  assert.equal(await scheduleCustomFactKindsSync(async()=>({customFactKinds:[],hash:'h2'}),1),true,'지문이 달라졌는데 적용하지 않았다');
+  assert.equal(name('runbook'),'runbook');
+ }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
+});
+
+test('종류 재조회 디바운스 기본값은 250ms다',()=>{
+ assert.equal(FACT_KINDS_SYNC_DEBOUNCE_MS,250);
 });
 
 test('정의되지 않은 종류로 저장된 기억은 코어 원문 그대로 보이고 칩도 만들지 않는다',async()=>{
