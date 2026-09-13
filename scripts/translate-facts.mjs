@@ -21,6 +21,16 @@ import { runCodex } from "../dist/codex-exec.js";
 import { openWriteDb } from "../dist/db.js";
 import { detectTextLanguage } from "../dist/extraction-language.js";
 import { validateTranslationBatch } from "./translation-response.mjs";
+import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// This script does its work at module top level (it is a batch CLI). Importing
+// it from anywhere else — a test, a REPL probe, `import()` to "check that it
+// loads" — used to run the whole batch against the caller's data root. Refuse
+// unless this file IS the entry point.
+if (basename(process.argv[1] ?? "") !== basename(fileURLToPath(import.meta.url))) {
+  throw new Error("scripts/translate-facts.mjs runs only as a CLI entry point (node scripts/translate-facts.mjs)");
+}
 
 const db = openWriteDb();
 
