@@ -1,25 +1,55 @@
 #!/usr/bin/env node
 /**
- * Batch translate facts to Korean and store in fact_kr column.
- * Uses the local codex CLI (CodexExec) — no API key involved.
+ * Fill `fact_kr` for active facts that are NOT already Korean, using the local
+ * codex CLI (CodexExec) — no API key involved.
  * Run: node scripts/translate-facts.mjs
+ *
+ * Since #123 a fact is written in the language of the conversation it came from,
+ * so most new facts are already Korean and `fact_kr` is a legacy display path for
+ * the facts stored in English before that. The SELECT cannot express "English":
+ * it can only find facts with no translation, which includes every new Korean
+ * one. Sending those to a translation model would spend a call to produce a copy
+ * of the text and then store it in the column the UI prefers, so the language
+ * check happens here — with the SAME detector the extraction window uses
+ * (`classifyTextLanguage`, one Hangul syllable = 2.5 Latin letters), so a Korean
+ * sentence full of English identifiers is recognised as Korean.
+ *
+ * A fact the detector cannot decide (no letters at all, or an exact tie) is
+ * translated: "unknown" is not "already Korean".
  */
 import { runCodex } from "../dist/codex-exec.js";
 import { openWriteDb } from "../dist/db.js";
+import { detectTextLanguage } from "../dist/extraction-language.js";
 import { validateTranslationBatch } from "./translation-response.mjs";
+import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// This script does its work at module top level (it is a batch CLI). Importing
+// it from anywhere else — a test, a REPL probe, `import()` to "check that it
+// loads" — used to run the whole batch against the caller's data root. Refuse
+// unless this file IS the entry point.
+if (basename(process.argv[1] ?? "") !== basename(fileURLToPath(import.meta.url))) {
+  throw new Error("scripts/translate-facts.mjs runs only as a CLI entry point (node scripts/translate-facts.mjs)");
+}
 
 const db = openWriteDb();
 
 // Get untranslated facts. semantic_generation is captured with the text so the
 // write below is a CAS: a translation that lands after the fact changed
 // meaning must not be recorded against the NEW meaning (재감사 P2 v4).
-const untranslated = db
+const candidates = db
   .prepare(
     "SELECT id, fact, semantic_generation FROM facts WHERE is_active = 1 AND (fact_kr IS NULL OR fact_kr = '') ORDER BY consolidated_count DESC",
   )
   .all();
 
+const untranslated = candidates.filter((row) => detectTextLanguage(row.fact) !== "ko");
+const alreadyKorean = candidates.length - untranslated.length;
+
 console.log(`Found ${untranslated.length} untranslated facts`);
+if (alreadyKorean > 0) {
+  console.log(`Skipped ${alreadyKorean} fact(s) already written in Korean`);
+}
 
 if (untranslated.length === 0) {
   console.log("All facts already translated");
@@ -118,10 +148,13 @@ await Promise.all(
   Array.from({ length: Math.min(CONCURRENCY, total) }, () => poolWorker()),
 );
 
+// Counted the same way the run selected its work, or the tail would report every
+// Korean fact as "remaining" forever — this script will never translate those.
 const remaining = db
   .prepare(
-    "SELECT COUNT(*) as cnt FROM facts WHERE is_active = 1 AND (fact_kr IS NULL OR fact_kr = '')",
+    "SELECT fact FROM facts WHERE is_active = 1 AND (fact_kr IS NULL OR fact_kr = '')",
   )
-  .get();
-console.log(`Done. Remaining untranslated: ${remaining.cnt}`);
+  .all()
+  .filter((row) => detectTextLanguage(row.fact) !== "ko").length;
+console.log(`Done. Remaining untranslated: ${remaining}`);
 db.close();

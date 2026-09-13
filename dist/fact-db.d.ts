@@ -1,7 +1,7 @@
 import { type ReadScope } from './read-scope.js';
 import { type LegacyReadScope } from './legacy-read-scope.js';
 import Database from "better-sqlite3";
-import type { Fact, FactCategory, FactContextDependency, FactRevision } from "./types.js";
+import type { Fact, FactContextDependency, FactRevision } from "./types.js";
 import { type SourceSnapshot } from "./fact-policy.js";
 type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
@@ -78,7 +78,13 @@ export declare function getRevisions(db: Database.Database, factId: string): Fac
 export type FactSearchScope = ReadScope | LegacyReadScope;
 export type { ReadScope } from './read-scope.js';
 export interface FactSearchFilters {
-    category?: FactCategory;
+    /**
+     * Compared by equality against the stored `facts.category`, which is a
+     * `string`: it also holds the extraction-rules overlay's custom kind ids
+     * (#121). Narrowing this to `FactCategory` would make those rows
+     * unfilterable (post-0.7.5 review P2 #1). Callers validate the SHAPE.
+     */
+    category?: string;
     /** Mutation eligibility is evaluated before the search limit. */
     accept?: (fact: Fact) => boolean;
 }

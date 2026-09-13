@@ -3,7 +3,7 @@ const {ko}=require('./helpers/locale.cjs');
 require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 /** Page modules render to strings, so the browser HTML is checked without a DOM. */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
-const {name,badge,eventRow,syncOrigin,syncOriginTag,setCustomFactKinds}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
+const {name,badge,eventRow,syncOrigin,syncOriginTag,setCustomFactKinds,syncCustomFactKinds}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
 const details=require('../public/details.mjs');
 const activityPage=require('../public/pages/activity.mjs');const conversationsPage=require('../public/pages/conversations.mjs');
 const facts=require('../public/pages/facts.mjs');const taxonomyPage=require('../public/pages/taxonomy.mjs');const settingsPage=require('../public/pages/settings.mjs');
@@ -384,6 +384,42 @@ test('기억 페이지의 종류 칩은 내장 5종 뒤에 사용자 정의 종�
   // 선택된 칩과 행의 배지가 같은 라벨·설명을 쓴다.
   assert(html.includes('<span class="tag outline" title="운영 절차입니다.">운영 절차</span>'),'행 배지가 오버레이 라벨·설명을 쓰지 않음');
  }finally{setCustomFactKinds([]);}
+});
+
+/**
+ * 0.7.5 후속 검토 P2 #5 — 레지스트리는 부팅 때 한 번 꽂는 값이 아니다.
+ *
+ * 규칙을 초기화하면 종류가 사라지는데, 부트스트랩을 다시 읽지 않으면 칩과 배지에는 지워진
+ * 정의가 남는다. `syncCustomFactKinds()`가 그 재조회이고, **달라졌을 때만** true를 돌려주므로
+ * `app.mjs`가 불필요한 재렌더를 하지 않는다.
+ */
+test('오버레이 초기화 뒤 재조회하면 종류 칩과 배지 라벨이 사라진다',async()=>{
+ try{
+  setCustomFactKinds([{id:'runbook',label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}]);
+  const before=await renderFacts('',{facts:factsPage([row({category:'runbook'})])});
+  assert(before.html.includes('data-param-value="runbook"'),'초기화 전에 칩이 있어야 한다');
+  assert(before.html.includes('>운영 절차</span>'),'초기화 전에 배지가 라벨이어야 한다');
+
+  // 규칙 초기화 = 부트스트랩이 빈 목록을 싣는다.
+  assert.equal(await syncCustomFactKinds(async()=>[]),true,'목록이 달라졌는데 false를 돌려줌');
+  const after=await renderFacts('',{facts:factsPage([row({category:'runbook'})])});
+  assert(!after.html.includes('data-param-value="runbook"'),'초기화 뒤에도 칩이 남아 있음');
+  assert(after.html.includes('>runbook</span>'),'정의가 사라졌는데 이전 라벨을 계속 씀');
+
+  // 같은 값을 다시 읽으면 재렌더하지 않고, 재조회 실패는 직전 정의를 유지한다.
+  assert.equal(await syncCustomFactKinds(async()=>[]),false,'달라지지 않았는데 true를 돌려줌');
+  setCustomFactKinds([{id:'runbook',label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}]);
+  assert.equal(await syncCustomFactKinds(async()=>{throw new Error('서버 연결 실패');}),false);
+  assert.equal(name('runbook'),'운영 절차','재조회 실패가 라벨을 지웠다');
+ }finally{setCustomFactKinds([]);}
+});
+
+test('app.mjs는 저장·초기화(invalidate)와 SSE 변경에서 종류 레지스트리를 재조회한다',()=>{
+ assert(/invalidate\(\)\{[^}]*refreshFactKinds\(\)/.test(APP),'ctx.invalidate()가 종류를 재조회하지 않음');
+ assert(/addEventListener\('change',\(\)=>\{[^}]*refreshFactKinds\(\)/.test(APP),'SSE change가 종류를 재조회하지 않음');
+ assert(/async function refreshFactKinds\(\)/.test(APP),'refreshFactKinds가 없음');
+ assert(/syncCustomFactKinds\(async\(\)=>\{const boot=await request\('bootstrap'\)/.test(APP),
+  '재조회가 부트스트랩 엔드포인트를 다시 읽지 않음');
 });
 
 test('정의되지 않은 종류로 저장된 기억은 코어 원문 그대로 보이고 칩도 만들지 않는다',async()=>{

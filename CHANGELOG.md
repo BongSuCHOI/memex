@@ -2,6 +2,34 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.6 - 2026-09-14
+
+Hotfixes for the six findings of the post-release review of 0.7.5.
+
+### Custom fact kinds
+
+- `search_facts` (MCP) accepts a custom kind id as `category`, not only the five
+  built-ins. (#121)
+- A kind id may not shadow any `badge.*` id (states, tiers, …), not only the five
+  built-in categories — `active` as a kind rendered as "활성". The reserved set is
+  derived from the badge dictionaries, and a test pins it. (#121)
+- Project-scoped kinds reach the UI: the bootstrap carries the global kinds and
+  every project override's kinds, and the registry re-syncs on invalidate and on
+  SSE change, so a reset removes its chip and badge. (#121)
+
+### Memory language
+
+- A closing code fence is recognised only at a line boundary with the same
+  fence run, so a "```" inside a code string no longer ends the block early and
+  turns the following identifiers into "human prose". (#123)
+- `scripts/translate-facts.mjs` skips facts that are already Korean and refuses
+  to run unless it is the entry point (importing it used to run the batch
+  against the caller's data root); the docs describe the real selection. (#123)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.5 - 2026-09-14
 
 Three follow-ups of the 0.7.0 overlays and a new memory-language default.

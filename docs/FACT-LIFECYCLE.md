@@ -667,6 +667,19 @@ epsilon 비교가 아니라 진짜 등호로 남습니다. raw counts(`hangul`/`
 node scripts/translate-facts.mjs
 ```
 
+스크립트가 실제로 고르는 대상은 이렇습니다 — SQL은 "영어"를 표현할 수 없으므로 두 단계입니다.
+
+1. `is_active = 1` 이고 `fact_kr`가 비어 있는 **모든** fact를 읽습니다(`consolidated_count` 내림차순).
+   여기에는 위 정책 이후 한국어로 저장된 새 fact도 전부 들어옵니다.
+2. 그중 `fact`가 **이미 한국어인 것은 건너뜁니다**. 판정은 추출 창과 같은 판정기
+   (`classifyTextLanguage` / `detectTextLanguage`, Hangul 음절 1자 = Latin 2.5자)이므로 영어
+   식별자가 잔뜩 섞인 한국어 문장도 한국어로 읽힙니다. 글자가 없거나 정확히 동점이어서 판정이
+   서지 않는 문장은 번역합니다 — "모름"은 "이미 한국어"가 아닙니다.
+
+건너뛴 수는 실행 로그에 `Skipped N fact(s) already written in Korean`으로 찍히고, 마지막
+`Remaining untranslated` 집계도 같은 기준으로 셉니다(그렇지 않으면 이 스크립트가 앞으로도
+번역하지 않을 한국어 fact가 영원히 "남은 것"으로 보고됩니다).
+
 스크립트는 번역 시작 시 `fact`, `semantic_generation`을 캡처하고 다음 조건의 CAS로 결과를 기록합니다.
 
 ```text

@@ -4,7 +4,6 @@ import Database from "better-sqlite3";
 import { randomUUID } from "crypto";
 import type {
   Fact,
-  FactCategory,
   FactContextDependency,
   FactRevision,
 } from "./types.js";
@@ -450,7 +449,13 @@ export type FactSearchScope = ReadScope | LegacyReadScope;
 export type { ReadScope } from './read-scope.js';
 
 export interface FactSearchFilters {
-  category?: FactCategory;
+  /**
+   * Compared by equality against the stored `facts.category`, which is a
+   * `string`: it also holds the extraction-rules overlay's custom kind ids
+   * (#121). Narrowing this to `FactCategory` would make those rows
+   * unfilterable (post-0.7.5 review P2 #1). Callers validate the SHAPE.
+   */
+  category?: string;
   /** Mutation eligibility is evaluated before the search limit. */
   accept?: (fact: Fact) => boolean;
 }

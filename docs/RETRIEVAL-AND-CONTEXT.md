@@ -362,7 +362,7 @@ score fallback으로 유지해 open-vocabulary recommendation을 verifier까지 
 
 `fact_kr`, ontology, relation, vectors는 local derived state입니다. sync 직후 새 fact가 들어오면 durable fact 자체는 존재하지만 다음 maintenance가 derived indexes를 채우기 전까지 일부 검색/graph surface가 pending일 수 있습니다.
 
-KR translation은 자동이 아닙니다. 사용자가 `scripts/translate-facts.mjs`를 실행해 `fact_kr`를 만든 뒤 reembed worker가 `vec_facts_kr`를 생성합니다.
+KR translation은 자동이 아닙니다. 사용자가 `scripts/translate-facts.mjs`를 실행해 `fact_kr`를 만든 뒤 reembed worker가 `vec_facts_kr`를 생성합니다. 스크립트는 번역이 없는 활성 fact 전부를 읽고 그중 이미 한국어인 것은 건너뜁니다([FACT-LIFECYCLE.md](FACT-LIFECYCLE.md#kr-translation-레거시-표시-경로)).
 
 0.6.1부터 분류에 반복 실패한 fact는 `facts.ontology_state = 'parked'`로 General/Misc에 보관됩니다
 (#41). Parked fact는 fact 검색·주입에서 그대로 후보이고, 달라지는 것은 ontology surface입니다 —

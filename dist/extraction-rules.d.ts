@@ -76,6 +76,28 @@ export declare const BUILTIN_FACT_KINDS: readonly ["decision", "preference", "pa
  */
 export declare const CUSTOM_FACT_KIND_ID: RegExp;
 /**
+ * Every id the Web UI's `badge.*` dictionary already names — states, tiers,
+ * job kinds, scopes, event kinds and the five built-in categories.
+ *
+ * Why a custom kind may not take one of these (post-0.7.5 review P2 #4): the
+ * UI's `name()` resolves a `badge.<value>.label` BEFORE an overlay label, and it
+ * has to, or a runtime kind could shadow a core enum's name. So a kind called
+ * `active` validated fine and then displayed as "활성" on the memory badge while
+ * the filter chip showed the operator's own label — the same stored
+ * `facts.category` value reading as two different things on one screen. The
+ * reservation is the only place that can prevent it, because the label
+ * precedence itself is not negotiable.
+ *
+ * NOT hand-maintained: `test/extraction-rules-custom-kinds.test.ts` derives this
+ * set from `ui/public/i18n/badge/{en,ko}.mjs` key lists and fails if the two
+ * disagree, so adding a badge key adds the reservation. The list lives here
+ * rather than being read from the dictionary at runtime because the validator is
+ * synchronous core that must not depend on the UI bundle being present.
+ */
+export declare const UI_BADGE_RESERVED_IDS: readonly string[];
+/** The ids a custom kind may never take: the built-in five ∪ every `badge.*` id. */
+export declare const RESERVED_FACT_KIND_IDS: ReadonlySet<string>;
+/**
  * One operator-defined fact kind (#121).
  *
  * A kind is a FACT CATEGORY, not a taxonomy category: it says what sort of
@@ -322,6 +344,28 @@ export type BlockSetResult<T> = BlockSetOk<T> | BlockSetFailed;
 export declare function unionNeverExtract(snapshot: readonly NeverExtractPattern[], latest: readonly NeverExtractPattern[]): NeverExtractPattern[];
 /** Ids only, in snapshot-then-latest order, first definition winning. */
 export declare function unionCustomFactKinds(snapshot: readonly CustomFactKind[], latest: readonly CustomFactKind[]): CustomFactKind[];
+/**
+ * Every custom kind ANY scope in this file defines — the display registry the
+ * Web UI needs (post-0.7.5 review P2 #3).
+ *
+ * Not the same question as `resolveExtractionRules(projectId)`. That one answers
+ * "which kinds may this project's extractor produce", and the Web UI asked it
+ * with `projectId = null`, so a kind defined only in a project override had no
+ * label anywhere: the memory badge showed the raw id and the kind filter had no
+ * chip for it.
+ *
+ * The answer is a UNION over global ∪ every project override rather than a
+ * per-scope lookup, because the thing being labelled is a stored
+ * `facts.category` value and that value is scope-free — the same row can be read
+ * from any scope the screen happens to be on, including `all`. Over-inclusion
+ * costs a filter chip that matches nothing in the current scope; under-inclusion
+ * costs a raw id on screen, which is the failure this exists to prevent. Global
+ * wins a colliding id, exactly like `resolveExtractionRules`, and `projects`
+ * records which overrides asked for a kind the global set does not define.
+ */
+export declare function customFactKindRegistry(loaded?: LoadedExtractionRules): Array<CustomFactKind & {
+    projects: string[];
+}>;
 /**
  * Which custom ids the candidate validator may accept right now.
  *
