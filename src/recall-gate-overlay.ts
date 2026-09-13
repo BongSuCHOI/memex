@@ -42,11 +42,13 @@ import {
 import {
   BUILTIN_GATE_PATTERNS,
   BUILTIN_GATE_WORDS,
+  DEFAULT_RECALL_GATE_CONFIG,
   decideRecall,
   explainPromptIntents,
   tokenizePrompt,
   type GateIntent,
   type GateLexicon,
+  type RecallGateConfig,
   type RecallGateDecision,
   type RecallGateState,
   type UserIntentHits,
@@ -78,6 +80,71 @@ const INTENTS: readonly GateIntent[] = [
 ];
 const LEXICONS: readonly GateLexicon[] = ["ack", "continue", "filler"];
 
+/* -------------------------------------------------------------------------- */
+/* §2.2 `config` — the eight recall-gate thresholds (issue #120)               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One editable threshold: its kind, its accepted range and the BUILT-IN value
+ * it overrides.
+ *
+ * The catalogue lives here rather than in `recall-gate.ts` because a range is an
+ * overlay rule, not a gate rule: `decideRecall()` keeps taking any
+ * `Partial<RecallGateConfig>` its caller hands it (tests and the benchmark rely
+ * on that), and only a value that arrives from a USER FILE is range-checked.
+ *
+ * `integer` fields count prompt tokens, `fraction` fields are Jaccard overlaps
+ * and a cosine margin, so both ends of every fraction are 0..1 inclusive.
+ */
+export interface GateConfigField {
+  key: keyof RecallGateConfig;
+  kind: "integer" | "fraction";
+  min: number;
+  max: number;
+  /** The built-in value this field overrides (`DEFAULT_RECALL_GATE_CONFIG`). */
+  default: number;
+}
+
+export const GATE_CONFIG_FIELDS: readonly GateConfigField[] = Object.freeze([
+  { key: "ackMaxTokens", kind: "integer", min: 0, max: 32, default: DEFAULT_RECALL_GATE_CONFIG.ackMaxTokens },
+  { key: "safetyRefreshInterval", kind: "integer", min: 1, max: 100, default: DEFAULT_RECALL_GATE_CONFIG.safetyRefreshInterval },
+  { key: "driftJaccard", kind: "fraction", min: 0, max: 1, default: DEFAULT_RECALL_GATE_CONFIG.driftJaccard },
+  { key: "driftMinTokens", kind: "integer", min: 1, max: 100, default: DEFAULT_RECALL_GATE_CONFIG.driftMinTokens },
+  { key: "coverageMinTokens", kind: "integer", min: 1, max: 100, default: DEFAULT_RECALL_GATE_CONFIG.coverageMinTokens },
+  { key: "coherentMargin", kind: "fraction", min: 0, max: 1, default: DEFAULT_RECALL_GATE_CONFIG.coherentMargin },
+  { key: "substantiveMinTokens", kind: "integer", min: 1, max: 100, default: DEFAULT_RECALL_GATE_CONFIG.substantiveMinTokens },
+  { key: "lexicalCoherentJaccard", kind: "fraction", min: 0, max: 1, default: DEFAULT_RECALL_GATE_CONFIG.lexicalCoherentJaccard },
+] as const satisfies readonly GateConfigField[]);
+
+export const GATE_CONFIG_KEYS: readonly (keyof RecallGateConfig)[] =
+  GATE_CONFIG_FIELDS.map((field) => field.key);
+
+const CONFIG_FIELD_BY_KEY = new Map<string, GateConfigField>(
+  GATE_CONFIG_FIELDS.map((field) => [field.key as string, field]),
+);
+
+export function gateConfigField(key: string): GateConfigField | undefined {
+  return CONFIG_FIELD_BY_KEY.get(key);
+}
+
+/** The thresholds actually in force: the overlay's overrides over the built-ins. */
+export function effectiveGateConfig(config: Partial<RecallGateConfig> = {}): RecallGateConfig {
+  return { ...DEFAULT_RECALL_GATE_CONFIG, ...config };
+}
+
+/**
+ * Which thresholds the overlay moved, in catalogue order.
+ *
+ * A key whose value EQUALS the built-in still counts as overridden: the operator
+ * pinned it on purpose, and a future build that changes the default must not
+ * silently move a pinned threshold.
+ */
+export function overriddenGateConfigKeys(
+  config: Partial<RecallGateConfig> = {},
+): (keyof RecallGateConfig)[] {
+  return GATE_CONFIG_KEYS.filter((key) => config[key] !== undefined);
+}
+
 export interface UserGatePattern {
   id: string;
   intent: GateIntent;
@@ -101,6 +168,8 @@ export interface RecallGateOverlayDoc {
     add?: Partial<Record<GateLexicon, string[]>>;
     disable?: Partial<Record<GateLexicon, string[]>>;
   };
+  /** Issue #120 — threshold overrides. Every field optional; absent = built-in. */
+  config?: Partial<RecallGateConfig>;
 }
 
 export interface LoadedRecallGateOverlay {
@@ -117,6 +186,12 @@ export interface LoadedRecallGateOverlay {
     add: Record<GateLexicon, string[]>;
     disable: Record<GateLexicon, string[]>;
   };
+  /**
+   * Threshold overrides as applied (issue #120). Empty on any error severity, so
+   * a broken overlay falls back to `DEFAULT_RECALL_GATE_CONFIG` exactly as it
+   * falls back to the built-in patterns — fail-safe in the same direction.
+   */
+  config: Partial<RecallGateConfig>;
   /** Quarantined rows relevant to this overlay (already excluded from `patterns`). */
   quarantined: QuarantineEntry[];
   issues: Issue[];
@@ -135,6 +210,7 @@ const EMPTY_OVERLAY: LoadedRecallGateOverlay = Object.freeze({
   patterns: Object.freeze([]) as unknown as UserPatternSpec[],
   disabled: Object.freeze([]) as unknown as string[],
   words: Object.freeze(emptyWords()),
+  config: Object.freeze({}) as Partial<RecallGateConfig>,
   quarantined: Object.freeze([]) as unknown as QuarantineEntry[],
   issues: Object.freeze([]) as unknown as Issue[],
   doc: null,
@@ -156,7 +232,15 @@ export function emptyRecallGateOverlay(): LoadedRecallGateOverlay {
  * for a no-op and every recall receipt looks like a new rule set.
  */
 export function recallGateOverlayHash(doc: RecallGateOverlayDoc): string {
+  // Thresholds ARE rules — moving one changes what is recalled — so they belong
+  // in the fingerprint. An EMPTY (or absent) `config` is omitted rather than
+  // hashed as `{}`, so every overlay written before #120 keeps the exact hash it
+  // already has and no receipt looks like a new rule set for a no-op upgrade.
+  const configEntries = GATE_CONFIG_KEYS
+    .filter((key) => doc.config?.[key] !== undefined)
+    .map((key) => [key, doc.config![key]] as const);
   const rules = {
+    ...(configEntries.length > 0 ? { config: Object.fromEntries(configEntries) } : {}),
     patterns: {
       add: (doc.patterns?.add ?? []).map((pattern) => ({
         id: pattern.id, intent: pattern.intent, source: pattern.source, flags: pattern.flags ?? "",
@@ -177,7 +261,7 @@ export function recallGateOverlayHash(doc: RecallGateOverlayDoc): string {
 
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const KNOWN_TOP_LEVEL = new Set([
-  "schema", "version", "revision", "updated_at", "updated_by", "patterns", "words",
+  "schema", "version", "revision", "updated_at", "updated_by", "patterns", "words", "config",
 ]);
 const BUILTIN_IDS = new Set(BUILTIN_GATE_PATTERNS.map((pattern) => pattern.id));
 const BUILTIN_SOURCES = new Set(
@@ -240,8 +324,10 @@ export function validateRecallGateOverlayDoc(
   }
   for (const key of Object.keys(doc)) {
     if (!KNOWN_TOP_LEVEL.has(key)) {
-      // Forward compatibility: 0.7.1 adds `config` (thresholds) and 0.7.0 must
-      // ignore it quietly rather than refuse the whole file.
+      // Forward compatibility: an unknown TOP-LEVEL field is a warning so a file
+      // written by a newer build still applies its known parts. Inside `config`
+      // the rule is the opposite (see below) — an unknown threshold name is a
+      // typo the operator must see, not a setting from the future.
       warn("OVERLAY_UNKNOWN_FIELD", `unknown field "${key}" is ignored by this build`, {
         path: key, params: { field: key },
       });
@@ -424,7 +510,40 @@ export function validateRecallGateOverlayDoc(
     }
   }
 
+  // §2.2 `config` — every field optional, every value range-checked, every
+  // unknown key an ERROR with its own path. A threshold is a number with no
+  // structure to fall back on, so "ignore what I do not understand" would apply
+  // a gate the operator did not describe.
+  const config: Partial<RecallGateConfig> = {};
+  const configRaw = doc.config;
+  if (configRaw !== undefined) {
+    if (typeof configRaw !== "object" || configRaw === null || Array.isArray(configRaw)) {
+      error("OVERLAY_NOT_OBJECT", "`config` must be an object of threshold overrides", { path: "config" });
+    } else {
+      for (const [key, value] of Object.entries(configRaw as Record<string, unknown>)) {
+        const field = CONFIG_FIELD_BY_KEY.get(key);
+        if (!field) {
+          error("CONFIG_KEY_UNKNOWN", `unknown threshold ${JSON.stringify(key)}`, {
+            path: `config.${key}`, field: key,
+            params: { key, allowed: GATE_CONFIG_KEYS.join(", ") },
+          });
+          continue;
+        }
+        const problem = configValueProblem(field, value);
+        if (problem !== null) {
+          error("CONFIG_VALUE_INVALID", problem, {
+            path: `config.${key}`, field: key,
+            params: { key, kind: field.kind, min: field.min, max: field.max, value },
+          });
+          continue;
+        }
+        config[field.key] = value as number;
+      }
+    }
+  }
+
   const ok = !issues.some((issue) => issue.severity === "error");
+  const configKeys = overriddenGateConfigKeys(config);
   return {
     ok,
     issues,
@@ -439,9 +558,26 @@ export function validateRecallGateOverlayDoc(
             : {}),
           patterns: { add, disable },
           words: { add: words.add, disable: words.disable },
+          // An empty `config` is dropped, not written as `{}`: the document a
+          // no-threshold install writes stays byte-identical to the 0.7.0 one.
+          ...(configKeys.length > 0 ? { config } : {}),
         }
       : null,
   };
+}
+
+/** `null` when the value is acceptable, otherwise the English reason. */
+function configValueProblem(field: GateConfigField, value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return `${field.key} must be a finite number (found ${JSON.stringify(value ?? null)})`;
+  }
+  if (field.kind === "integer" && !Number.isInteger(value)) {
+    return `${field.key} must be a whole number of tokens (found ${value})`;
+  }
+  if (value < field.min || value > field.max) {
+    return `${field.key} must be between ${field.min} and ${field.max} (found ${value})`;
+  }
+  return null;
 }
 
 /** §2.4 — async signature so the write path can add the measuring probe later. */
@@ -563,6 +699,7 @@ function readValidateCompile(file: string): LoadedRecallGateOverlay {
       add: doc.words?.add as Record<GateLexicon, string[]>,
       disable: doc.words?.disable as Record<GateLexicon, string[]>,
     },
+    config: doc.config ?? {},
     quarantined: quarantined.filter(Boolean),
     issues,
     doc,
@@ -607,10 +744,17 @@ export interface GateCatalog {
   builtin: readonly (typeof BUILTIN_GATE_PATTERNS)[number][];
   words: Readonly<Record<GateLexicon, readonly string[]>>;
   limits: typeof OVERLAY_LIMITS;
+  /** The editable thresholds with their ranges and built-in values (#120). */
+  config: readonly GateConfigField[];
 }
 
 export function gateCatalog(): GateCatalog {
-  return { builtin: BUILTIN_GATE_PATTERNS, words: BUILTIN_GATE_WORDS, limits: OVERLAY_LIMITS };
+  return {
+    builtin: BUILTIN_GATE_PATTERNS,
+    words: BUILTIN_GATE_WORDS,
+    limits: OVERLAY_LIMITS,
+    config: GATE_CONFIG_FIELDS,
+  };
 }
 
 /**
@@ -660,6 +804,16 @@ export interface RecallExplanation {
   overlay: { present: boolean; hash: string | null; revision: number };
   matcher: { elapsedMs: number; timedOut: boolean; unavailable: boolean; quarantined: string[] };
   intents: Record<GateIntent, { fired: boolean; matched: Array<{ id: string; source: string; origin: "builtin" | "user" }> }>;
+  /**
+   * The thresholds this decision actually used, plus the names the overlay moved
+   * (#120). A `test` transcript that does not say which numbers were in force
+   * cannot explain a decision an overridden threshold produced.
+   */
+  config: {
+    effective: RecallGateConfig;
+    builtin: RecallGateConfig;
+    overridden: (keyof RecallGateConfig)[];
+  };
   decision: RecallGateDecision;
   builtinOnly?: RecallGateDecision;
   /** Rules present in the overlay run and absent from the built-in-only run. */
@@ -717,7 +871,9 @@ export async function explainRecall(
     currentProjectRevision: state.memoryRevisionSeen,
     incidentMatched: false,
   };
-  const decision = decideRecall({ ...base, userHits });
+  // The overlay's thresholds travel with its patterns; `builtinOnly` gets neither,
+  // so `--compare-builtin` also shows what a threshold override changed.
+  const decision = decideRecall({ ...base, userHits, config: overlay.config });
   const builtinOnly = input.compareBuiltin ? decideRecall({ ...base }) : undefined;
   const builtinExplained = input.compareBuiltin ? explainPromptIntents(input.prompt) : null;
 
@@ -754,6 +910,11 @@ export async function explainRecall(
       quarantined: [...hits.quarantined],
     },
     intents,
+    config: {
+      effective: effectiveGateConfig(overlay.config),
+      builtin: { ...DEFAULT_RECALL_GATE_CONFIG },
+      overridden: overriddenGateConfigKeys(overlay.config),
+    },
     decision,
     ...(builtinOnly ? { builtinOnly } : {}),
     ...(diffCause ? { diffCause } : {}),
@@ -803,9 +964,11 @@ export async function recallGateOverlayChecks(
         " — run: memex gate validate",
     });
   } else {
+    const overridden = overriddenGateConfigKeys(overlay.config);
     const applied =
       `applied: ${overlay.hash} rev ${overlay.revision}, ${overlay.patterns.length} user pattern(s), ` +
-      `${overlay.disabled.length} disabled`;
+      `${overlay.disabled.length} disabled, ${overridden.length} threshold(s) overridden` +
+      (overridden.length > 0 ? ` (${overridden.join(", ")})` : "");
     checks.push(
       warnings.length > 0
         ? {

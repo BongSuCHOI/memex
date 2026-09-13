@@ -118,7 +118,7 @@ COMMANDS:
   backfill    Run extract/ontology/embeddings/receipts backlog explicitly ('all' runs each stage in order)
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|tier|promote|demote|migrate-tiers|delete
   ontology    Inspect and repair the local taxonomy: list|merge|rename
-  gate        Your own recall-gate rules: show|patterns|words|test|replay|validate|history|quarantine|reset|rollback
+  gate        Your own recall-gate rules: show|patterns|words|config|test|replay|validate|history|quarantine|reset|rollback
   extract     Your own extraction rules: rules show|validate|set|test|history|reset|rollback|reextract, and eval
 
 Run 'memex <command> --help' for command-specific help.
@@ -378,6 +378,7 @@ pre-0.6.0 workstream facts that the branch-signal rule makes project-common.`,
   memex gate show [--json]
   memex gate patterns list|add|disable|enable [...] [--dry-run] [--json]
   memex gate words list|add|remove <ack|continue|filler> <word> [--json]
+  memex gate config show|set <key> <value>|reset [<key>] [--dry-run] [--json]
   memex gate test "<prompt>" [--session <id>] [--compare-builtin] [--json]
   memex gate replay [--limit <n>] [--project <path>] [--json]
   memex gate validate [--file <path>] [--json]
@@ -386,8 +387,9 @@ pre-0.6.0 workstream facts that the branch-signal rule makes project-common.`,
   memex gate reset [--intent <intent>] --yes [--json]
   memex gate rollback --to <revision> [--json]
 
-Your own regexes and words on top of the built-in recall gate. Built-ins are
-disabled by id, never deleted. show/patterns list/words list/test/replay/
+Your own regexes, words and gate thresholds on top of the built-in recall gate.
+Built-ins are disabled by id, never deleted; a threshold you never set keeps its
+built-in value. show/patterns list/words list/config show/test/replay/
 validate/history/quarantine list are read-only and call no model. Writes take
 the overlay lock, bump 'revision' and keep a rollback snapshot; --dry-run
 prints the command to re-run and writes nothing.

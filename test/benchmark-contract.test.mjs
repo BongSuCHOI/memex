@@ -52,6 +52,7 @@ function compliantReport() {
         recall_gate: 'absent',
         extraction_rules: 'absent',
         quarantine: 'absent',
+        config: 'absent',
         disabled_by_env: true,
       },
     },
@@ -245,12 +246,12 @@ test('a missing environment.overlays block fails', () => {
   const empty = tampered((report) => {
     report.environment.overlays = {};
   });
-  assert.equal(empty.length, 4);
+  assert.equal(empty.length, 5);
   assertFails(empty, 'environment.overlays.disabled_by_env is missing');
 });
 
 test('a single missing overlay sub-field fails and names that field', () => {
-  for (const field of ['recall_gate', 'extraction_rules', 'quarantine', 'disabled_by_env']) {
+  for (const field of ['recall_gate', 'extraction_rules', 'quarantine', 'config', 'disabled_by_env']) {
     assert.deepEqual(
       tampered((report) => {
         delete report.environment.overlays[field];
@@ -280,6 +281,28 @@ test('a present overlay fails — the benchmark must run with empty overlays', (
     }),
     'overlays/quarantine.json is present',
   );
+});
+
+// #120 — a moved threshold is its own failure. It changes how many prompts
+// retrieve at all, so AC_PERF_03 taken beside one is not comparable, and the
+// record must say so even though no pattern moved.
+test('overridden recall-gate thresholds fail the contract on their own', () => {
+  assertFails(
+    tampered((report) => {
+      report.environment.overlays.config = 'present';
+    }),
+    'recall-gate thresholds overridden',
+  );
+  assertFails(
+    tampered((report) => {
+      report.environment.overlays.config = 'some';
+    }),
+    'environment.overlays.config is not an observation (some)',
+  );
+  // The clean-room record says `absent` and raises nothing.
+  assert.deepEqual(tampered((report) => {
+    report.environment.overlays.config = 'absent';
+  }), []);
 });
 
 test('claiming overlays were off without the env var — or with a tampered observation — fails', () => {

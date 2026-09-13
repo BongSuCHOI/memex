@@ -1139,6 +1139,27 @@ export function observeOverlayBenchmarkEnvironment() {
         recall_gate: exists(recallGateOverlayPath()),
         extraction_rules: exists(extractionRulesOverlayPath()),
         quarantine: exists(overlayQuarantinePath()),
+        config: observedGateThresholds(),
         disabled_by_env: overlaysDisabled(),
     };
+}
+/**
+ * Read from the FILE, not from `loadRecallGateOverlay()`: an unreadable or
+ * invalid overlay applies no thresholds, but a benchmark taken beside one is
+ * still not a clean room, and the observation must not depend on whether the
+ * validator happened to accept the document.
+ */
+function observedGateThresholds() {
+    try {
+        const raw = JSON.parse(fs.readFileSync(recallGateOverlayPath(), "utf8"));
+        if (!raw || typeof raw !== "object" || Array.isArray(raw))
+            return "absent";
+        const config = raw.config;
+        if (!config || typeof config !== "object" || Array.isArray(config))
+            return "absent";
+        return Object.keys(config).length > 0 ? "present" : "absent";
+    }
+    catch {
+        return "absent";
+    }
 }

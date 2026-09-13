@@ -36,7 +36,7 @@ import { canonicalJson, overlayIssue, patternSourceSha8, userPatternId } from ".
 import { readQuarantine, replaceQuarantine, quarantineKey, } from "./overlay-matcher.js";
 import { RECALL_GATE_OVERLAY_SCHEMA, RECALL_GATE_OVERLAY_VERSION, recallGateOverlayHash, validateRecallGateOverlayDoc, } from "./recall-gate-overlay.js";
 import { appendUiAuditLine } from "./ontology-admin.js";
-import { BUILTIN_GATE_PATTERNS } from "./recall-gate.js";
+import { BUILTIN_GATE_PATTERNS, } from "./recall-gate.js";
 const BUILTIN_BY_INTENT = new Map();
 for (const pattern of BUILTIN_GATE_PATTERNS) {
     const list = BUILTIN_BY_INTENT.get(pattern.intent) ?? [];
@@ -727,6 +727,22 @@ function mergeGateDelta(current, delta) {
                 (next.words[side][lexicon] ?? []).filter((word) => !drop.has(word));
         }
     }
+    // Thresholds (#120). `configRemove` drops a key back to the built-in value, and
+    // an override set that ends up EMPTY loses the `config` block entirely rather
+    // than leaving `{}` behind — the hash of a fully reset overlay then matches the
+    // hash it had before anything was ever overridden.
+    if (delta.config || delta.configRemove?.length) {
+        const config = { ...(current.config ?? {}) };
+        for (const [key, value] of Object.entries(delta.config ?? {})) {
+            config[key] = value;
+        }
+        for (const key of delta.configRemove ?? [])
+            delete config[key];
+        if (Object.keys(config).length > 0)
+            next.config = config;
+        else
+            delete next.config;
+    }
     return next;
 }
 /**
@@ -952,6 +968,26 @@ export async function setGateWords(lexicon, change, opts) {
         probe: opts.probe,
         auditAction: "gate.words",
         history: { counts: { lexicons: 1 } },
+    });
+}
+/**
+ * Issue #120 — set or clear recall-gate thresholds.
+ *
+ * A delta, not a document: two operators editing different thresholds from the
+ * CLI and the Web UI must not overwrite each other inside the same revision, and
+ * the merge happens under the lock like every other gate change. `probe: false`
+ * because no regex is involved — a number cannot burn the match budget.
+ */
+export async function setGateConfig(change, opts) {
+    const set = change.set ?? {};
+    const remove = change.remove ?? [];
+    const touched = [...Object.keys(set), ...remove];
+    return applyOverlayChange("recall-gate", { delta: { ...(Object.keys(set).length > 0 ? { config: set } : {}), ...(remove.length > 0 ? { configRemove: remove } : {}) } }, {
+        surface: opts.surface,
+        expectedRevision: opts.expectedRevision,
+        probe: false,
+        auditAction: "gate.config",
+        history: { counts: { thresholds: touched.length } },
     });
 }
 /**

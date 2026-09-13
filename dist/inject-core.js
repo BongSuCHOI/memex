@@ -297,7 +297,10 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             incidentMatched: incidents.length > 0,
             residentRevisionStale: revisionCorrections.length > 0,
             hotEvidencePending: hot.length > 0,
-            config: options.gateConfig,
+            // Issue #120 — the overlay's threshold overrides sit UNDER `options.gateConfig`:
+            // a caller that passes thresholds explicitly (tests, the benchmark) still wins,
+            // and an install with no `config` block is byte-identical to 0.7.0.
+            config: { ...gateOverlay.config, ...(options.gateConfig ?? {}) },
             userHits,
         });
         if (options.gate === false) {
@@ -340,7 +343,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             embedding = await embedOnce();
             if (embedding) {
                 baseline = await queryBaseline(embedding);
-                decision = resolveAmbiguousDecision(decision, embedding, blobToEmbedding(gateRow?.topic_embedding), baseline, options.gateConfig);
+                decision = resolveAmbiguousDecision(decision, embedding, blobToEmbedding(gateRow?.topic_embedding), baseline, { ...gateOverlay.config, ...(options.gateConfig ?? {}) });
             }
             else {
                 decision = { ...decision, action: "retrieve", triggers: [...decision.triggers, "no_topic_embedding"], skipReason: null };

@@ -470,6 +470,11 @@ const UI_CODE_EXEMPT={
  EXPECTED_REVISION_REQUIRED:'전체 문서 저장에 읽어 온 revision이 없다. 화면이 값을 만들므로 사용자 경로에서 발생하지 않는다.',
  INVALID_DOCUMENT:'규칙 문서가 객체가 아니다. 편집기가 문서를 만들므로 사용자 경로에서 발생하지 않는다.',
  INVALID_LEXICON:'어휘 집합 allowlist(ack·continue·filler). 셀렉트만 값을 만든다.',
+ // ── #120 회수 게이트 임계값. 이름·형·범위는 코어 카탈로그가 판정하고 화면은 그 범위대로
+ // number 입력을 그린다. 범위 위반은 422 OVERLAY_INVALID의 행별 사유로 온다.
+ CONFIG_NOT_OVERRIDDEN:'되돌릴 임계값이 이미 내장값이다. 카드를 다시 읽으면 해소되고 복구 명령이 없다.',
+ INVALID_CONFIG_KEY:'임계값 이름 allowlist(코어 카탈로그 8개). 카드가 이름을 만드므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_CONFIG_VALUE:'임계값이 숫자가 아니다. 다음 행동이 입력 자체다.',
  INVALID_OVERLAY:'오버레이 이름 allowlist(gate·rules). 하위 내비만 값을 만든다.',
  INVALID_PATCH:'한 요청에 한 가지 변경만 받는다. 화면의 폼이 값을 만든다.',
  INVALID_PATTERN:'새 패턴에 의도·정규식이 없다. 다음 행동이 폼 입력이다.',

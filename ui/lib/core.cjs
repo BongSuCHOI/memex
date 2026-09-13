@@ -640,7 +640,13 @@ class Core {
         builtin:{patterns:catalog.builtin.map(p=>({id:p.id,intent:p.intent,source:p.source,flags:p.flags,form:p.form})),
           words:Object.fromEntries(Object.entries(catalog.words).map(([k,v])=>[k,[...v]]))},
         user:{patterns:(doc?.patterns?.add??[]).map(p=>({...p})),disabled:[...loadedGate.disabled],
-          words:{add:{...loadedGate.words.add},disable:{...loadedGate.words.disable}}},
+          words:{add:{...loadedGate.words.add},disable:{...loadedGate.words.disable}},
+          config:{...loadedGate.config}},
+        // #120 임계값. 카탈로그(이름·종류·범위·내장값)는 코어가 소유하고 화면은 그리기만 한다 —
+        // 범위를 UI가 복제하면 저장은 되고 화면만 거짓말하는 상태가 생긴다.
+        config:{fields:catalog.config.map(f=>({...f})),
+          effective:gate.effectiveGateConfig(loadedGate.config),
+          overridden:gate.overriddenGateConfigKeys(loadedGate.config)},
         quarantined:loadedGate.quarantined.map(q=>({...q})),
         issues:loadedGate.issues,
         history:admin.listOverlayHistory('recall-gate',20),
@@ -852,9 +858,12 @@ class Core {
     const disable=Array.isArray(body.patternsDisable)?body.patternsDisable:[];
     const enable=Array.isArray(body.patternsEnable)?body.patternsEnable:[];
     const words=body.words&&typeof body.words==='object'?body.words:null;
-    const chosen=[add.length?'add':null,disable.length?'disable':null,enable.length?'enable':null,words?'words':null].filter(Boolean);
+    const config=body.config&&typeof body.config==='object'&&!Array.isArray(body.config)?body.config:null;
+    const configReset=Array.isArray(body.configReset)?body.configReset.map(String):body.configReset===true?true:null;
+    const chosen=[add.length?'add':null,disable.length?'disable':null,enable.length?'enable':null,words?'words':null,
+      config?'config':null,configReset?'configReset':null].filter(Boolean);
     if(chosen.length!==1)throw new HttpError(400,{code:'INVALID_PATCH',key:'overlays.error.invalidPatch',
-      message:'a patch carries exactly one of patternsAdd, patternsDisable, patternsEnable, words'});
+      message:'a patch carries exactly one of patternsAdd, patternsDisable, patternsEnable, words, config, configReset'});
     if(chosen[0]==='add'){
       const input=add[0];
       if(!input||typeof input!=='object')throw new HttpError(400,{code:'INVALID_PATTERN',key:'overlays.error.invalidPattern',
@@ -872,6 +881,25 @@ class Core {
           message:`${id} is not disabled`,details:{issues:[{field:'patternId',key:'overlays.error.patternNotDisabled',params:{id}}]}});
       return admin.applyOverlayChange('recall-gate',{delta:{patternsRemove:[id]}},
         {surface:'web-ui',expectedRevision,probe:false,auditAction:'gate.pattern-enable',history:{removed:[id]}});
+    }
+    // #120 임계값. 이름·형·범위는 전부 코어의 카탈로그가 판정한다. 여기서 400을 내는 이유는
+    // 하나뿐이다 — 사용자가 고른 값이 숫자가 아니면 lock을 잡을 이유가 없다. 범위 위반은
+    // `applyOverlayChange`의 검증기가 `config.<key>` path와 함께 422로 돌려준다.
+    if(chosen[0]==='config'){
+      const key=String(config.key||'');
+      if(!gate.gateConfigField(key))throw new HttpError(400,{code:'INVALID_CONFIG_KEY',key:'overlays.error.invalidConfigKey',
+        params:{key},message:`unknown threshold: ${text(key,40)}`});
+      const value=Number(config.value);
+      if(!Number.isFinite(value))throw new HttpError(400,{code:'INVALID_CONFIG_VALUE',key:'overlays.error.invalidConfigValue',
+        params:{key},message:`${key} must be a finite number`});
+      return admin.setGateConfig({set:{[key]:value}},{surface:'web-ui',expectedRevision});
+    }
+    if(chosen[0]==='configReset'){
+      const applied=gate.overriddenGateConfigKeys(gate.loadRecallGateOverlay().config);
+      const remove=configReset===true?applied:configReset.filter(key=>applied.includes(key));
+      if(!remove.length)throw new HttpError(422,{code:'CONFIG_NOT_OVERRIDDEN',key:'overlays.error.configNotOverridden',
+        params:{key:configReset===true?'':String(configReset[0]||'')},message:'that threshold is not overridden'});
+      return admin.setGateConfig({remove},{surface:'web-ui',expectedRevision});
     }
     const lexicon=String(words.lexicon||'');
     if(!['ack','continue','filler'].includes(lexicon))throw new HttpError(400,{code:'INVALID_LEXICON',key:'overlays.error.invalidLexicon',
