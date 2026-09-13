@@ -105,7 +105,7 @@ Every page takes an explicit scope — one project, common (global) memory, or a
 
 - Knowledge changes, jobs, model attempts, recalls, system logs and run history, each scoped like every other page.
 - Any job opens into its extraction target, its input versions, and the model attempts it actually spent.
-- Every row has a **Next action** derived from the failure-class table in [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구) (Korean) — a diagnosis, not a status word.
+- A row that needs something carries a **Next action** derived from the failure-class table in [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구) (Korean) — a diagnosis, not a status word.
 
 ![Jobs table with two jobs held on a model configuration, each showing the hold reason and the screen that owns it](assets/readme/en/activity-held.png)
 
@@ -127,7 +127,7 @@ Every page takes an explicit scope — one project, common (global) memory, or a
 
 - Pick the model and reasoning effort for Memex's own work from this Codex installation's catalog, or type an id the catalog does not list yet.
 - **Test this model once** makes exactly one real call — the only button on the page that spends anything — and clears the configuration hold for that selection.
-- Jobs parked on an unusable configuration are listed here with the reason and the oldest hold, and the resolution order (env → `models.json` → built-in default) is on screen. The embedding model is read-only in 0.7.x. ([GUIDE §21](docs/GUIDE.md#21-모델-선택-070-31))
+- Jobs parked on an unusable configuration are listed here with the reason and the oldest hold, and each row below the form says not just what is in effect but where it came from: an environment variable, `models.json`, or the built-in default. The embedding model is read-only in 0.7.x. ([GUIDE §21](docs/GUIDE.md#21-모델-선택-070-31))
 
 ### English and Korean
 
