@@ -2,7 +2,7 @@
 
 **A local-first long-term memory layer for Codex.** It collects your conversations, distills the decisions worth keeping, binds each one to the exchange that proves it, and brings the right ones back the next time they matter.
 
-[![Release](https://img.shields.io/badge/release-0.7.2-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.7.3-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)

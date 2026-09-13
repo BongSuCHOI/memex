@@ -2,6 +2,35 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.3 - 2026-09-14
+
+README rebuilt around the 0.7.0 workspace, plus two small fixes.
+
+### Documentation
+
+- README.md and README-KR.md are restructured: hero capture (light/dark via
+  `<picture>`), why Memex, a 60-second quick start, an eight-stop workspace tour
+  (overview, memory & facts, knowledge map, activity incl. held jobs, 관리 ›
+  overlays, 관리 › models, EN/KO, sync), how it works, a ten-command cheat sheet,
+  verification, roadmap. The previous reference sections are kept under
+  `<details>`. Captures are regenerated per language — nine each, four new:
+  `facts-table` (tier badges), `activity-held`, `settings-overlays`,
+  `settings-models`. (#122)
+
+### Gates and CLI
+
+- Every e2e script pins the embedding model cache to the checkout's cache and
+  fails fast (naming `memex deps warm`) when it is absent, so no gate downloads
+  the model into a temporary root; `memex backfill all` now names the cause when
+  a stage fails (worker exit code, signal, output tail) instead of only
+  "embeddings backfill failed". (#114)
+- `memex gate …` and `memex extract …` speak English like the rest of the CLI;
+  `--json` payloads are unchanged. (#115)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.2 - 2026-09-11
 
 Hotfixes for the seven findings of the post-release review of 0.7.1 (b6af142..v0.7.1),
