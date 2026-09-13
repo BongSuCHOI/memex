@@ -2,6 +2,27 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.9 - 2026-09-14
+
+Hotfixes for the three findings of the post-release review of 0.7.8.
+
+### Custom fact kinds
+
+- `KIND_ID_SHADOWS_GLOBAL` refuses only writes. A rules file written before
+  0.7.8 in which a project override redefines a global id loads as it did in
+  0.7.7 (the global definition wins) with a warning from `validate` and doctor,
+  instead of turning invalid and holding extraction for every project. (#121)
+- Scheduling a registry re-sync invalidates any in-flight older request at
+  once, so a response arriving during the debounce window can no longer apply a
+  stale list. (#121)
+- Filter chips are scope-aware: a project scope shows the definitions that
+  resolve for that project (global first, then its own), and the all-projects
+  view shows one chip per id, never another project's label. (#121)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.8 - 2026-09-14
 
 Hotfixes for the three findings of the post-release review of 0.7.7, all in the
