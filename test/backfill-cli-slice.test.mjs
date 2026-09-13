@@ -249,7 +249,11 @@ describe("memex backfill CLI 계약", () => {
     } catch (err) {
       assert.equal(err.status, 1);
       assert.match(err.stdout, /model budget missing-budget does not exist/);
-      assert.match(err.stderr, /ontology backfill failed\./);
+      // #114: the stage's exit code and its last output travel into the failure
+      // line, so the reason is visible without reading the worker's own log.
+      assert.match(err.stderr, /ontology backfill failed: /);
+      assert.match(err.stderr, /Command failed with exit code 1/);
+      assert.match(err.stderr, /last output: .*model budget missing-budget does not exist/);
       assert.doesNotMatch(err.stdout, /completed/);
     }
   });

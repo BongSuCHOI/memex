@@ -1326,6 +1326,10 @@ memex doctor    →  llm-model: warn  held — the provider rejected the request
 **기기 간 공유는 0.7.1입니다.** 오버레이는 sync 프로토콜에 들어가지 않으므로 기기마다 따로 써야
 하고, `memex gate show`도 그 사실을 한 줄로 알립니다.
 
+**0.7.3부터 두 명령의 출력은 영어입니다**(#115). 표 라벨·거절 메시지·트랜스크립트가 나머지
+CLI(`memex models`·`sync`·`status`·`doctor`)와 같은 영어이고, `--json` 페이로드의 모양은 그대로입니다.
+문서는 한국어를 유지합니다.
+
 두 오버레이는 **실패 방향이 반대**입니다. 같은 파일 형식인데 결과가 정반대이므로 혼동하지 마십시오.
 
 | | 규칙이 깨졌을 때 |
@@ -1394,7 +1398,7 @@ memex gate rollback --to <revision>
 수량자가 붙은 그룹, 첫 글자 집합이 겹치는 인접 반복(`a+a+`, `\w+\d+`)은 거절합니다.
 
 격리 키는 `(pattern_id, source_sha8)`이므로 **정규식을 고치면 자동으로 풀립니다**(쓰기 영수증이
-`격리 해제`로 알려 줍니다). 그대로 다시 시도해 보려면 `memex gate quarantine clear <pattern-id>`
+`Released`로 알려 줍니다). 그대로 다시 시도해 보려면 `memex gate quarantine clear <pattern-id>`
 (또는 `--all`)를 씁니다. 격리 파일은 최대 200개를 보관하고 오래된 것부터 버립니다.
 
 ⚠️ 격리 파일은 두 오버레이가 **공유**합니다. `memex gate quarantine list`는 **회수 게이트의 행만**,

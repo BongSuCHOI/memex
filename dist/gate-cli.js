@@ -65,9 +65,9 @@ the regex (which clears it automatically) or run 'gate quarantine clear <id>'.
 The syntax limits and the ${PROBE_WALL_MS} ms write-time probe are defence in depth, not a proof.
 
 EXAMPLES:
-  memex gate patterns add memory '배포\\s*이력' --note "배포 이력 질문은 항상 회수"
-  memex gate test "왜 auth를 supabase로 바꿨지?" --compare-builtin
-  memex gate patterns disable memory.kr.다시
+  memex gate patterns add memory 'deploy\\s*history' --note "always recall deploy-history questions"
+  memex gate test "why did we switch auth to supabase?" --compare-builtin
+  memex gate patterns disable memory.en.again
   memex gate quarantine list
   memex gate rollback --to 7`;
 const argv = process.argv.slice(2);
@@ -185,8 +185,8 @@ function issueLines(issues) {
     return issues.map((issue) => `  ${pad(issue.severity, 9)}${pad(issue.code, 26)}${pad(issue.path ?? "-", 22)}${issue.message}`);
 }
 const SLOW_PATTERN_NOTE = [
-    "참고: 문법 검사만으로는 이런 패턴을 전부 걸러낼 수 없습니다. 저장되더라도 실행은",
-    `      ${MATCH_WALL_MS}ms 상한 안에서만 일어나고, 상한을 넘으면 해당 패턴은 격리되어 회수 판정에서 빠집니다.`,
+    "Note: a syntax check alone cannot catch every pattern like this. Even once stored, it only",
+    `      runs inside the ${MATCH_WALL_MS}ms budget, and a pattern that exceeds it is quarantined and drops out of the recall decision.`,
 ];
 function hasRegexIssue(issues) {
     return issues.some((issue) => issue.code.startsWith("REGEX_") || issue.code === "PATTERN_TOO_SLOW");
@@ -196,27 +196,27 @@ function failFromError(error) {
     if (error instanceof OverlayInvalidError) {
         const errors = error.issues.filter((issue) => issue.severity === "error");
         fail("OVERLAY_INVALID", [
-            "거부 — 아무것도 저장하지 않았습니다.",
+            "Refused — nothing was saved.",
             ...issueLines(error.issues),
             ...(hasRegexIssue(errors) ? SLOW_PATTERN_NOTE : []),
         ], { issues: error.issues });
     }
     if (error instanceof OverlayStaleError) {
         fail("OVERLAY_STALE", [
-            "거부 — 아무것도 저장하지 않았습니다.",
-            `  OVERLAY_STALE  현재 revision ${error.currentRevision} (기대 ${error.expectedRevision}) — 다른 곳에서 먼저 바뀌었습니다.`,
+            "Refused — nothing was saved.",
+            `  OVERLAY_STALE  current revision ${error.currentRevision} (expected ${error.expectedRevision}) — it changed somewhere else first.`,
         ], { currentRevision: error.currentRevision, expectedRevision: error.expectedRevision });
     }
     if (error instanceof OverlayLockedError) {
         fail("OVERLAY_LOCKED", [
-            "거부 — 아무것도 저장하지 않았습니다.",
+            "Refused — nothing was saved.",
             error.holderPid === null
-                ? "  OVERLAY_LOCKED  다른 프로세스가 규칙을 쓰고 있습니다 (lock을 읽을 수 없었습니다)."
-                : `  OVERLAY_LOCKED  다른 프로세스(pid ${error.holderPid})가 규칙을 쓰고 있습니다.`,
+                ? "  OVERLAY_LOCKED  another process is writing the rules (the lock could not be read)."
+                : `  OVERLAY_LOCKED  another process (pid ${error.holderPid}) is writing the rules.`,
         ], { holderPid: error.holderPid });
     }
     fail("GATE_CLI_ERROR", [
-        "거부 — 아무것도 저장하지 않았습니다.",
+        "Refused — nothing was saved.",
         `  ${error instanceof Error ? error.message : String(error)}`,
     ]);
 }
@@ -313,7 +313,7 @@ async function dryRun(next, summary, opts = {}) {
     const errors = result.issues.filter((issue) => issue.severity === "error");
     if (errors.length > 0) {
         fail("OVERLAY_INVALID", [
-            "시험 실행 — 거부되었습니다. 아무것도 저장하지 않았습니다.",
+            "Dry run — refused. Nothing was saved.",
             ...issueLines(result.issues),
             ...(hasRegexIssue(errors) ? SLOW_PATTERN_NOTE : []),
         ], { dryRun: true, issues: result.issues });
@@ -325,11 +325,11 @@ async function dryRun(next, summary, opts = {}) {
         issues: result.issues,
         rerun: rerunCommand(revision, opts.extraFlags ?? []),
     }, [
-        "시험 실행 — 아무것도 저장하지 않았습니다.",
+        "Dry run — nothing was saved.",
         ...summary.map((line) => `  ${line}`),
-        `검증  오류 0개 · 경고 ${result.issues.length}개`,
+        `Checked  0 errors · ${result.issues.length} warnings`,
         ...issueLines(result.issues),
-        `다음  ${rerunCommand(revision, opts.extraFlags ?? [])}`,
+        `Next     ${rerunCommand(revision, opts.extraFlags ?? [])}`,
     ]);
     process.exit(0);
 }
@@ -347,12 +347,12 @@ function writeReceipt(action, headline, before, result, payload = {}) {
         ...payload,
     }, [
         ...headline,
-        row("파일", `${overlayPaths().gate}  (revision ${before.revision} → ${result.revision}, ${before.hash ?? "없음"} → ${result.hash ?? "없음"})`),
+        row("File", `${overlayPaths().gate}  (revision ${before.revision} → ${result.revision}, ${before.hash ?? "none"} → ${result.hash ?? "none"})`),
         ...(result.quarantineCleared.length > 0
-            ? [row("격리 해제", result.quarantineCleared.join(" · "))]
+            ? [row("Released", result.quarantineCleared.join(" · "))]
             : []),
-        ...(result.issues.length > 0 ? ["경고", ...issueLines(result.issues)] : []),
-        row("감사", `logs/ui-audit.jsonl action=${action} · overlays/history.jsonl overlay=recall-gate revision=${result.revision}`),
+        ...(result.issues.length > 0 ? ["Warnings", ...issueLines(result.issues)] : []),
+        row("Audit", `logs/ui-audit.jsonl action=${action} · overlays/history.jsonl overlay=recall-gate revision=${result.revision}`),
     ]);
 }
 function before() {
@@ -372,15 +372,15 @@ function intentCounts() {
 }
 function statusLine(loaded) {
     if (overlaysDisabled())
-        return "읽지 않음 — MEMEX_DISABLE_OVERLAYS=1 · 내장 기본값만 적용됩니다";
+        return "not read — MEMEX_DISABLE_OVERLAYS=1 · only the built-in defaults apply";
     if (!loaded.present)
-        return "없음 — 내장 기본값만 적용됩니다";
+        return "absent — only the built-in defaults apply";
     const errors = loaded.issues.filter((issue) => issue.severity === "error");
     const onlyQuarantine = errors.length > 0 && errors.every((issue) => issue.code === "PATTERN_QUARANTINED");
     if (errors.length > 0 && !onlyQuarantine) {
-        return `무시됨 — 오류 ${errors.length}개 · 내장 기본값으로 동작합니다 (memex gate validate)`;
+        return `ignored — ${errors.length} error(s) · running on the built-in defaults (memex gate validate)`;
     }
-    return `적용됨 · revision ${loaded.revision} · ${loaded.hash ?? "없음"} · ${shortTime(loaded.doc?.updated_at)}`;
+    return `applied · revision ${loaded.revision} · ${loaded.hash ?? "none"} · ${shortTime(loaded.doc?.updated_at)}`;
 }
 function cmdShow() {
     const loaded = loadRecallGateOverlay();
@@ -417,19 +417,19 @@ function cmdShow() {
         probeWallMs: PROBE_WALL_MS,
         shared: false,
     }, [
-        row("파일", overlayPaths().gate),
-        row("상태", statusLine(loaded)),
-        row("내장", `패턴 ${builtinTotal}개 (${countText})`),
-        `${CONTINUE}어휘 ${LEXICONS.map((lexicon) => `${lexicon} ${catalog.words[lexicon].length}`).join(" · ")}`,
-        row("사용자", `추가 ${loaded.patterns.length}개 · 비활성 ${loaded.disabled.length}개 · 격리 ${quarantined.length}개`),
-        row("실행", `사용자 패턴은 별도 스레드에서 프롬프트당 ${MATCH_WALL_MS}ms 상한으로 실행됩니다.`),
-        `${CONTINUE}상한을 넘으면 그 패턴은 격리되고 회수 판정에서 빠집니다.`,
-        row("경고", warnings.length === 0 && errors.length === 0
-            ? "없음"
-            : `오류 ${errors.length}개 · 경고 ${warnings.length}개`),
+        row("File", overlayPaths().gate),
+        row("Status", statusLine(loaded)),
+        row("Built-in", `${builtinTotal} patterns (${countText})`),
+        `${CONTINUE}words ${LEXICONS.map((lexicon) => `${lexicon} ${catalog.words[lexicon].length}`).join(" · ")}`,
+        row("User", `${loaded.patterns.length} added · ${loaded.disabled.length} disabled · ${quarantined.length} quarantined`),
+        row("Execution", `User patterns run in a separate thread under a ${MATCH_WALL_MS}ms budget per prompt.`),
+        `${CONTINUE}A pattern that exceeds it is quarantined and drops out of the recall decision.`,
+        row("Warnings", warnings.length === 0 && errors.length === 0
+            ? "none"
+            : `${errors.length} error(s) · ${warnings.length} warning(s)`),
         ...issueLines(loaded.issues),
-        row("적용 시점", "실행 중인 주입 데몬은 다음 프롬프트에서 이 파일을 다시 읽습니다 (재시작 불필요)."),
-        row("공유", "이 규칙은 아직 기기 간에 공유되지 않습니다 (0.7.1 예정)."),
+        row("Effective", "A running inject daemon re-reads this file on the next prompt (no restart needed)."),
+        row("Sharing", "These rules are not shared between devices yet (planned for 0.7.1)."),
     ]);
 }
 function patternRows(loaded) {
@@ -467,11 +467,11 @@ function patternRows(loaded) {
     return rows;
 }
 const STATE_LABEL = {
-    active: "활성",
-    disabled: "비활성",
-    quarantined: "격리",
-    builtin: "내장",
-    user: "사용자",
+    active: "active",
+    disabled: "disabled",
+    quarantined: "quarantined",
+    builtin: "built-in",
+    user: "user",
 };
 function cmdPatternsList() {
     const loaded = loadRecallGateOverlay();
@@ -500,10 +500,10 @@ function cmdPatternsList() {
         }
     });
     emit({ source, intent: intent ?? null, count: rows.length, patterns: rows }, rows.length === 0
-        ? ["해당하는 규칙이 없습니다."]
+        ? ["No matching rules."]
         : [
-            `규칙 ${rows.length}개 (내장 ${rows.filter((r) => r.origin === "builtin").length} · 사용자 ${rows.filter((r) => r.origin === "user").length} · 비활성 ${rows.filter((r) => r.state === "disabled").length} · 격리 ${rows.filter((r) => r.state === "quarantined").length})`,
-            ...rows.map((candidate) => `  ${pad(`[${STATE_LABEL[candidate.origin]}]`, 9)}${pad(STATE_LABEL[candidate.state], 9)}${pad(candidate.intent, 18)}${pad(candidate.id, 26)}/${candidate.source}/${candidate.flags}`),
+            `${rows.length} rules (built-in ${rows.filter((r) => r.origin === "builtin").length} · user ${rows.filter((r) => r.origin === "user").length} · disabled ${rows.filter((r) => r.state === "disabled").length} · quarantined ${rows.filter((r) => r.state === "quarantined").length})`,
+            ...rows.map((candidate) => `  ${pad(`[${STATE_LABEL[candidate.origin]}]`, 11)}${pad(STATE_LABEL[candidate.state], 13)}${pad(candidate.intent, 18)}${pad(candidate.id, 26)}/${candidate.source}/${candidate.flags}`),
         ]);
 }
 async function cmdPatternsAdd() {
@@ -524,7 +524,7 @@ async function cmdPatternsAdd() {
             ...(next.patterns.add ?? []).filter((pattern) => pattern.id !== id),
             { id, intent, source, flags, ...(note ? { note } : {}), created_at: new Date().toISOString() },
         ];
-        await dryRun(next, [`추가 예정  ${id}  intent=${intent}  /${source}/${flags}`]);
+        await dryRun(next, [`Would add  ${id}  intent=${intent}  /${source}/${flags}`]);
     }
     const snapshot = before();
     let result;
@@ -536,8 +536,8 @@ async function cmdPatternsAdd() {
     }
     const applied = loadRecallGateOverlay();
     writeReceipt("gate.pattern-add", [
-        row("검증", `문법 ok · 컴파일 ok · 프로브 ok (상한 ${PROBE_WALL_MS}ms) · 사용자 패턴 ${applied.doc?.patterns?.add?.length ?? 0}/${OVERLAY_LIMITS.counts.patternsAdd}`),
-        row("추가", `${id}  intent=${intent}  /${source}/${flags}`),
+        row("Checked", `syntax ok · compile ok · probe ok (budget ${PROBE_WALL_MS}ms) · user patterns ${applied.doc?.patterns?.add?.length ?? 0}/${OVERLAY_LIMITS.counts.patternsAdd}`),
+        row("Added", `${id}  intent=${intent}  /${source}/${flags}`),
     ], snapshot, result, { id, intent, source, flags, ...(note ? { note } : {}) });
 }
 async function cmdPatternsDisable() {
@@ -547,8 +547,8 @@ async function cmdPatternsDisable() {
     const resolved = resolveGatePatternId(target, values.get("--flags"));
     if (resolved === null) {
         fail("PATTERN_UNKNOWN", [
-            "거부 — 아무것도 저장하지 않았습니다.",
-            `  PATTERN_UNKNOWN  ${JSON.stringify(target)}에 해당하는 규칙이 없습니다 (memex gate patterns list).`,
+            "Refused — nothing was saved.",
+            `  PATTERN_UNKNOWN  no rule matches ${JSON.stringify(target)} (memex gate patterns list).`,
         ]);
     }
     const isUser = resolved.startsWith("user.");
@@ -562,7 +562,7 @@ async function cmdPatternsDisable() {
             next.patterns.disable = [...new Set([...(next.patterns.disable ?? []), resolved])];
         }
         await dryRun(next, [
-            isUser ? `삭제 예정  ${resolved} (사용자 패턴)` : `비활성 예정  ${resolved} (내장 규칙)`,
+            isUser ? `Would delete  ${resolved} (user pattern)` : `Would disable  ${resolved} (built-in rule)`,
         ]);
     }
     const snapshot = before();
@@ -578,9 +578,9 @@ async function cmdPatternsDisable() {
         failFromError(error);
     }
     writeReceipt("gate.pattern-disable", [
-        row(isUser ? "삭제" : "비활성", isUser
-            ? `${resolved} — 사용자 패턴을 지웠습니다.`
-            : `${resolved} — 내장 규칙을 껐습니다 (카탈로그에는 남아 있고 memex gate patterns enable ${resolved} 로 되살립니다).`),
+        row(isUser ? "Deleted" : "Disabled", isUser
+            ? `${resolved} — the user pattern is gone.`
+            : `${resolved} — the built-in is switched off (it stays in the catalogue, and memex gate patterns enable ${resolved} brings it back).`),
     ], snapshot, result, { id: resolved, builtin: !isUser });
 }
 /**
@@ -600,15 +600,15 @@ async function cmdPatternsEnable() {
         : resolveGatePatternId(target, values.get("--flags"));
     if (resolved === null || !loaded.disabled.includes(resolved)) {
         fail("PATTERN_NOT_DISABLED", [
-            "거부 — 아무것도 저장하지 않았습니다.",
-            `  PATTERN_NOT_DISABLED  ${JSON.stringify(target)}은 꺼져 있지 않습니다 (memex gate patterns list --source disabled).`,
+            "Refused — nothing was saved.",
+            `  PATTERN_NOT_DISABLED  ${JSON.stringify(target)} is not switched off (memex gate patterns list --source disabled).`,
         ]);
     }
     if (bools.has("--dry-run")) {
         const next = currentRawDoc();
         next.patterns = next.patterns ?? {};
         next.patterns.disable = (next.patterns.disable ?? []).filter((id) => id !== resolved);
-        await dryRun(next, [`재활성 예정  ${resolved}`]);
+        await dryRun(next, [`Would re-enable  ${resolved}`]);
     }
     const snapshot = before();
     let result;
@@ -624,7 +624,7 @@ async function cmdPatternsEnable() {
     catch (error) {
         failFromError(error);
     }
-    writeReceipt("gate.pattern-enable", [row("재활성", `${resolved} — 다시 회수 판정에 참여합니다.`)], snapshot, result, { id: resolved });
+    writeReceipt("gate.pattern-enable", [row("Re-enabled", `${resolved} — it takes part in the recall decision again.`)], snapshot, result, { id: resolved });
 }
 /* -------------------------------------------------------------------------- */
 /* words                                                                       */
@@ -636,11 +636,20 @@ function cmdWordsList() {
         builtin: Object.fromEntries(LEXICONS.map((lexicon) => [lexicon, catalog.words[lexicon]])),
         user: loaded.words,
     }, LEXICONS.flatMap((lexicon) => [
-        row(lexicon, `내장 ${catalog.words[lexicon].length}개`),
-        `${CONTINUE}추가 ${(loaded.words.add?.[lexicon] ?? []).join(" · ") || "없음"}`,
-        `${CONTINUE}비활성 ${(loaded.words.disable?.[lexicon] ?? []).join(" · ") || "없음"}`,
+        row(lexicon, `${catalog.words[lexicon].length} built-in`),
+        `${CONTINUE}added ${(loaded.words.add?.[lexicon] ?? []).join(" · ") || "none"}`,
+        `${CONTINUE}disabled ${(loaded.words.disable?.[lexicon] ?? []).join(" · ") || "none"}`,
     ]));
 }
+/**
+ * The receipt labels are past tense ("Added"); a dry run has not done it yet.
+ */
+const WOULD = {
+    Added: "Would add",
+    Deleted: "Would delete",
+    Disabled: "Would disable",
+    "Re-enabled": "Would re-enable",
+};
 /**
  * `words add` = "make this word count", `words remove` = "stop it counting".
  *
@@ -666,35 +675,35 @@ async function cmdWords(verb) {
     if (verb === "add") {
         if (inDisable) {
             change = { removeDisable: [word] };
-            headline = ["재활성", `${lexicon} "${word}" — 내장 어휘를 다시 켰습니다.`];
+            headline = ["Re-enabled", `${lexicon} "${word}" — the built-in word is back on.`];
         }
         else if (inAdd) {
             fail("WORD_UNCHANGED", [
-                "거부 — 아무것도 저장하지 않았습니다.",
-                `  WORD_UNCHANGED  ${lexicon} "${word}"는 이미 추가되어 있습니다.`,
+                "Refused — nothing was saved.",
+                `  WORD_UNCHANGED  ${lexicon} "${word}" is already added.`,
             ]);
         }
         else {
             change = { add: [word] };
-            headline = ["추가", `${lexicon} "${word}"`];
+            headline = ["Added", `${lexicon} "${word}"`];
         }
     }
     else {
         if (inAdd) {
             change = { removeAdd: [word] };
-            headline = ["삭제", `${lexicon} "${word}" — 추가한 어휘를 지웠습니다.`];
+            headline = ["Deleted", `${lexicon} "${word}" — the added word is gone.`];
         }
         else if (isBuiltin && !inDisable) {
             change = { disable: [word] };
             headline = [
-                "비활성",
-                `${lexicon} "${word}" — 내장 어휘를 껐습니다 (memex gate words add ${lexicon} ${word} 로 되살립니다).`,
+                "Disabled",
+                `${lexicon} "${word}" — the built-in word is switched off (memex gate words add ${lexicon} ${word} brings it back).`,
             ];
         }
         else {
             fail("WORD_UNKNOWN", [
-                "거부 — 아무것도 저장하지 않았습니다.",
-                `  WORD_UNKNOWN  ${lexicon}에 "${word}"가 없습니다 (memex gate words list).`,
+                "Refused — nothing was saved.",
+                `  WORD_UNKNOWN  ${lexicon} has no "${word}" (memex gate words list).`,
             ]);
         }
     }
@@ -714,7 +723,7 @@ async function cmdWords(verb) {
         if (change.removeDisable) {
             next.words.disable[lexicon] = next.words.disable[lexicon].filter((w) => w !== word);
         }
-        await dryRun(next, [`${headline[0]} 예정  ${headline[1]}`]);
+        await dryRun(next, [`${WOULD[headline[0]] ?? `Would ${headline[0]}`}  ${headline[1]}`]);
     }
     const snapshot = before();
     let result;
@@ -737,7 +746,7 @@ async function cmdWords(verb) {
 /* test / replay                                                               */
 /* -------------------------------------------------------------------------- */
 function originLabel(origin) {
-    return origin === "builtin" ? "내장" : "사용자";
+    return origin === "builtin" ? "built-in" : "user";
 }
 function matchedText(matched) {
     if (matched.length === 0)
@@ -759,7 +768,7 @@ async function sessionState(sessionId) {
     }
     catch (error) {
         fail("DB_UNAVAILABLE", [
-            `데이터베이스를 열 수 없어 --session을 읽지 못했습니다: ${error instanceof Error ? error.message : String(error)}`,
+            `could not open the database, so --session was not read: ${error instanceof Error ? error.message : String(error)}`,
         ]);
     }
     let gateRow;
@@ -773,11 +782,11 @@ async function sessionState(sessionId) {
     }
     catch (error) {
         fail("DB_UNAVAILABLE", [
-            `세션 상태를 읽을 수 없습니다: ${error instanceof Error ? error.message : String(error)}`,
+            `could not read the session state: ${error instanceof Error ? error.message : String(error)}`,
         ]);
     }
     if (!gateRow) {
-        fail("SESSION_UNKNOWN", [`세션 ${sessionId}의 게이트 상태가 없습니다 (memex status).`]);
+        fail("SESSION_UNKNOWN", [`no gate state for session ${sessionId} (memex status).`]);
     }
     let fingerprint = [];
     try {
@@ -818,55 +827,55 @@ async function cmdTest() {
         matcher.dispose();
     }
     const lines = [
-        row("프롬프트", `${prompt}   (${explanation.prompt.chars}자 · fingerprint 토큰 ${explanation.prompt.tokens.length}개${explanation.prompt.tokens.length > 0 ? `: ${explanation.prompt.tokens.join(", ")}` : ""})`),
-        row("규칙", explanation.overlay.present
-            ? `내장 + 오버레이 (${explanation.overlay.hash ?? "없음"}) · 사용자 패턴 실행 ${explanation.matcher.elapsedMs}ms / 상한 ${MATCH_WALL_MS}ms`
-            : "내장만 (오버레이 없음)"),
+        row("Prompt", `${prompt}   (${explanation.prompt.chars} chars · ${explanation.prompt.tokens.length} fingerprint token(s)${explanation.prompt.tokens.length > 0 ? `: ${explanation.prompt.tokens.join(", ")}` : ""})`),
+        row("Rules", explanation.overlay.present
+            ? `built-in + overlay (${explanation.overlay.hash ?? "none"}) · user patterns ran ${explanation.matcher.elapsedMs}ms / budget ${MATCH_WALL_MS}ms`
+            : "built-in only (no overlay)"),
         "",
-        "의도",
+        "Intents",
     ];
     for (const intent of INTENTS) {
         const entry = explanation.intents[intent];
-        lines.push(`  ${pad(intent, 17)}${entry.fired ? "● 발화" : "○     "}   ${matchedText(entry.matched)}`.trimEnd());
+        lines.push(`  ${pad(intent, 17)}${entry.fired ? "● fired" : "○      "}   ${matchedText(entry.matched)}`.trimEnd());
     }
-    lines.push(`  ${pad("substantive", 17)}${explanation.decision.substantive ? "● 예" : "○ 아니오"}`);
+    lines.push(`  ${pad("substantive", 17)}${explanation.decision.substantive ? "● yes" : "○ no"}`);
     lines.push("");
-    lines.push(row("판정", explanation.decision.action));
+    lines.push(row("Decision", explanation.decision.action));
     lines.push(row("triggers", explanation.decision.triggers.join("+") || "—"));
     if (explanation.decision.skipReason)
-        lines.push(row("사유", explanation.decision.skipReason));
+        lines.push(row("Reason", explanation.decision.skipReason));
     if (loaded.disabled.length > 0) {
-        lines.push(row("비활성", `${loaded.disabled.join(" · ")} — 오버레이에서 꺼진 규칙 ${loaded.disabled.length}개`));
+        lines.push(row("Disabled", `${loaded.disabled.join(" · ")} — ${loaded.disabled.length} rule(s) switched off by the overlay`));
     }
     const quarantined = gateQuarantine();
     if (quarantined.length > 0) {
-        lines.push(row("격리", `${quarantined.map((entry) => entry.pattern_id).join(" · ")} — ${MATCH_WALL_MS}ms 상한을 넘겨 회수 판정에 적용되지 않습니다`));
+        lines.push(row("Quarantined", `${quarantined.map((entry) => entry.pattern_id).join(" · ")} — over the ${MATCH_WALL_MS}ms budget, so they are not applied to the recall decision`));
     }
     if (explanation.matcher.timedOut) {
-        lines.push(row("matcher", `상한 ${MATCH_WALL_MS}ms 초과 — 이번 실행에서 격리: ${explanation.matcher.quarantined.join(" · ") || "없음"}`));
+        lines.push(row("matcher", `over the ${MATCH_WALL_MS}ms budget — quarantined in this run: ${explanation.matcher.quarantined.join(" · ") || "none"}`));
     }
     else if (explanation.matcher.unavailable) {
-        lines.push(row("matcher", "사용할 수 없었습니다 — 사용자 패턴 없이 내장 규칙으로 판정했습니다 (fail-safe)"));
+        lines.push(row("matcher", "unavailable — decided on the built-in rules without user patterns (fail-safe)"));
     }
-    lines.push(row("상태 가정", explanation.stateSource === "session"
-        ? `--session ${sessionId} → 실제 상태 (epoch ${state?.contextEpoch ?? 0}, fingerprint ${state?.topicFingerprint.length ?? 0}개, resident 없음)`
-        : "--session 없음 → 중립 상태 (epoch 0, fingerprint 없음, resident 없음)"));
-    lines.push(row("임베딩", "0회 — 게이트는 모델·임베딩을 호출하지 않습니다"));
+    lines.push(row("State", explanation.stateSource === "session"
+        ? `--session ${sessionId} → real state (epoch ${state?.contextEpoch ?? 0}, ${state?.topicFingerprint.length ?? 0} fingerprint token(s), no residents)`
+        : "no --session → neutral state (epoch 0, no fingerprint, no residents)"));
+    lines.push(row("Embeddings", "0 calls — the gate calls no model and no embedding"));
     if (explanation.builtinOnly) {
         lines.push("");
-        lines.push(`${pad("", 20)}${pad("내장만", 16)}내장+오버레이`);
-        lines.push(`${pad("판정", 20)}${pad(explanation.builtinOnly.action, 16)}${explanation.decision.action}`);
-        lines.push(`${pad("triggers", 20)}${pad(explanation.builtinOnly.triggers.join("+") || "—", 16)}${explanation.decision.triggers.join("+") || "—"}`);
-        lines.push(`${pad("예상 임베딩 호출", 20)}${pad(explanation.builtinOnly.action === "ambiguous" ? "1회" : "0회", 16)}${explanation.decision.action === "ambiguous" ? "1회" : "0회"}`);
-        lines.push(`${pad("차이를 만든 규칙", 20)}${(explanation.diffCause ?? []).length === 0
-            ? "없음"
+        lines.push(`${pad("", 20)}${pad("built-in only", 20)}built-in + overlay`);
+        lines.push(`${pad("Decision", 20)}${pad(explanation.builtinOnly.action, 20)}${explanation.decision.action}`);
+        lines.push(`${pad("triggers", 20)}${pad(explanation.builtinOnly.triggers.join("+") || "—", 20)}${explanation.decision.triggers.join("+") || "—"}`);
+        lines.push(`${pad("Embedding calls", 20)}${pad(explanation.builtinOnly.action === "ambiguous" ? "1" : "0", 20)}${explanation.decision.action === "ambiguous" ? "1" : "0"}`);
+        lines.push(`${pad("Rules that differ", 20)}${(explanation.diffCause ?? []).length === 0
+            ? "none"
             : explanation
                 .diffCause.map((entry) => `${entry.id} /${entry.source}/ (intent ${entry.intent})`)
                 .join(" · ")}`);
     }
     lines.push("");
-    lines.push("이 명령은 아무것도 기록하지 않습니다: 주입 로그·recall 영수증·세션 상태 모두 변경 없음.");
-    lines.push(`(단, 사용자 패턴이 ${MATCH_WALL_MS}ms 상한을 넘기면 실제 운영과 동일하게 격리됩니다 — 그 사실만 기록합니다.)`);
+    lines.push("This command records nothing: inject log, recall receipt and session state are all unchanged.");
+    lines.push(`(One exception: a user pattern that exceeds the ${MATCH_WALL_MS}ms budget is quarantined exactly as in production — only that fact is recorded.)`);
     emit({
         ...explanation,
         // `explanation.prompt` is the measurement ({chars, tokens}); the text the
@@ -884,7 +893,7 @@ async function cmdReplay() {
     const changesWords = LEXICONS.some((lexicon) => (loaded.words.add?.[lexicon]?.length ?? 0) > 0 || (loaded.words.disable?.[lexicon]?.length ?? 0) > 0);
     if (!loaded.present || (loaded.patterns.length === 0 && loaded.disabled.length === 0 && !changesWords)) {
         emit({ considered: 0, changed: 0, rows: [], overlay: { present: loaded.present, hash: loaded.hash } }, [
-            "오버레이가 회수 판정을 바꾸지 않습니다 — 비교할 것이 없습니다.",
+            "The overlay does not change the recall decision — there is nothing to compare.",
         ]);
         return;
     }
@@ -905,7 +914,7 @@ async function cmdReplay() {
     }
     catch (error) {
         fail("DB_UNAVAILABLE", [
-            `최근 프롬프트를 읽을 수 없습니다: ${error instanceof Error ? error.message : String(error)}`,
+            `could not read the recent prompts: ${error instanceof Error ? error.message : String(error)}`,
         ]);
     }
     const matcher = oneShotMatcher();
@@ -941,14 +950,14 @@ async function cmdReplay() {
         changed: changed.length,
         rows: replayed,
     }, [
-        row("재생", `최근 프롬프트 ${replayed.length}개 · 중립 상태 가정 · 모델·임베딩 호출 0회`),
-        row("규칙", `내장 + 오버레이 (${loaded.hash ?? "없음"})`),
-        row("변화", `${changed.length}개 / ${replayed.length}개`),
+        row("Replay", `${replayed.length} recent prompt(s) · neutral state assumed · 0 model and embedding calls`),
+        row("Rules", `built-in + overlay (${loaded.hash ?? "none"})`),
+        row("Changed", `${changed.length} / ${replayed.length}`),
         ...changed.map((entry) => `  ${pad(`${entry.builtinOnly} → ${entry.overlay}`, 24)}"${preview(entry.prompt)}"${entry.diffCause.length > 0
             ? `   ${entry.diffCause.map((cause) => `${cause.id} /${cause.source}/ (${cause.intent})`).join(" · ")}`
             : ""}`),
         "",
-        "이 명령은 아무것도 기록하지 않습니다: 주입 로그·recall 영수증·세션 상태 모두 변경 없음.",
+        "This command records nothing: inject log, recall receipt and session state are all unchanged.",
     ]);
 }
 /* -------------------------------------------------------------------------- */
@@ -962,8 +971,8 @@ async function cmdValidate() {
     let bytes = 0;
     if (!fs.existsSync(target)) {
         emit({ file: target, present: false, issues: [] }, [
-            row("파일", target),
-            row("결과", "없음 — 내장 기본값만 적용됩니다. 검증할 것이 없습니다."),
+            row("File", target),
+            row("Result", "absent — only the built-in defaults apply. There is nothing to validate."),
         ]);
         return;
     }
@@ -974,8 +983,8 @@ async function cmdValidate() {
     }
     catch (error) {
         fail("OVERLAY_UNREADABLE", [
-            row("파일", target),
-            row("결과", `읽을 수 없습니다 — ${error instanceof Error ? error.message : String(error)}`),
+            row("File", target),
+            row("Result", `unreadable — ${error instanceof Error ? error.message : String(error)}`),
         ]);
     }
     const result = await validateOverlay("recall-gate", raw, { probe: true, forWrite: false });
@@ -991,8 +1000,8 @@ async function cmdValidate() {
     const errors = issues.filter((issue) => issue.severity === "error");
     const warnings = issues.filter((issue) => issue.severity === "warning");
     const lines = [
-        row("파일", `${target} (${bytes} bytes / 상한 ${OVERLAY_LIMITS.fileBytes})`),
-        row("결과", errors.length === 0 ? `유효 · 경고 ${warnings.length}개` : `오류 ${errors.length}개 · 경고 ${warnings.length}개`),
+        row("File", `${target} (${bytes} bytes / limit ${OVERLAY_LIMITS.fileBytes})`),
+        row("Result", errors.length === 0 ? `valid · ${warnings.length} warning(s)` : `${errors.length} error(s) · ${warnings.length} warning(s)`),
         ...issueLines(issues),
     ];
     if (errors.length > 0) {
@@ -1001,7 +1010,7 @@ async function cmdValidate() {
         }
         else {
             console.error(lines.join("\n"));
-            console.error("오류가 하나라도 있으면 오버레이 전체가 무시되고 내장 기본값으로 동작합니다.");
+            console.error("A single error makes the whole overlay ignored, and the built-in defaults take over.");
         }
         process.exit(1);
     }
@@ -1011,13 +1020,13 @@ function cmdHistory() {
     const limit = intValue("--limit", 20);
     const entries = listOverlayHistory("recall-gate", limit);
     emit({ count: entries.length, snapshots: listOverlaySnapshots("recall-gate"), history: entries }, entries.length === 0
-        ? ["변경 이력이 없습니다."]
+        ? ["No change history."]
         : [
-            row("이력", `${entries.length}개 · 되돌릴 수 있는 revision: ${listOverlaySnapshots("recall-gate").join(", ") || "없음"}`),
+            row("History", `${entries.length} entries · revisions you can roll back to: ${listOverlaySnapshots("recall-gate").join(", ") || "none"}`),
             ...entries.map((entry) => `  ${pad(shortTime(entry.ts), 18)}${pad(`rev ${entry.from_revision} → ${entry.to_revision}`, 18)}${pad(entry.action, 22)}${pad(entry.surface, 9)}${[
-                entry.added?.length ? `추가 ${entry.added.join(",")}` : "",
-                entry.disabled?.length ? `비활성 ${entry.disabled.join(",")}` : "",
-                entry.removed?.length ? `삭제 ${entry.removed.join(",")}` : "",
+                entry.added?.length ? `added ${entry.added.join(",")}` : "",
+                entry.disabled?.length ? `disabled ${entry.disabled.join(",")}` : "",
+                entry.removed?.length ? `removed ${entry.removed.join(",")}` : "",
             ]
                 .filter(Boolean)
                 .join(" · ")}`),
@@ -1026,17 +1035,17 @@ function cmdHistory() {
 function cmdQuarantineList() {
     const entries = gateQuarantine();
     emit({ count: entries.length, quarantine: entries }, entries.length === 0
-        ? ["격리된 패턴이 없습니다."]
+        ? ["No quarantined patterns."]
         : [
-            `격리된 패턴 ${entries.length}개 — 이 규칙은 지금 회수 판정에 적용되지 않습니다.`,
+            `${entries.length} quarantined pattern(s) — they are not applied to the recall decision right now.`,
             ...entries.flatMap((entry) => {
                 const pattern = loadRecallGateOverlay().doc?.patterns?.add?.find((candidate) => candidate.id === entry.pattern_id);
                 return [
-                    `  ${pad(entry.pattern_id, 20)}${pad(entry.overlay, 14)}${pattern ? `intent=${pattern.intent}  /${pattern.source}/${pattern.flags}` : "(오버레이에서 이미 사라진 패턴)"}`,
-                    `  ${" ".repeat(20)}${shortTime(entry.at)} · ${entry.elapsed_ms}ms 초과 · 입력 ${entry.input_chars}자 · ${entry.surface}`,
+                    `  ${pad(entry.pattern_id, 20)}${pad(entry.overlay, 14)}${pattern ? `intent=${pattern.intent}  /${pattern.source}/${pattern.flags}` : "(a pattern the overlay no longer has)"}`,
+                    `  ${" ".repeat(20)}${shortTime(entry.at)} · ${entry.elapsed_ms}ms over · ${entry.input_chars} input chars · ${entry.surface}`,
                 ];
             }),
-            "해제: 정규식을 고치면 자동으로 풀립니다, 또는 memex gate quarantine clear <pattern-id> 로 한 번 더 시도하게 할 수 있습니다.",
+            "Release: fixing the regex clears it automatically, or run memex gate quarantine clear <pattern-id> to let it try once more.",
         ]);
 }
 async function cmdQuarantineClear() {
@@ -1056,23 +1065,23 @@ async function cmdQuarantineClear() {
     if (result.cleared === 0) {
         emit({ cleared: 0, ids: [], ...(dryRun ? { dryRun: true } : {}) }, [
             patternId === undefined
-                ? "격리된 패턴이 없습니다 — 변경 없음."
-                : `${patternId}는 격리 목록에 없습니다 — 변경 없음.`,
+                ? "No quarantined patterns — nothing changed."
+                : `${patternId} is not in the quarantine list — nothing changed.`,
         ]);
         return;
     }
     if (dryRun) {
         emit({ dryRun: true, cleared: 0, wouldClear: result.cleared, ids: result.ids }, [
-            row("해제 예정", `${result.ids.join(" · ")} (${result.cleared}개 항목)`),
-            row("변경", "없음 — --dry-run은 아무것도 쓰지 않습니다(감사 로그도 남기지 않습니다)."),
-            row("실행", `memex gate quarantine clear ${patternId ?? "--all"}`),
+            row("Would clear", `${result.ids.join(" · ")} (${result.cleared} entries)`),
+            row("Changes", "none — --dry-run writes nothing, not even an audit line."),
+            row("Run", `memex gate quarantine clear ${patternId ?? "--all"}`),
         ]);
         return;
     }
     emit({ cleared: result.cleared, ids: result.ids }, [
-        row("해제", `${result.ids.join(" · ")} (${result.cleared}개 항목)`),
-        row("효과", "다음 프롬프트에서 다시 실행됩니다. 상한을 또 넘으면 다시 격리됩니다."),
-        row("감사", "logs/ui-audit.jsonl action=gate.quarantine-clear"),
+        row("Cleared", `${result.ids.join(" · ")} (${result.cleared} entries)`),
+        row("Effect", "They run again on the next prompt. Exceeding the budget quarantines them again."),
+        row("Audit", "logs/ui-audit.jsonl action=gate.quarantine-clear"),
     ]);
 }
 async function cmdReset() {
@@ -1091,7 +1100,7 @@ async function cmdReset() {
         if (intent === undefined) {
             next = emptyGateDoc();
             summary = [
-                `비울 예정  사용자 패턴 ${add.length}개 · 비활성 표시 ${disable.length}개 — 내장 기본값만 남습니다`,
+                `Would clear  ${add.length} user pattern(s) · ${disable.length} disable mark(s) — only the built-in defaults remain`,
             ];
         }
         else {
@@ -1107,20 +1116,20 @@ async function cmdReset() {
                 },
             };
             summary = [
-                `비울 예정  intent=${intent}  사용자 패턴 ${removed.length}개 · 재활성 ${reEnabled.length}개`,
-                ...(removed.length > 0 ? [`  삭제  ${removed.join(" · ")}`] : []),
-                ...(reEnabled.length > 0 ? [`  재활성  ${reEnabled.join(" · ")}`] : []),
+                `Would clear  intent=${intent}  ${removed.length} user pattern(s) · ${reEnabled.length} re-enabled`,
+                ...(removed.length > 0 ? [`  delete  ${removed.join(" · ")}`] : []),
+                ...(reEnabled.length > 0 ? [`  re-enable  ${reEnabled.join(" · ")}`] : []),
             ];
         }
         await dryRun(next, summary, { probe: false, extraFlags: ["--yes"] });
     }
     if (!bools.has("--yes")) {
         fail("CONFIRMATION_REQUIRED", [
-            "거부 — 아무것도 저장하지 않았습니다.",
+            "Refused — nothing was saved.",
             intent === undefined
-                ? "  CONFIRMATION_REQUIRED  오버레이 전체를 비웁니다. 확인하려면 --yes 를 함께 주세요."
-                : `  CONFIRMATION_REQUIRED  intent=${intent}의 사용자 규칙을 비웁니다. 확인하려면 --yes 를 함께 주세요.`,
-            "  (되돌릴 수 있습니다: memex gate rollback --to <revision>)",
+                ? "  CONFIRMATION_REQUIRED  this clears the whole overlay. Pass --yes to confirm."
+                : `  CONFIRMATION_REQUIRED  this clears the user rules for intent=${intent}. Pass --yes to confirm.`,
+            "  (It is reversible: memex gate rollback --to <revision>)",
         ]);
     }
     const snapshot = before();
@@ -1136,9 +1145,9 @@ async function cmdReset() {
         failFromError(error);
     }
     writeReceipt("gate.reset", [
-        row("초기화", intent === undefined
-            ? "오버레이를 비웠습니다 — 내장 기본값만 적용됩니다."
-            : `intent=${intent}의 사용자 규칙과 비활성 표시를 비웠습니다.`),
+        row("Reset", intent === undefined
+            ? "the overlay is empty — only the built-in defaults apply."
+            : `cleared the user rules and disable marks for intent=${intent}.`),
     ], snapshot, result, { intent: intent ?? null });
 }
 async function cmdRollback() {
@@ -1152,14 +1161,14 @@ async function cmdRollback() {
         const kept = readOverlaySnapshot("recall-gate", revision);
         if (kept === null) {
             fail("SNAPSHOT_NOT_FOUND", [
-                "시험 실행 — 되돌릴 수 없습니다. 아무것도 저장하지 않았습니다.",
-                `  SNAPSHOT_NOT_FOUND  revision ${revision}의 스냅숏이 없습니다 (보관 중: ${listOverlaySnapshots("recall-gate").join(", ") || "없음"})`,
+                "Dry run — cannot roll back. Nothing was saved.",
+                `  SNAPSHOT_NOT_FOUND  no snapshot for revision ${revision} (kept: ${listOverlaySnapshots("recall-gate").join(", ") || "none"})`,
             ]);
         }
         const doc = JSON.parse(JSON.stringify(kept));
         const add = (doc.patterns?.add ?? []);
         const disable = (doc.patterns?.disable ?? []);
-        await dryRun(doc, [`되돌릴 예정  revision ${revision}의 스냅숏  사용자 패턴 ${add.length}개 · 비활성 표시 ${disable.length}개`], { probe: false });
+        await dryRun(doc, [`Would roll back  the revision ${revision} snapshot  ${add.length} user pattern(s) · ${disable.length} disable mark(s)`], { probe: false });
     }
     const snapshot = before();
     let result;
@@ -1172,7 +1181,7 @@ async function cmdRollback() {
     catch (error) {
         failFromError(error);
     }
-    writeReceipt("gate.rollback", [row("되돌림", `revision ${revision}의 스냅숏을 revision ${result.revision}으로 다시 적용했습니다.`)], snapshot, result, { fromSnapshot: revision });
+    writeReceipt("gate.rollback", [row("Rolled back", `the revision ${revision} snapshot is re-applied as revision ${result.revision}.`)], snapshot, result, { fromSnapshot: revision });
 }
 /* -------------------------------------------------------------------------- */
 /* Dispatch                                                                    */

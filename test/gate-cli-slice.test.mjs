@@ -141,9 +141,9 @@ test('--help prints the verb list, exits 0 and writes nothing (#36)', (t) => {
 test('show reports built-in defaults, the 50 ms budget and the sharing caveat', (t) => {
   const fixture = isolated(t);
   const result = ok(fixture, ['show']);
-  assert.match(result.stdout, /상태 +없음 — 내장 기본값만 적용됩니다/);
-  assert.match(result.stdout, /50ms 상한/);
-  assert.match(result.stdout, /기기 간에 공유되지 않습니다 \(0\.7\.1 예정\)/);
+  assert.match(result.stdout, /Status +absent — only the built-in defaults apply/);
+  assert.match(result.stdout, /50ms budget/);
+  assert.match(result.stdout, /not shared between devices yet \(planned for 0\.7\.1\)/);
   assert.ok(!fs.existsSync(fixture.overlayDir), 'a read must not create the overlay directory');
 
   const payload = asJson(ok(fixture, ['show', '--json']));
@@ -158,7 +158,7 @@ test('show reports built-in defaults, the 50 ms budget and the sharing caveat', 
 test('patterns add writes one revision, a snapshot, a history line and an audit line', (t) => {
   const fixture = isolated(t);
   const added = ok(fixture, ['patterns', 'add', 'memory', '배포\\s*이력', '--note', '배포 이력은 항상 회수']);
-  assert.match(added.stdout, /추가 +user\.[0-9a-f]{8} {2}intent=memory/);
+  assert.match(added.stdout, /Added +user\.[0-9a-f]{8} {2}intent=memory/);
   assert.match(added.stdout, /revision 0 → 1/);
   assert.match(added.stdout, /action=gate\.pattern-add/);
 
@@ -195,9 +195,9 @@ test('the reviewer counterexample is refused with exit 1 and no file at all', (t
   const fixture = isolated(t);
   const result = run(fixture, ['patterns', 'add', 'memory', '^a+b?a+b?a+b?a+b?a+b?a+b?a+b?a+$']);
   assert.equal(result.status, 1);
-  assert.match(both(result), /거부 — 아무것도 저장하지 않았습니다\./);
+  assert.match(both(result), /Refused — nothing was saved\./);
   assert.match(both(result), /error +REGEX_QUANTIFIER_BUDGET/);
-  assert.match(both(result), /문법 검사만으로는 이런 패턴을 전부 걸러낼 수 없습니다/);
+  assert.match(both(result), /a syntax check alone cannot catch every pattern like this/);
   assert.ok(!fs.existsSync(fixture.gateFile), 'a refused write may not create the overlay');
 
   const payload = asJson(run(fixture, ['patterns', 'add', 'memory', '(a+)+$', '--json']));
@@ -216,7 +216,7 @@ test('--expect-revision refuses a write that raced, and --dry-run writes nothing
 
   const stale = run(fixture, ['patterns', 'add', 'trace', '결정\\s*근거', '--expect-revision', '7']);
   assert.equal(stale.status, 1);
-  assert.match(both(stale), /OVERLAY_STALE +현재 revision 1 \(기대 7\)/);
+  assert.match(both(stale), /OVERLAY_STALE +current revision 1 \(expected 7\)/);
   assert.ok(fs.readFileSync(fixture.gateFile).equals(before), 'a stale write must change nothing');
 
   const staleJson = asJson(run(fixture, ['patterns', 'add', 'trace', '결정', '--expect-revision', '7', '--json']));
@@ -225,8 +225,8 @@ test('--expect-revision refuses a write that raced, and --dry-run writes nothing
   assert.equal(staleJson.error.expectedRevision, 7);
 
   const dry = ok(fixture, ['patterns', 'add', 'trace', '결정\\s*근거', '--dry-run']);
-  assert.match(dry.stdout, /시험 실행 — 아무것도 저장하지 않았습니다\./);
-  assert.match(dry.stdout, /다음 +memex gate patterns add trace .*--expect-revision 1/);
+  assert.match(dry.stdout, /Dry run — nothing was saved\./);
+  assert.match(dry.stdout, /Next +memex gate patterns add trace .*--expect-revision 1/);
   assert.ok(fs.readFileSync(fixture.gateFile).equals(before), '--dry-run must change nothing');
 
   // The command the dry run printed is the one that applies.
@@ -237,7 +237,7 @@ test('--expect-revision refuses a write that raced, and --dry-run writes nothing
 test('a built-in is disabled by id, listed, and switched back on', (t) => {
   const fixture = isolated(t);
   const disabled = ok(fixture, ['patterns', 'disable', 'ack.en.1']);
-  assert.match(disabled.stdout, /비활성 +ack\.en\.1/);
+  assert.match(disabled.stdout, /Disabled +ack\.en\.1/);
   assert.deepEqual(readGate(fixture).patterns.disable, ['ack.en.1']);
 
   const list = asJson(ok(fixture, ['patterns', 'list', '--source', 'disabled', '--json']));
@@ -248,10 +248,10 @@ test('a built-in is disabled by id, listed, and switched back on', (t) => {
 
   // `remove` is the design document's alias for the same operation.
   const aliased = ok(fixture, ['patterns', 'remove', 'ack.kr.1']);
-  assert.match(aliased.stdout, /비활성 +ack\.kr\.1/);
+  assert.match(aliased.stdout, /Disabled +ack\.kr\.1/);
 
   const back = ok(fixture, ['patterns', 'enable', 'ack.en.1']);
-  assert.match(back.stdout, /재활성 +ack\.en\.1/);
+  assert.match(back.stdout, /Re-enabled +ack\.en\.1/);
   assert.deepEqual(readGate(fixture).patterns.disable, ['ack.kr.1']);
 
   const notDisabled = run(fixture, ['patterns', 'enable', 'ack.en.1']);
@@ -307,13 +307,13 @@ test('test explains which rules fired, from where, and records nothing', (t) => 
   const before = fs.readFileSync(fixture.gateFile);
 
   const result = ok(fixture, ['test', '배포 이력 좀 보여줘']);
-  assert.match(result.stdout, /memory +● 발화 +user\.[0-9a-f]{8} \(사용자\)/);
-  assert.match(result.stdout, /판정 +retrieve/);
+  assert.match(result.stdout, /memory +● fired +user\.[0-9a-f]{8} \(user\)/);
+  assert.match(result.stdout, /Decision +retrieve/);
   assert.match(result.stdout, /triggers +explicit_memory_intent/);
-  assert.match(result.stdout, /비활성 +ack\.en\.1/);
-  assert.match(result.stdout, /상태 가정 +--session 없음 → 중립 상태/);
-  assert.match(result.stdout, /임베딩 +0회/);
-  assert.match(result.stdout, /이 명령은 아무것도 기록하지 않습니다/);
+  assert.match(result.stdout, /Disabled +ack\.en\.1/);
+  assert.match(result.stdout, /State +no --session → neutral state/);
+  assert.match(result.stdout, /Embeddings +0 calls/);
+  assert.match(result.stdout, /This command records nothing/);
 
   assert.ok(fs.readFileSync(fixture.gateFile).equals(before), 'test must not touch the overlay');
   assert.ok(!fs.existsSync(path.join(fixture.memexHome, 'logs', 'inject-context.jsonl')));
@@ -338,7 +338,7 @@ test('an unknown --session is refused instead of silently judged neutral', (t) =
   const fixture = isolated(t);
   const result = run(fixture, ['test', '배포 이력', '--session', 'no-such-session']);
   assert.equal(result.status, 1);
-  assert.match(result.stdout + result.stderr, /SESSION_UNKNOWN|게이트 상태가 없습니다/);
+  assert.match(result.stdout + result.stderr, /SESSION_UNKNOWN|no gate state for session/);
 });
 
 test('a slow planted pattern is quarantined by the 50 ms box, listed, and cleared', (t) => {
@@ -360,9 +360,9 @@ test('a slow planted pattern is quarantined by the 50 ms box, listed, and cleare
   assert.ok(['retrieve', 'skip', 'ambiguous'].includes(tested.decision.action));
 
   const listed = ok(fixture, ['quarantine', 'list']);
-  assert.match(listed.stdout, /격리된 패턴 1개/);
+  assert.match(listed.stdout, /1 quarantined pattern/);
   assert.match(listed.stdout, /user\.slowcase/);
-  assert.match(listed.stdout, /ms 초과/);
+  assert.match(listed.stdout, /ms over/);
 
   const shown = asJson(ok(fixture, ['show', '--json']));
   assert.equal(shown.user.quarantined, 1);
@@ -395,7 +395,7 @@ test('a slow planted pattern is quarantined by the 50 ms box, listed, and cleare
   // Still quarantined, so the hold behind it is still in force.
   assert.equal(asJson(ok(fixture, ['quarantine', 'list', '--json'])).count, 1);
   const previewText = ok(fixture, ['quarantine', 'clear', '--all', '--dry-run']);
-  assert.match(previewText.stdout, /해제 예정/);
+  assert.match(previewText.stdout, /Would clear/);
   assert.match(previewText.stdout, /user\.slowcase/);
   assert.equal(fs.readFileSync(quarantineFile, 'utf8'), quarantineBefore);
 
@@ -421,14 +421,14 @@ test('editing a pattern clears its quarantine row without asking', (t) => {
   assert.equal(asJson(ok(fixture, ['quarantine', 'list', '--json'])).count, 1);
 
   const removed = ok(fixture, ['patterns', 'disable', 'user.slowcase']);
-  assert.match(removed.stdout, /격리 해제 +user\.slowcase/);
+  assert.match(removed.stdout, /Released +user\.slowcase/);
   assert.equal(asJson(ok(fixture, ['quarantine', 'list', '--json'])).count, 0);
 });
 
 test('validate prints issue rows with path and severity and exits 1 on errors', (t) => {
   const fixture = isolated(t);
   const absent = ok(fixture, ['validate']);
-  assert.match(absent.stdout, /없음 — 내장 기본값만 적용됩니다/);
+  assert.match(absent.stdout, /absent — only the built-in defaults apply/);
 
   const broken = path.join(fixture.tmp, 'broken.json');
   fs.writeFileSync(
@@ -545,7 +545,7 @@ test('reset and rollback honour --dry-run, changing nothing', (t) => {
   unchanged('reset --intent --dry-run');
 
   const text = ok(fixture, ['reset', '--yes', '--dry-run']);
-  assert.match(text.stdout, /시험 실행 — 아무것도 저장하지 않았습니다\./);
+  assert.match(text.stdout, /Dry run — nothing was saved\./);
   unchanged('reset --yes --dry-run');
 
   const rolled = asJson(ok(fixture, ['rollback', '--to', '1', '--dry-run', '--json']));
@@ -567,7 +567,7 @@ test('reset and rollback honour --dry-run, changing nothing', (t) => {
 test('replay compares built-in and overlay verdicts over recent prompts, writing nothing', async (t) => {
   const fixture = isolated(t);
   const quiet = ok(fixture, ['replay']);
-  assert.match(quiet.stdout, /비교할 것이 없습니다/);
+  assert.match(quiet.stdout, /there is nothing to compare/);
 
   ok(fixture, ['patterns', 'add', 'memory', '배포\\s*이력']);
 
@@ -597,8 +597,8 @@ test('replay compares built-in and overlay verdicts over recent prompts, writing
   assert.match(changed.diffCause[0].id, /^user\./);
 
   const text = ok(fixture, ['replay', '--limit', '5']);
-  assert.match(text.stdout, /변화 +1개 \/ 2개/);
-  assert.match(text.stdout, /모델·임베딩 호출 0회/);
+  assert.match(text.stdout, /Changed +1 \/ 2/);
+  assert.match(text.stdout, /0 model and embedding calls/);
   assert.ok(!fs.existsSync(path.join(fixture.memexHome, 'logs', 'inject-context.jsonl')));
 
   const scoped = asJson(ok(fixture, ['replay', '--project', '/nowhere', '--json']));

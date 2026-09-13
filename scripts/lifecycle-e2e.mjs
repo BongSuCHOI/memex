@@ -22,8 +22,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { materializePluginDependencies } from "./materialize-plugin-dependencies.mjs";
+import { pinModelCacheForE2E } from "./e2e-model-cache-pin.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// #114: pin the embedding model cache at the checkout BEFORE the first spawn,
+// so the temporary data root below never becomes a 129 MB download target.
+pinModelCacheForE2E("lifecycle-e2e");
 /**
  * Memex-owned entries `setup-hooks` registers across the seven events.
  *

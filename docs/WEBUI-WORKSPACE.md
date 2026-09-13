@@ -96,7 +96,20 @@
 §10](FACT-LIFECYCLE.md#10-kr-translation)).
 
 스크린샷은 0.7.0부터 언어별로 둔다 — `assets/readme/en/`은 `README.md`, `assets/readme/ko/`는
-`README-KR.md`가 쓴다. 같은 화면을 두 언어로 찍는 것은 e2e 레인의 산출물이다.
+`README-KR.md`가 쓴다. 같은 화면을 두 언어로 찍는 것은 e2e 레인의 산출물이다. 0.7.2(#122)부터
+언어별 9장이며, 모두 `node scripts/web-ui-browser-e2e.mjs --lang <l> --screenshots assets/readme`
+한 번의 실행에서 나온다.
+
+| 파일 | 화면 | 비고 |
+| --- | --- | --- |
+| `overview.png` / `overview-dark.png` | 개요 | 다크는 `<picture>` 자동 전환용. 테마 토글이 localStorage를 쓰므로 **맨 마지막에** 찍는다 |
+| `facts-table.png` | 기억 목록 (`tiers=all`) | 계층 배지 — 1440폭에서 상세 드로어가 그 열을 덮으므로 표를 따로 찍는다 |
+| `facts-detail.png` | 기억 상세 · 근거 탭 | 직접 근거와 해석 맥락의 분리 |
+| `graph.png` | 지식 지도 | 노드 1개 선택 상태 |
+| `activity-jobs.png` | 활동 · 처리 작업 + job 드로어 | |
+| `activity-held.png` | 활동 · 처리 작업 (보류 배지) | 다음 행동 열이 잘리지 않게 1760폭 |
+| `settings-overlays.png` | 관리 › 오버레이 (게이트) | 사용자 패턴 1개 추가 + 프롬프트 테스트 결과. 1300높이 |
+| `settings-models.png` | 관리 › 모델 | 카탈로그·현재 선택·마지막 테스트·보류 카드. 1420높이 |
 
 ## 메시지 키 규약 (0.7.0 #109)
 

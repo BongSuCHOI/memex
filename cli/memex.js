@@ -3,6 +3,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { spawn } from "child_process";
 import { realpathSync, existsSync as fsSync } from "fs";
+import { runBackfillStages, tailLines } from "./backfill-stages.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(realpathSync(__filename));
@@ -10,22 +11,54 @@ const __dirname = dirname(realpathSync(__filename));
 const command = process.argv[2];
 const args = process.argv.slice(3);
 
-function runScript(scriptPath, args) {
+/**
+ * Spawn a script and resolve on exit 0.
+ *
+ * `captureTail` (#114): keep the last lines the child printed so a failure can
+ * report WHAT went wrong, not just that it did. The child's output is still
+ * written through to this terminal as it arrives — the tail is a copy, not a
+ * buffer the user waits on.
+ */
+function runScript(scriptPath, args, { captureTail = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [scriptPath, ...args], {
-      stdio: "inherit",
+      stdio: captureTail ? ["inherit", "pipe", "pipe"] : "inherit",
     });
 
-    child.on("exit", (code) => {
+    let seen = "";
+    if (captureTail) {
+      const forward = (stream, sink) => {
+        stream.setEncoding("utf8");
+        stream.on("data", (chunk) => {
+          sink.write(chunk);
+          // Bounded: only the tail is ever needed.
+          seen = (seen + chunk).slice(-8192);
+        });
+      };
+      forward(child.stdout, process.stdout);
+      forward(child.stderr, process.stderr);
+    }
+
+    child.on("close", (code, signal) => {
       if (code === 0) {
         resolve();
-      } else {
-        reject(new Error(`Command failed with exit code ${code}`));
+        return;
       }
+      const error = new Error(
+        signal
+          ? `Command killed by signal ${signal}`
+          : `Command failed with exit code ${code}`,
+      );
+      if (code !== null) error.code = code;
+      if (signal) error.signal = signal;
+      if (captureTail) error.tail = tailLines(seen);
+      reject(error);
     });
 
     child.on("error", (err) => {
-      reject(new Error(`Failed to run command: ${err.message}`));
+      const error = new Error(`Failed to run command: ${err.message}`);
+      if (err.code) error.code = err.code;
+      reject(error);
     });
   });
 }
@@ -1312,25 +1345,18 @@ async function main() {
         if (!background) {
           // Run stages sequentially in this terminal, stopping at the first
           // failure so each stage's ledger/idempotency state stays coherent.
-          for (const t of targets) {
-            console.log(`Running ${t} backfill in foreground...`);
-            try {
-              await runScript(
-                join(__dirname, "..", "scripts", scriptMap[t]),
-                [],
-              );
-            } catch {
-              if (target === "all") {
-                console.error(
-                  `${t} backfill failed; remaining stages were not started. Re-run 'memex backfill all' to resume (stages are idempotent).`,
-                );
-              } else {
-                console.error(`${t} backfill failed.`);
-              }
-              process.exitCode = 1;
-              break;
-            }
-          }
+          // #114: the stage's own exit code/signal and the tail of its output
+          // travel into the failure message, so "embeddings backfill failed"
+          // always comes with the reason it failed.
+          const outcome = await runBackfillStages({
+            stages: targets,
+            allStages: target === "all",
+            runStage: (t) =>
+              runScript(join(__dirname, "..", "scripts", scriptMap[t]), [], {
+                captureTail: true,
+              }),
+          });
+          if (!outcome.ok) process.exitCode = 1;
           if (!process.exitCode) {
             const { getBackfillWorkStatus } = await import(
               join(distDir, "backfill-status.js")
