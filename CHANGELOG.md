@@ -2,6 +2,50 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.5 - 2026-09-14
+
+Three follow-ups of the 0.7.0 overlays and a new memory-language default.
+
+### Memory language
+
+- Facts are written in the language of the conversation. The extraction window's
+  human messages decide it deterministically — Hangul syllables weighted at 2.5
+  Latin letters (code blocks, inline code and URLs ignored), tie → the last human
+  message — and a `## Fact language` clause is appended per window after the
+  rule overlay block. `preferred_language` in the extraction-rules overlay is now
+  an explicit override of that default. The clause never touches
+  `policy_version`, existing facts are left as they are, and the applied language
+  is recorded in `extraction_targets.fact_language`. `fact_kr`, the translate
+  script and `preferTranslatedFacts` remain for the English facts already
+  stored. `memex extract rules show` prints the effective language rule. (#123)
+
+### Recall-gate overlay
+
+- The eight `RecallGateConfig` thresholds can be overridden in
+  `recall-gate.json` under `config` (typed, range-checked, unknown keys refused
+  with an `Issue` path), merged over the built-in defaults on the read side with
+  the same cached reload and fail-safe. `memex gate config show|set|reset`
+  edits them through the overlay lock with `--dry-run`, `--expect-revision` and
+  `--json`; `gate test` and `gate show` print the effective thresholds and which
+  are overridden; 관리 › 오버레이 shows a thresholds card; `memex doctor` counts
+  overrides. The benchmark contract now requires `environment.overlays.config`
+  and the record is regenerated. (#120)
+
+### Extraction-rules overlay
+
+- `custom_fact_kinds` (up to eight `{id, label_en, label_ko, description,
+  extraction_hint?}`) extend the five built-in categories: the prompt lists them
+  after the built-ins, the validator accepts an id only while it is in the
+  claim-snapshot ∪ latest rules and otherwise drops the candidate with one audit
+  line (`rules.kind-dropped`), badges and the facts filter render the label for
+  the current locale from the overlay, and `memex extract rules show` lists
+  them. No schema change — `facts.category` was already free text. (#121)
+
+### Upgrade
+
+Run `memex update` and restart Codex. Schema: one additive nullable column,
+`extraction_targets.fact_language`.
+
 ## 0.7.4 - 2026-09-14
 
 Corrections from the post-release review of 0.7.3.
