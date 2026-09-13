@@ -51,6 +51,7 @@ import {
   readExtractionTargetItems,
   recordExtractionFailure,
   renewMemoryJobLease,
+  setExtractionTargetFactLanguage,
   setExtractionTargetRulesHash,
   supersedeStaleExtractionTarget,
   type MemoryJobClaimReason,
@@ -66,6 +67,13 @@ import {
   type HoldReason,
   type ModelWorkContext,
 } from "./model-budget.js";
+import {
+  appendExtractionLanguageClause,
+  detectWindowLanguage,
+  resolveExtractionLanguage,
+  summarizeAppliedLanguages,
+  type ExtractionLanguage,
+} from "./extraction-language.js";
 import {
   buildBlockSet,
   composeEffectivePolicyVersion,
@@ -1320,6 +1328,12 @@ export interface ExtractFactsOptions {
       payloadFingerprint: string;
       error: string;
     }>;
+    /**
+     * Issue #123 — the language clause this page actually ran under: `ko`, `en`,
+     * `mixed` when the claim's windows disagreed, or `null` when no clause was
+     * appended. Reporting only; the owner stamps it on `extraction_targets`.
+     */
+    appliedLanguage?: "ko" | "en" | "mixed" | null;
   };
   /** Evaluation seam: production callers use callMemoryModel by default. */
   modelCall?: FactExtractionModelCall;
@@ -2301,6 +2315,12 @@ export async function extractFactsFromExchanges(
     EXTRACTION_SYSTEM_PROMPT,
     options?.extractionRules,
   );
+  // Issue #123 §1 — the language clause is resolved PER WINDOW and appended
+  // last, because the conversation language is a property of the window, not of
+  // the session. `preferred_language` overrides it; with neither, no clause is
+  // appended and the prompt is byte-identical to the one sent before #123.
+  const preferredLanguage = options?.extractionRules?.preferredLanguage ?? null;
+  const appliedLanguages: Array<ExtractionLanguage | null> = [];
 
   const allFacts: ExtractedFact[] = [];
   const factIndexByKey = new Map<string, number>();
@@ -2333,10 +2353,19 @@ export async function extractFactsFromExchanges(
       );
     }
     const prompt = buildExtractionPrompt(window, referentCandidates);
+    const { language } = resolveExtractionLanguage(
+      preferredLanguage,
+      detectWindowLanguage(window),
+    );
+    appliedLanguages.push(language);
+    if (options?.progress) {
+      options.progress.appliedLanguage = summarizeAppliedLanguages(appliedLanguages);
+    }
+    const windowSystemPrompt = appendExtractionLanguageClause(extractionSystemPrompt, language);
     renewLease?.(); // window 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
 
     try {
-      const response = await modelCall(extractionSystemPrompt, prompt);
+      const response = await modelCall(windowSystemPrompt, prompt);
       const extracted = parseJsonResponse<unknown>(response);
 
       if (Array.isArray(extracted)) {
@@ -3521,6 +3550,8 @@ export async function runFactExtraction(
       payloadFingerprint: string;
       error: string;
     }>,
+    /** Issue #123 — filled per window by the extractor, stamped once below. */
+    appliedLanguage: null as "ko" | "en" | "mixed" | null,
   };
   const contextWatermark = claimed.target.cursorOrdinal > 0
     ? (db.prepare(`
@@ -3609,6 +3640,11 @@ export async function runFactExtraction(
     }
     throw error;
   }
+
+  // Issue #123 — the receipt for the language half of the prompt, next to the
+  // rules_hash receipt above. Reporting only, and written after the model work
+  // because only the finished page knows whether its windows agreed.
+  setExtractionTargetFactLanguage(db, target.targetId, progress.appliedLanguage);
 
   if (progress.irreducibleFailures.length > 0) {
     const failed = progress.irreducibleFailures[0];

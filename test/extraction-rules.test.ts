@@ -249,12 +249,21 @@ describe("the constraint clause (§3.2)", () => {
     expect(clause).toContain("the gate wins");
     expect(clause).toContain("- Never extract facts about: 사내 인사 평가; 급여");
     expect(clause).toContain("- Never emit a fact or observation whose text matches: /\\bsk-[A-Za-z0-9_-]{16,}/");
-    expect(clause).toContain("- Prefer fact_kr in Korean");
+    // #123 — the language left this block. It is an OVERRIDE of the
+    // conversation-language default now, so both travel in the one language
+    // clause appended after this one. The old bullet also told the model to
+    // "prefer fact_kr", a field the base prompt forbids in the same prompt.
+    expect(clause).not.toContain("Prefer fact_kr in Korean");
+    expect(clause).not.toContain("Prefer fact in English");
   });
 
   it("is EMPTY when there is nothing to say, and then the prompt is unchanged", () => {
     const empty = { ...rules, excludeTopics: [], neverExtract: [], decisionHints: [], preferredLanguage: null };
     expect(renderExtractionConstraintClause(empty)).toBe("");
+    // #123 — and equally empty when the ONLY thing left is the language, which
+    // no longer renders here: a restriction preamble with nothing to restrict
+    // is worse than no block at all.
+    expect(renderExtractionConstraintClause({ ...empty, preferredLanguage: "ko" })).toBe("");
     expect(composeExtractionSystemPrompt("BASE", empty)).toBe("BASE");
     expect(composeExtractionSystemPrompt("BASE", null)).toBe("BASE");
   });
