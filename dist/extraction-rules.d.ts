@@ -345,6 +345,28 @@ export declare function unionNeverExtract(snapshot: readonly NeverExtractPattern
 /** Ids only, in snapshot-then-latest order, first definition winning. */
 export declare function unionCustomFactKinds(snapshot: readonly CustomFactKind[], latest: readonly CustomFactKind[]): CustomFactKind[];
 /**
+ * Every custom kind ANY scope in this file defines — the display registry the
+ * Web UI needs (post-0.7.5 review P2 #3).
+ *
+ * Not the same question as `resolveExtractionRules(projectId)`. That one answers
+ * "which kinds may this project's extractor produce", and the Web UI asked it
+ * with `projectId = null`, so a kind defined only in a project override had no
+ * label anywhere: the memory badge showed the raw id and the kind filter had no
+ * chip for it.
+ *
+ * The answer is a UNION over global ∪ every project override rather than a
+ * per-scope lookup, because the thing being labelled is a stored
+ * `facts.category` value and that value is scope-free — the same row can be read
+ * from any scope the screen happens to be on, including `all`. Over-inclusion
+ * costs a filter chip that matches nothing in the current scope; under-inclusion
+ * costs a raw id on screen, which is the failure this exists to prevent. Global
+ * wins a colliding id, exactly like `resolveExtractionRules`, and `projects`
+ * records which overrides asked for a kind the global set does not define.
+ */
+export declare function customFactKindRegistry(loaded?: LoadedExtractionRules): Array<CustomFactKind & {
+    projects: string[];
+}>;
+/**
  * Which custom ids the candidate validator may accept right now.
  *
  * `claim snapshot ∪ the latest valid rules`, the same union `never_extract` uses

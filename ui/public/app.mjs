@@ -1,5 +1,5 @@
 import {request,setToken} from './api.mjs';
-import {esc,icon,btn,linkBtn,banner,errorCard,skeleton,empty,options,basename,short,number,copy,download,name,factText,setPreferTranslatedFacts,docsNoticeTag,setCustomFactKinds} from './ui.mjs';
+import {esc,icon,btn,linkBtn,banner,errorCard,skeleton,empty,options,basename,short,number,copy,download,name,factText,setPreferTranslatedFacts,docsNoticeTag,setCustomFactKinds,syncCustomFactKinds} from './ui.mjs';
 import {renderDetail,commandModal} from './details.mjs';
 import {helpFor,docUrl,GLOSSARY,CONTROLS} from './help.mjs';
 import * as overview from './pages/overview.mjs';import * as facts from './pages/facts.mjs';import * as conversations from './pages/conversations.mjs';import * as taxonomy from './pages/taxonomy.mjs';import * as graph from './pages/graph.mjs';import * as activity from './pages/activity.mjs';import * as settings from './pages/settings.mjs';
@@ -80,7 +80,7 @@ function pageKey(){const u=new URL(location.href);for(const k of panelKeys)u.sea
 function toast(message){const el=document.querySelector('#toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),4200);}
 function open(kind,id,payload){if(payload)payloads.set(`${kind}:${id}`,payload);update({panel:kind,item:id,panelTab:null});}
 function closeDetail(){update({panel:null,item:null,panelTab:null},true);}
-function context(signal){const scope=currentScope();return {p:new URL(location.href).searchParams,scope,prefs,bootstrap,href,update,open,closeDetail,toast,savePrefs,setLanguage:switchLocale,setScope:changeScope,modal:showModal,confirm:(title,body,fn)=>showModal(title,banner(esc(body)),t('action.confirm'),fn),invalidate(){lastPageKey='';render();},refreshDetail(){lastDrawerKey='';renderDrawer(true);},api(path,query={},options={}){return request(path,{...query,...scope},{signal,...options});}};}
+function context(signal){const scope=currentScope();return {p:new URL(location.href).searchParams,scope,prefs,bootstrap,href,update,open,closeDetail,toast,savePrefs,setLanguage:switchLocale,setScope:changeScope,modal:showModal,confirm:(title,body,fn)=>showModal(title,banner(esc(body)),t('action.confirm'),fn),invalidate(){lastPageKey='';render();refreshFactKinds();},refreshDetail(){lastDrawerKey='';renderDrawer(true);},api(path,query={},options={}){return request(path,{...query,...scope},{signal,...options});}};}
 function renderShell(){if(!bootstrap)return;const path=routePath(),scope=currentScope();const all=scope.scope==='all',global=scope.scope==='global';const project=scope.project||'';const selected=global?'global':all?'all':'project:'+project;const title=all?t('shell.scope.allProjects'):global?t('common.commonMemory'):basename(project);const env=bootstrap.environment;
  const nav=navigation();
  const navItem=([url,ico,label])=>`<a class="nav-item ${path===url?'active':''}" ${path===url?'aria-current="page"':''} href="${esc(href(url))}" title="${esc(label)}" data-nav>${icon(ico)}<span class="nav-label">${esc(label)}</span></a>`;
@@ -129,7 +129,19 @@ document.addEventListener('keydown',e=>{
  if(e.key==='?'&&!e.metaKey&&!e.ctrlKey&&!e.altKey&&prefs.help!=='off'&&!document.activeElement?.matches('input,select,textarea')){e.preventDefault();glossaryPanel();}
 });window.addEventListener('popstate',()=>render());
 setInterval(()=>{if(prefs.live&&routePath()==='/activity'&&document.visibilityState==='visible'&&!detail.open&&!modal.open&&!loading&&!document.activeElement?.matches('input,select,textarea')){const y=window.scrollY;render(true).then(()=>window.scrollTo({top:y}));}},10000);
-function connectEvents(){eventSource?.close();eventSource=new EventSource('/api/v2/events');eventSource.addEventListener('connected',()=>{connected=true;renderShell();});eventSource.addEventListener('change',()=>{unread=true;renderShell();});eventSource.onerror=()=>{connected=false;renderShell();};}
+function connectEvents(){eventSource?.close();eventSource=new EventSource('/api/v2/events');eventSource.addEventListener('connected',()=>{connected=true;renderShell();});eventSource.addEventListener('change',()=>{unread=true;renderShell();refreshFactKinds();});eventSource.onerror=()=>{connected=false;renderShell();};}
+/**
+ * 종류 레지스트리를 재조회한다 (0.7.5 후속 검토 P2 #5).
+ *
+ * 부팅 때 한 번만 꽂으면 오버레이 저장·초기화 뒤에도 삭제된 종류의 칩이 남고 새 종류는 id로
+ * 뜬다 — `ctx.invalidate()`(저장·초기화가 부르는 것)와 SSE `change`가 여기로 들어온다.
+ * 목록이 실제로 달라졌을 때만 다시 그린다. 실패는 조용히 무시한다(직전 라벨을 유지한다).
+ */
+async function refreshFactKinds(){
+ if(await syncCustomFactKinds(async()=>{const boot=await request('bootstrap');return boot.customFactKinds;})){
+  lastPageKey='';lastDrawerKey='';await render(true);
+ }
+}
 async function boot(refresh=false){try{bootstrap=await request('bootstrap');setToken(bootstrap.csrfToken);
  // #121 — 사용자 정의 fact 종류의 라벨은 사전이 아니라 오버레이가 갖는다. 첫 render() 앞에
  // 꽂아야 배지·종류 칩이 첫 그림부터 id가 아닌 이름으로 뜬다.

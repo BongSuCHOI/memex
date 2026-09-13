@@ -35,6 +35,7 @@ import {
   UI_BADGE_RESERVED_IDS,
   acceptedCustomFactKindIds,
   composeExtractionSystemPrompt,
+  customFactKindRegistry,
   emptyExtractionRulesDoc,
   extractionRulesChecks,
   extractionRulesDocHash,
@@ -49,7 +50,7 @@ import {
   type CustomFactKind,
   type ExtractionRulesDoc,
 } from "../src/extraction-rules.js";
-import { pinOverlayEnv, restoreOverlayEnv, writeRules } from "./extraction-rules-fixture.js";
+import { pinOverlayEnv, removeRules, restoreOverlayEnv, writeRules } from "./extraction-rules-fixture.js";
 
 let root: string;
 
@@ -279,6 +280,40 @@ describe("custom_fact_kinds — resolution", () => {
     const merged = unionCustomFactKinds([RUNBOOK], [{ ...RUNBOOK, label_en: "later" }, POSTMORTEM]);
     expect(merged.map((kind) => kind.id)).toEqual(["runbook", "postmortem"]);
     expect(merged[0].label_en).toBe(RUNBOOK.label_en);
+  });
+
+  /**
+   * Post-0.7.5 review P2 #3 — the DISPLAY registry spans every scope, which
+   * `resolveExtractionRules(null)` does not. The Web UI's bootstrap used the
+   * latter, so a kind defined only in a project override had no label anywhere.
+   */
+  it("customFactKindRegistry unions global with every project override", () => {
+    writeRules(
+      root,
+      doc([RUNBOOK], {
+        project_overrides: {
+          "project-alpha": { custom_fact_kinds: [POSTMORTEM] },
+          // A project that re-declares a global id only records itself; the
+          // GLOBAL label still wins, exactly as `resolveExtractionRules` does.
+          "project-beta": { custom_fact_kinds: [{ ...RUNBOOK, label_en: "later" }] },
+        },
+      }),
+    );
+    const loaded = loadExtractionRules();
+    expect(resolveExtractionRules(null, loaded).customFactKinds.map((k) => k.id)).toEqual([
+      "runbook",
+    ]);
+
+    const registry = customFactKindRegistry(loaded);
+    expect(registry.map((kind) => kind.id)).toEqual(["runbook", "postmortem"]);
+    expect(registry[0].label_en).toBe(RUNBOOK.label_en);
+    expect(registry[0].projects).toEqual(["project-beta"]);
+    expect(registry[1].projects).toEqual(["project-alpha"]);
+
+    // No rules file at all is an empty registry, never a throw.
+    removeRules(root);
+    resetExtractionRulesCache();
+    expect(customFactKindRegistry(loadExtractionRules())).toEqual([]);
   });
 });
 

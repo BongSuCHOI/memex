@@ -1467,6 +1467,52 @@ export function unionCustomFactKinds(
 }
 
 /**
+ * Every custom kind ANY scope in this file defines — the display registry the
+ * Web UI needs (post-0.7.5 review P2 #3).
+ *
+ * Not the same question as `resolveExtractionRules(projectId)`. That one answers
+ * "which kinds may this project's extractor produce", and the Web UI asked it
+ * with `projectId = null`, so a kind defined only in a project override had no
+ * label anywhere: the memory badge showed the raw id and the kind filter had no
+ * chip for it.
+ *
+ * The answer is a UNION over global ∪ every project override rather than a
+ * per-scope lookup, because the thing being labelled is a stored
+ * `facts.category` value and that value is scope-free — the same row can be read
+ * from any scope the screen happens to be on, including `all`. Over-inclusion
+ * costs a filter chip that matches nothing in the current scope; under-inclusion
+ * costs a raw id on screen, which is the failure this exists to prevent. Global
+ * wins a colliding id, exactly like `resolveExtractionRules`, and `projects`
+ * records which overrides asked for a kind the global set does not define.
+ */
+export function customFactKindRegistry(
+  loaded: LoadedExtractionRules = loadExtractionRules(),
+): Array<CustomFactKind & { projects: string[] }> {
+  const out: Array<CustomFactKind & { projects: string[] }> = [];
+  const at = new Map<string, number>();
+  const add = (kind: CustomFactKind, projectId: string | null): void => {
+    const index = at.get(kind.id);
+    if (index === undefined) {
+      at.set(kind.id, out.length);
+      out.push({ ...kind, projects: projectId === null ? [] : [projectId] });
+      return;
+    }
+    // A later definition never relabels an earlier one; it only records that
+    // this project also uses the id.
+    if (projectId !== null && !out[index].projects.includes(projectId)) {
+      out[index].projects.push(projectId);
+    }
+  };
+  const doc = loaded.doc;
+  if (!doc) return out;
+  for (const kind of doc.custom_fact_kinds ?? []) add(kind, null);
+  for (const [projectId, override] of Object.entries(doc.project_overrides ?? {})) {
+    for (const kind of override.custom_fact_kinds ?? []) add(kind, projectId);
+  }
+  return out;
+}
+
+/**
  * Which custom ids the candidate validator may accept right now.
  *
  * `claim snapshot ∪ the latest valid rules`, the same union `never_extract` uses

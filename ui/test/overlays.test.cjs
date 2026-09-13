@@ -494,3 +494,41 @@ test('임계값 카드는 8행을 내장값·범위와 함께 그리고 덮어�
   // 카탈로그가 비면 카드 자체를 그리지 않는다(코어가 없는 설치에서 빈 카드가 남지 않는다).
   assert.equal(page.configCard({}),'');
 });
+
+/**
+ * 0.7.5 후속 검토 P2 #3 — 부트스트랩의 종류 레지스트리는 **모든 범위**를 담는다.
+ *
+ * 예전에는 `resolveExtractionRules(null,…)`의 전역만 실었다. 프로젝트 override에만 정의한
+ * 종류는 그래서 어느 화면에서도 라벨이 없었다: 기억 배지에 id 원문이 뜨고 종류 칩에도 없다.
+ * 라벨이 붙는 대상은 저장된 `facts.category` 값이고 그 값에는 범위가 없으므로(같은 행을 전체
+ * 범위에서도 읽는다) 레지스트리는 전역 ∪ 모든 override의 합집합이어야 한다.
+ */
+test('부트스트랩 종류 레지스트리는 프로젝트 override에만 있는 종류도 싣는다',async()=>{
+  const c=core();
+  const status=await c.overlays('status');
+  const base=status.rules.emptyDoc;
+  const kind=(id,label)=>({id,label_en:label,label_ko:label,description:label+' 설명입니다.'});
+  const doc={...base,
+    custom_fact_kinds:[kind('runbook','운영 절차')],
+    project_overrides:{'project-alpha':{custom_fact_kinds:[kind('postmortem','사후 분석')]}}};
+  const saved=await c.overlays('set',{overlay:'rules',doc,
+    ...(status.rules.present?{expectedRevision:status.rules.revision}:{})});
+
+  // 전역 해석만 보는 예전 경로에는 프로젝트 종류가 없다 — 이것이 버그의 원인이었다.
+  assert.deepEqual(saved.status.rules.resolved.customFactKinds.map(k=>k.id),['runbook'],
+    '전역 해석은 그대로 전역만이어야 한다');
+
+  const registry=await c.customFactKinds();
+  assert.deepEqual(registry.map(k=>k.id),['runbook','postmortem'],
+    '프로젝트 override에만 정의된 종류가 레지스트리에서 빠졌다');
+  assert.deepEqual(registry.find(k=>k.id==='runbook').projects,[],'전역 종류는 프로젝트가 없다');
+  assert.deepEqual(registry.find(k=>k.id==='postmortem').projects,['project-alpha'],
+    '프로젝트 종류는 어느 override가 요구했는지를 싣는다');
+  assert.equal(registry.find(k=>k.id==='postmortem').label_ko,'사후 분석','라벨이 그대로 온다');
+
+  // 초기화하면 레지스트리도 비어야 한다(재조회 경로가 화면에서 칩을 지우는 근거).
+  const reset=await c.overlays('reset',{overlay:'rules',expectedRevision:saved.revision});
+  assert.deepEqual(await c.customFactKinds(),[],'초기화 뒤에도 종류가 남았다');
+  assert.equal(reset.status.rules.clause.text,'');
+  c.close();
+});

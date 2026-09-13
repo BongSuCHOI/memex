@@ -624,9 +624,16 @@ class Core {
         if(!fs.existsSync(path.join(this.root,'dist','extraction-rules.js')))return [];
         const rules=await this.module('extraction-rules');
         const loaded=rules.loadExtractionRules();
-        // 전역 규칙만 — 부트스트랩에는 프로젝트 범위가 없고, 프로젝트 오버라이드는 전역에
-        // **추가만** 하므로(§3.1 합집합) 전역이 모든 화면이 공유하는 하한이다.
-        return rules.resolveExtractionRules(null,loaded).customFactKinds.map(kind=>({...kind}));
+        // 0.7.5 후속 검토 P2 #3 — **전역 ∪ 모든 프로젝트 override**다. 예전에는
+        // `resolveExtractionRules(null,…)`의 전역만 실었고, 그래서 프로젝트 override에만
+        // 정의한 종류는 어떤 화면에서도 라벨이 없었다(배지에 id 원문, 종류 칩에 없음).
+        // 라벨이 붙는 대상은 저장된 `facts.category` 값이고 그 값은 범위가 없다 — 같은 행을
+        // 전체 범위에서도 읽는다. 과하게 담으면 현재 범위에서 아무것도 안 잡히는 칩 하나가
+        // 남고, 덜 담으면 화면에 id가 뜬다. 후자가 이 함수가 막으려는 실패다.
+        // (id가 겹치면 전역이 이긴다 — `resolveExtractionRules`와 같은 규칙.)
+        if(typeof rules.customFactKindRegistry!=='function')
+          return rules.resolveExtractionRules(null,loaded).customFactKinds.map(kind=>({...kind}));
+        return rules.customFactKindRegistry(loaded).map(kind=>({...kind}));
       });
     }catch{return [];}
   }
