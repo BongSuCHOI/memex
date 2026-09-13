@@ -12,6 +12,32 @@ Fact는 대화 전체 요약이 아니라 다음 작업에서 재사용할 가�
 - `knowledge`
 - `constraint`
 
+### 사용자 정의 category (`custom_fact_kinds`, 0.7.x · #121)
+
+추출 규칙 오버레이(`overlays/extraction-rules.json`)가 위 다섯 개 **위에** 최대 8개의 category 값을
+더할 수 있습니다. id는 `^[a-z][a-z0-9_]{1,23}$`이고 **내장 다섯 개와 겹칠 수 없으며**, 그 id가 그대로
+`facts.category`에 저장됩니다. `facts.category`는 CHECK 없는 `TEXT` 컬럼이라 스키마 변경은 없습니다.
+
+이것은 **분류(ontology) category가 아닙니다.** 두 축은 직교합니다: `facts.category`는 "이 문장이 어떤
+종류의 진술인가"이고 `facts.ontology_category_id`는 분류기가 정하는 주제입니다. 사용자 정의 종류는
+`ontology_categories`에 나타나지 않고, 분류기·관계 도출에 **분기를 만들지 않습니다** — 내장 5종과
+똑같이 `fact_category` 문맥 한 줄로 프롬프트에 실릴 뿐이고(`ontology-classifier.ts`), 어떤 코드도
+category 값으로 분류 동작을 갈라놓지 않습니다.
+
+라이프사이클에서 달라지는 것은 두 곳뿐입니다.
+
+- **후보 검증**: `validateExtractedFactCandidateDetailed`는 내장 5종을 먼저 보고, 그 외의 값은
+  **claim 스냅숏 ∪ 최신 유효 규칙**의 사용자 정의 id 집합에 있을 때만 받습니다(`never_extract`와 같은
+  합집합 방향). 없으면 그 후보만 `unknown_fact_kind`로 탈락하고 `rules.kind-dropped` 감사 1줄이
+  남습니다 — 예외도, 실패 범위도, attempt 소모도 없습니다. 종류를 지우는 변경은 그래서 **다음 claim
+  부터** 효력이 있습니다.
+- **Chronicle subject_key**: 슬롯 접두어(§"subject_key" 참고)는 내장 5종의 것입니다. 사용자 정의
+  종류의 fact는 `subject_key` 없이 저장되고, 모델이 제안했다면 classifier note로만 남습니다. 접두어를
+  지어내면 두 사용자 정의 종류가 내장 5종이 쓰는 슬롯 공간에서 충돌합니다.
+
+증거 기준·durability 게이트·`authoritative-entailment-v3` 검증기·consolidation·revision은 전부
+그대로입니다. 종류는 fact를 **무엇이라 부르는지**만 바꿉니다.
+
 fact는 scope와 source exchange provenance를 가지며 검색, revision, consolidation, ontology의 기준이 됩니다. extraction-time `confidence`는 저장 후보 필터에만 사용하고 fact row에는 보존하지 않습니다.
 
 Phase 3부터 project fact는 stable `project_id`와 `subject_key`를 가집니다. Absolute path는

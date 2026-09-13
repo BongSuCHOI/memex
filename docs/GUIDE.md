@@ -1424,7 +1424,7 @@ memex gate rollback --to <revision>
 
 ### 22.2 추출 규칙 오버레이 (`memex extract`)
 
-어떤 대화를 fact로 만들지에 대한 자기 규칙입니다. 네 가지를 전역 또는 프로젝트별
+어떤 대화를 fact로 만들지에 대한 자기 규칙입니다. 다섯 가지를 전역 또는 프로젝트별
 (`project_overrides`, 32개까지)로 지정합니다.
 
 | 항목 | 집행 | 상한 |
@@ -1433,11 +1433,47 @@ memex gate rollback --to <revision>
 | `exclude_topics` | **프롬프트 절뿐 — 아무것도 강제하지 않습니다** | 24개, 항목당 2–80자 |
 | `never_extract_patterns` | **저장 경계에서 결정론적 차단** | 32개 |
 | `always_treat_as_decision_patterns` | **프롬프트 절뿐** | 16개 |
+| `custom_fact_kinds` (0.7.x, #121) | 프롬프트 절 + **후보 검증기가 현재 규칙에 있는 id만 허용** | 8개 |
 
 `never_extract_patterns`의 각 항목은 `{ id, source, flags, scope, note? }`이고 `scope`는
 `fact_text`·`evidence`·`both`(기본)입니다. 정규식 제한은 게이트 오버레이와 같고 note는 200자입니다.
-프로젝트 override는 `preferred_language`만 덮어쓰고 **나머지 세 제약은 전역과 합집합**입니다 —
+프로젝트 override는 `preferred_language`만 덮어쓰고 **나머지 네 항목은 전역과 합집합**입니다 —
 다른 곳에 한 줄을 더해 전역 금지를 느슨하게 만드는 경로를 두지 않기 위해서입니다.
+(`custom_fact_kinds`의 합집합에서 id가 겹치면 **전역 정의가 이깁니다**. 프로젝트마다 같은 id의 라벨이
+달라지면 이미 저장된 같은 `facts.category` 값에 두 이름이 붙습니다.)
+
+#### `custom_fact_kinds` — 나만의 기억 유형
+
+내장 유형은 `decision`·`preference`·`pattern`·`knowledge`·`constraint` 다섯 개이고, 그 위에 최대
+8개를 더할 수 있습니다. **다섯 개 중 하나와 같은 id는 거부**됩니다(`KIND_ID_RESERVED`).
+
+```jsonc
+"custom_fact_kinds": [
+  { "id": "runbook",                       // ^[a-z][a-z0-9_]{1,23}$ — 그대로 facts.category에 저장됨
+    "label_en": "Runbook step",            // 40자 이내 한 줄, 두 언어 모두 필수
+    "label_ko": "운영 절차",
+    "description": "이 시스템이 이상할 때 운영자가 따라야 하는 절차.",   // 200자 이내 한 줄, 필수
+    "extraction_hint": "사람이 반복 가능한 복구 동작을 설명할 때" }      // 200자 이내 한 줄, 선택
+]
+```
+
+이 항목은 **유일하게 값을 더하는 규칙**이지만, 더하는 것은 **이름뿐**입니다. 증거 기준·durability
+게이트·의미 검증기는 그대로이고, 종류를 만들어도 정책이 거부한 후보가 적격이 되지는 않습니다.
+프롬프트 절은 내장 5종 목록 **뒤에** 이 종류들을 힌트와 함께 싣습니다.
+
+- **id가 저장값입니다.** `facts.category`에 그대로 들어가므로 Web UI의 유형 칩·검색 필터·내보내기가
+  모두 이 문자열을 씁니다. DB 스키마는 바뀌지 않았습니다(`facts.category`는 CHECK 없는 `TEXT`).
+- **라벨은 오버레이가 갖습니다.** 운영자가 만든 id에는 번역 키를 발급할 수 없으므로 Web UI는
+  `label_en`/`label_ko`를 로케일로 골라 배지에 씁니다. 정의되지 않은 종류는 id 원문으로 보입니다.
+- **후보 검증기는 "지금 규칙"만 믿습니다.** 허용 집합은 `never_extract`와 같은 **claim 스냅숏 ∪ 최신
+  유효 규칙**입니다. 그래서 종류를 **지우면 다음 claim부터** 적용되고, 진행 중인 작업의 후보가
+  갑자기 탈락하지 않습니다(모델 호출은 이미 썼으므로 그 탈락은 fact를 잃는 것입니다). 정의되지 않은
+  id를 가진 후보는 **탈락 + `rules.kind-dropped` 감사 1줄**이며 실패도, attempt 소모도 아닙니다.
+- **Chronicle slot은 없습니다.** subject_key 접두어(`decision.`·`state.`…)는 내장 5종의 것이므로
+  사용자 정의 종류의 fact는 `subject_key` 없이 저장되고, 모델이 제안했다면 classifier note로 남습니다.
+- **편집은 파일·CLI뿐입니다**(이번 릴리스). id가 이미 저장된 기억에 붙어 있어서, 화면에서 이름을
+  바꾸거나 지우면 그 기억들이 아무 데도 정의되지 않은 종류를 달게 됩니다. 관리 › 오버레이의 규칙
+  화면은 **읽기 전용 표**로 무엇이 정의돼 있는지만 보여 줍니다.
 
 프롬프트 절은 내장 프롬프트를 **고치지 않고 덧붙이기만** 하며(`policy_version`은 그대로), 의미
 검증기 프롬프트는 오버레이가 있든 없든 바이트 단위로 동일합니다.
