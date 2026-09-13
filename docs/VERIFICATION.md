@@ -56,8 +56,17 @@ data root(`MEMEX_HOME` > `$XDG_CONFIG_HOME/memex` > `~/.config/memex`)의 파일
 내려받습니다 — 0.6.9 게이트의 `package-runtime-e2e` 1차 실패가 이것입니다. 다섯 스크립트는 첫 spawn
 전에 `scripts/e2e-model-cache-pin.mjs`의 `pinModelCacheForE2E()`를 호출해 위와 같은 체크아웃 캐시에
 고정합니다. 규칙은 셋입니다: 호출자가 `MEMEX_MODEL_CACHE_DIR`를 이미 지정했으면 그 값이 이기고,
-체크아웃 캐시가 비어 있거나 중단된 다운로드면 게이트는 **내려받지 않고** `memex deps warm`을 안내하며
-즉시 exit 1 하며, `MEMEX_EMBEDDING_STUB=1`에서는 가중치를 요구하지 않습니다. 새 e2e 스크립트도 같은 한
+체크아웃 캐시가 **기본 pipeline이 적재하는 파일 전부**(`config.json`·`tokenizer.json`·
+`tokenizer_config.json`·`onnx/model_quantized.onnx`)를 갖추지 못했으면 게이트는 **내려받지 않고**
+`npm run warm:model-cache`를 안내하며 즉시 exit 1 하며, `MEMEX_EMBEDDING_STUB=1`에서는 가중치를
+요구하지 않습니다. 파일 목록은 추측이 아니라 유도한 것입니다 — `src/embeddings.ts`가 옵션 없이
+`pipeline('feature-extraction', …)`을 부르므로 `quantized: true` 기본값이 적용되고(비양자화
+`onnx/model.onnx`만 있는 캐시는 여전히 다운로드입니다), tokenizer 두 파일은 `fatal: true`로 적재되며,
+`env.allowRemoteModels`가 `true`이므로 빠진 파일은 조용히 Hub에서 받아옵니다. 안내 명령이
+`npm run warm:model-cache`인 이유도 같습니다: 맨 `memex deps warm`은 기본 환경에서
+`<data root>/models`를 채우므로 **운영자의 실 data root에 129 MB를 내려받고** 게이트가 검사하는
+체크아웃 캐시는 그대로 비워 둡니다. `scripts/warm-checkout-model-cache.mjs`가 게이트와 같은 상수로
+`MEMEX_MODEL_CACHE_DIR`를 먼저 고정한 뒤 warm에 위임합니다. 새 e2e 스크립트도 같은 한
 줄을 넣으십시오(`test/e2e-model-cache-pin-slice.test.mjs`가 다섯 스크립트 모두에서 이를 확인합니다).
 
 변경 범위에 따라 plugin validation, browser E2E, benchmark, specialized regression suite를 추가합니다.
@@ -198,7 +207,7 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | `test/maintenance-wave-lineage.test.ts` | rollover 계보가 `root_wave_id`/`run_seq` 컬럼으로 표현되는지, 자식이 root wave id를 물려받는지, 기존 중첩 `:run:<uuid>` id가 rolling-cap 연결을 잃지 않고 정규화되는지 (#42), `<root>#<n>`과 `<root>#<n>:run:<uuid>`가 서로 다른 run으로 갈라지고 UNIQUE 인덱스 생성 실패가 DB 열기를 막지 않는지 (#72) |
 | `test/derived-lane-skip.test.ts`, `test/derived-lane-skip-e2e.test.ts` | P0/P1 조기 반환이 지속되는 연속 skip 카운터가 되는지, 같은 사유 3회 뒤 derived lane이 한 번 통과하는지, `memex status`에 `Derived lanes: skipped …`로 드러나는지 (#43) |
 | `test/evidence-receipt-backfill.test.ts` | `memex backfill receipts`가 model 없이 누락 영수증만 재구성하는지, `recordLocalMeaningEvidence` 실패가 보고되는지, sync-import가 영수증을 삭제하지 않고 `peer-authority`로 강등하는지 (#45) |
-| `test/e2e-model-cache-pin-slice.test.mjs` (0.7.3) | e2e 5개가 첫 spawn 전에 모델 캐시를 체크아웃에 고정하는지, 빈 캐시·중단된 다운로드에서 다운로드 대신 `memex deps warm`을 안내하며 exit 1 하는지, 호출자의 `MEMEX_MODEL_CACHE_DIR`와 `MEMEX_EMBEDDING_STUB=1` 예외, 진단이 캐시 디렉터리를 만들지 않는지 (#114) |
+| `test/e2e-model-cache-pin-slice.test.mjs` (0.7.3) | e2e 5개가 첫 spawn 전에 모델 캐시를 체크아웃에 고정하는지, 필수 파일 목록이 기본 pipeline이 적재하는 넷과 일치하는지, 빈 캐시·중단된 다운로드·불완전 캐시(비양자화 가중치만, tokenizer 누락, 파일 하나 누락, 0바이트 가중치)에서 다운로드 대신 `npm run warm:model-cache`를 안내하며 exit 1 하는지, 그 alias가 게이트와 같은 상수로 `MEMEX_MODEL_CACHE_DIR`를 고정하는지, 호출자의 `MEMEX_MODEL_CACHE_DIR`와 `MEMEX_EMBEDDING_STUB=1` 예외, 진단이 캐시 디렉터리를 만들지 않는지 (#114) |
 | `test/backfill-stage-failure-slice.test.mjs` (0.7.3) | `memex backfill`의 단계 실패가 하위 오류의 message/code/signal과 워커 출력 꼬리를 함께 내는지, `all`과 단일 단계의 문구 구분, embeddings 실패의 `memex doctor`/`memex deps warm` 안내, 첫 실패 뒤 남은 단계가 시작되지 않는지 (#114) |
 | `ui/test/guidance.test.cjs` | `src/`의 `throw new *Error(...)` 문자열과 skip 사유·terminal 상태 enum을 추출해 전부 실패 클래스에 매핑되거나 대장에 명시돼 있는지, 매핑되지 않은 오류가 원인을 지어내지 않는지 (#23) |
 | `ui/test/help.test.cjs` | 메뉴·배지·관리 명령·범위 옵션에 도움말 항목이 있는지와, 인용한 문서 앵커가 실제 헤딩으로 존재하는지 (#28) |

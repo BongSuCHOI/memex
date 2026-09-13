@@ -2,7 +2,7 @@
 
 **Codex를 위한 로컬 우선 장기 기억 계층입니다.** 대화를 모으고, 남길 가치가 있는 결정을 증류하고, 각 기억을 그것을 증명한 대화 턴에 묶어, 필요한 순간에 다시 꺼내 씁니다.
 
-[![Release](https://img.shields.io/badge/release-0.7.3-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.7.4-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -20,7 +20,7 @@
 
 Codex는 잊습니다. 세션은 매번 빈 방에서 시작하므로 같은 결정을 다시 논의하고, 같은 제약을 다시 발견하며, 지난달 선택의 이유는 아무도 다시 열지 않을 rollout 파일 안에만 남습니다. Memex는 그것을 보관하는 계층입니다. 이미 나눈 대화를 아카이브하고, 장기 기억으로 증류하고, 범위가 분리된 그래프로 연결한 뒤, 관련도 게이트를 통과한 작은 조각만 이후 프롬프트에 다시 주입합니다. Memex는 **두 번째 에이전트가 아니라 기억 시스템**이고, 실제 작업은 Codex가 계속 수행합니다.
 
-**로컬 우선.** 원본 Codex rollout은 항상 read-only입니다. DB·검색 인덱스·파생 그래프·운영 로그는 로컬 Memex data root 아래에 있고, 크로스디바이스 동기화는 켜기 전까지 꺼져 있습니다. 아무것도 저절로 기기 밖으로 나가지 않습니다.
+**로컬 우선.** 원본 Codex rollout은 항상 read-only입니다. DB·검색 인덱스·파생 그래프·운영 로그는 로컬 Memex data root 아래에 있고, 크로스디바이스 동기화는 켜기 전까지 꺼져 있습니다 — 켜기 전에는 다른 기기로 아무것도 동기화되지 않습니다. 다만 모델 작업은 예외이고, 로컬이 아닙니다: 기억 추출과 온톨로지 분류는 증류할 대화 본문을 Codex CLI에 설정된 모델 provider로 보내며, `memex models test`는 같은 provider에 고정된 한 줄 probe를 보냅니다. 추출은 동기화 여부와 무관하게 백그라운드에서 돕니다. 그 트래픽이 허용되지 않는 환경이라면 Codex가 로컬 provider를 쓰게 하거나 추출을 끄십시오.
 
 **근거에 묶인 기억.** 기억은 대화 요약이 아닙니다. `source_exchange_ids`에는 정확한 authoritative human 또는 trusted local-tool exchange만 들어가고, 기억을 *해석*하는 데 필요한 long-range 맥락은 별도의 `fact_context_dependencies`에 남으며 authority로 승격되지 않습니다. 워크스페이스와 `trace_fact`는 이 두 경로를 항상 분리해 보여주고, 수집되지 않은 값은 `0`으로 환산하지 않고 미수집으로 표시합니다.
 
@@ -89,7 +89,8 @@ Memex는 native SQLite, vector, embedding 의존성을 사용합니다. 설치 �
 
 - 상세 패널은 **직접 근거**와 **해석에 참고한 맥락**을 분리합니다 — 그 기억을 증명하는 것과, 그 기억을 읽는 데 필요한 것은 다릅니다.
 - 그 아래에 검증 영수증이, 옆에 그 기억 자신의 Chronicle 변경 이력이 있습니다.
-- 수정·비활성화·복원·확인 후 삭제는 모두 기억의 ID와 변경 이력을 유지하면서 이전 의미에서 파생된 상태만 무효화합니다.
+- 수정·비활성화·복원은 기억의 ID와 변경 이력 전체를 유지하면서 이전 의미에서 파생된 상태만 무효화합니다 — 비활성화된 기억은 그대로 남아 있고 언제든 복원할 수 있습니다.
+- 확인 후 삭제만은 다릅니다. 전체 UUID를 요구하고 영향 범위를 먼저 보여준 뒤, 그 기억과 revision, Chronicle 기록까지 영구히 지웁니다. 남는 것은 sync tombstone — 다른 기기에서 그 행이 되살아나는 것을 막을 뿐, 복원할 수 있는 기록이 아닙니다.
 
 ### 지식 지도 — 유사도 구름이 아니라 관계
 
@@ -139,7 +140,7 @@ Memex는 native SQLite, vector, embedding 의존성을 사용합니다. 설치 �
 
 ### 동기화 — 기본은 꺼짐, 필요하면 파일 하나
 
-크로스디바이스 동기화는 **기본 off**이며 켜기 전에는 아무것도 기기 밖으로 나가지 않습니다. 두 기기가 같은 공유 폴더(본인 계정의 iCloud Drive·Dropbox·Syncthing 등)를 보게 하면 durable 기억 상태가 서로 맞춰집니다.
+크로스디바이스 동기화는 **기본 off**입니다. 켜기 전에는 기억 상태가 본인 data root 밖 어디에도 쓰이지 않고 다른 기기에 닿지도 않습니다. (이는 기기↔기기 상태에 대한 이야기입니다 — Memex의 모델 작업은 동기화와 무관하게 Codex 모델 provider로 갑니다. 위 *로컬 우선* 참고.) 두 기기가 같은 공유 폴더(본인 계정의 iCloud Drive·Dropbox·Syncthing 등)를 보게 하면 durable 기억 상태가 서로 맞춰집니다.
 
 ```bash
 memex sync enable --dir ~/Library/Mobile\ Documents/com~apple~CloudDocs/memex-sync

@@ -2,7 +2,7 @@
 
 **A local-first long-term memory layer for Codex.** It collects your conversations, distills the decisions worth keeping, binds each one to the exchange that proves it, and brings the right ones back the next time they matter.
 
-[![Release](https://img.shields.io/badge/release-0.7.3-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.7.4-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -20,7 +20,7 @@
 
 Codex forgets. Every session starts from an empty room, so the same decision gets re-litigated, the same constraint gets rediscovered, and the reason behind last month's choice lives only in a rollout file nobody will read again. Memex is the layer that keeps it: it archives the conversations you already had, distills them into durable facts, connects those facts into a scoped graph, and injects a small, relevance-gated slice of them back into later prompts. It is a **memory system, not a second agent** — Codex stays the working agent.
 
-**Local-first.** The source Codex rollouts stay read-only. The database, indexes, derived graph, and operational logs live under your local Memex data root, and cross-device sync is off until you turn it on. Nothing leaves the machine on its own.
+**Local-first.** The source Codex rollouts stay read-only. The database, indexes, derived graph, and operational logs live under your local Memex data root, and cross-device sync is off until you turn it on — until then nothing is synchronised to another device. Model work is the exception, and it is not local: fact extraction and ontology classification send the conversation text they distil to whatever model provider your Codex CLI is configured with, and `memex models test` calls that same provider with a fixed one-line probe. Extraction runs in the background whether or not sync is on; point Codex at a local provider, or turn extraction off, if that traffic is not acceptable.
 
 **Evidence-bound.** A fact is not a summary. `source_exchange_ids` holds only exact authoritative human or trusted local-tool exchanges; the separate `fact_context_dependencies` records the long-range context needed to *interpret* a fact and is never promoted to authority. The workspace and `trace_fact` render the two lanes apart, and missing data is reported as not-collected rather than folded into `0`.
 
@@ -89,7 +89,8 @@ Every page takes an explicit scope — one project, common (global) memory, or a
 
 - The detail drawer keeps **direct evidence** and **interpretive context** in separate lanes — what proves the fact, and what you need in order to read it.
 - The verification receipt sits below them, with the fact's own Chronicle history beside it.
-- Edit, deactivate, restore and guarded delete all keep fact identity and revision history while invalidating stale derived state.
+- Edit, deactivate and restore keep fact identity and the whole revision history while invalidating stale derived state — a deactivated memory is still there and still restorable.
+- Guarded delete is the one that does not: it asks for the full UUID and shows the impact first, then removes the fact, its revisions and its Chronicle rows for good. What is left is a sync tombstone — enough to stop the row coming back from another device, not a record you can restore from.
 
 ### Knowledge map — relations, not a similarity cloud
 
@@ -139,7 +140,7 @@ Every page takes an explicit scope — one project, common (global) memory, or a
 
 ### Sync — off by default, and a file when you want one
 
-Cross-device sync is **off by default** and nothing leaves the machine until it is turned on. Point both machines at one shared folder you own — iCloud Drive, Dropbox, Syncthing — and durable memory state reconciles between them.
+Cross-device sync is **off by default**: until you turn it on, memory state is written nowhere but your own data root and reaches no other device. (This is about device-to-device state only — Memex's model work goes to your Codex model provider either way; see *Local-first* above.) Point both machines at one shared folder you own — iCloud Drive, Dropbox, Syncthing — and durable memory state reconciles between them.
 
 ```bash
 memex sync enable --dir ~/Library/Mobile\ Documents/com~apple~CloudDocs/memex-sync

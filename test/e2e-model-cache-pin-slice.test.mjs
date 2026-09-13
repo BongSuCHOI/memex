@@ -20,9 +20,11 @@ import { pathToFileURL } from 'node:url';
 import {
   CHECKOUT_MODEL_CACHE_DIR,
   DEFAULT_EMBEDDING_MODEL,
+  REQUIRED_MODEL_FILES,
   inspectPinnedModelCache,
   pinModelCacheForE2E,
   resolveE2EModelCachePin,
+  warmCommands,
 } from '../scripts/e2e-model-cache-pin.mjs';
 
 const REPO = path.resolve(new URL('.', import.meta.url).pathname, '..');
@@ -41,16 +43,28 @@ function tmpdir(t, prefix) {
   return dir;
 }
 
-/** A cache that passes the same check `src/model-cache.ts` applies. */
+/** A cache holding every file the default pipeline loads — and nothing else. */
 function writeWarmCache(cacheDir, model = DEFAULT_EMBEDDING_MODEL) {
   const modelDir = path.join(cacheDir, ...model.split('/'));
-  fs.mkdirSync(path.join(modelDir, 'onnx'), { recursive: true });
-  fs.writeFileSync(path.join(modelDir, 'config.json'), '{"model_type":"bert"}');
-  fs.writeFileSync(path.join(modelDir, 'onnx', 'model_quantized.onnx'), 'fake weights');
+  for (const relative of REQUIRED_MODEL_FILES) {
+    const file = path.join(modelDir, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `fake ${relative}`);
+  }
   return modelDir;
 }
 
-test('a cold cache fails fast and names `memex deps warm`', (t) => {
+test('the required list is the one the default pipeline loads', () => {
+  // `pipeline('feature-extraction', …)` with no options => quantized weights,
+  // plus both tokenizer documents and the model config. Pinned here so a change
+  // to the pipeline options has to come past this test.
+  assert.deepEqual(
+    [...REQUIRED_MODEL_FILES].sort(),
+    ['config.json', path.join('onnx', 'model_quantized.onnx'), 'tokenizer.json', 'tokenizer_config.json'],
+  );
+});
+
+test('a cold cache fails fast and names a command that fills the checked path', (t) => {
   const cacheDir = path.join(tmpdir(t, 'memex-e2e-pin-cold-'), 'model-cache');
   let error;
   try {
@@ -59,12 +73,30 @@ test('a cold cache fails fast and names `memex deps warm`', (t) => {
     error = thrown;
   }
   assert.ok(error instanceof Error, 'a cold cache must throw');
-  assert.match(error.message, /cold/);
-  assert.match(error.message, /memex deps warm/);
+  assert.match(error.message, /is empty/);
   assert.match(error.message, /package-runtime-e2e/);
   assert.match(error.message, /MEMEX_MODEL_CACHE_DIR/);
+  // The advice must fill the directory the check just looked at. A bare
+  // `memex deps warm` fills `<data root>/models` instead, so it may only appear
+  // as the thing NOT to run.
+  assert.match(error.message, /npm run warm:model-cache/);
+  assert.match(error.message, /a bare 'memex deps warm' fills <data root>\/models instead/);
   // Read-only: asking must not create the directory it is asking about.
   assert.equal(fs.existsSync(cacheDir), false);
+});
+
+test('the named warm command pins the cache dir the gate checks', () => {
+  const [alias, raw] = warmCommands(CHECKOUT_MODEL_CACHE_DIR);
+  assert.equal(alias, 'npm run warm:model-cache');
+  assert.match(raw, /^MEMEX_MODEL_CACHE_DIR=/);
+
+  const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
+  assert.equal(pkg.scripts['warm:model-cache'], 'node scripts/warm-checkout-model-cache.mjs');
+  // That wrapper must set the variable from the SAME constant the gate checks,
+  // so no default-env run can download into the real data root.
+  const wrapper = fs.readFileSync(path.join(REPO, 'scripts', 'warm-checkout-model-cache.mjs'), 'utf8');
+  assert.match(wrapper, /CHECKOUT_MODEL_CACHE_DIR/);
+  assert.match(wrapper, /process\.env\.MEMEX_MODEL_CACHE_DIR\s*=/);
 });
 
 test('an interrupted download is reported as such, not as a warm cache', (t) => {
@@ -75,8 +107,52 @@ test('an interrupted download is reported as such, not as a warm cache', (t) => 
   assert.equal(inspectPinnedModelCache(cacheDir).present, false);
   assert.throws(
     () => resolveE2EModelCachePin({ env: {}, cacheDir }),
-    /interrupted download/,
+    /INCOMPLETE/,
   );
+});
+
+test('an incomplete cache fails fast instead of passing the pre-check', (t) => {
+  const tmp = tmpdir(t, 'memex-e2e-pin-incomplete-');
+  // The shape the old check let through: full-precision weights (NOT the
+  // quantized file the default pipeline asks for) and no tokenizer at all.
+  const wrongOnnx = path.join(tmp, 'wrong-onnx');
+  const wrongDir = path.join(wrongOnnx, ...DEFAULT_EMBEDDING_MODEL.split('/'));
+  fs.mkdirSync(path.join(wrongDir, 'onnx'), { recursive: true });
+  fs.writeFileSync(path.join(wrongDir, 'config.json'), '{"model_type":"bert"}');
+  fs.writeFileSync(path.join(wrongDir, 'onnx', 'model.onnx'), 'unquantized weights');
+
+  const wrong = inspectPinnedModelCache(wrongOnnx);
+  assert.equal(wrong.present, false);
+  assert.deepEqual(wrong.missing.sort(), [
+    path.join('onnx', 'model_quantized.onnx'),
+    'tokenizer.json',
+    'tokenizer_config.json',
+  ]);
+  assert.throws(() => resolveE2EModelCachePin({ env: {}, cacheDir: wrongOnnx }), (error) => {
+    assert.match(error.message, /model_quantized\.onnx/);
+    assert.match(error.message, /npm run warm:model-cache/);
+    return true;
+  });
+
+  // One missing tokenizer document is still a download, so still a failure.
+  for (const dropped of REQUIRED_MODEL_FILES) {
+    const cacheDir = path.join(tmp, `missing-${dropped.replace(/[/\\.]/g, '_')}`);
+    writeWarmCache(cacheDir);
+    fs.rmSync(path.join(cacheDir, ...DEFAULT_EMBEDDING_MODEL.split('/'), dropped));
+    const verdict = inspectPinnedModelCache(cacheDir);
+    assert.equal(verdict.present, false, `${dropped} missing must not be usable`);
+    assert.deepEqual(verdict.missing, [dropped]);
+    assert.throws(() => resolveE2EModelCachePin({ env: {}, cacheDir }), /INCOMPLETE/);
+  }
+
+  // An empty file is a truncated download, not a present file.
+  const truncated = path.join(tmp, 'truncated');
+  writeWarmCache(truncated);
+  fs.writeFileSync(
+    path.join(truncated, ...DEFAULT_EMBEDDING_MODEL.split('/'), 'onnx', 'model_quantized.onnx'),
+    '',
+  );
+  assert.equal(inspectPinnedModelCache(truncated).present, false);
 });
 
 test('a warm cache pins MEMEX_MODEL_CACHE_DIR at the checkout', (t) => {
@@ -124,7 +200,7 @@ test('the pin helper exits 1 on a cold cache instead of downloading', (t) => {
   });
   assert.equal(result.status, 1, result.stderr || result.stdout);
   assert.doesNotMatch(result.stdout, /UNREACHABLE/);
-  assert.match(result.stderr, /memex deps warm/);
+  assert.match(result.stderr, /npm run warm:model-cache/);
 });
 
 test('all five e2e scripts apply the pin before their first spawn', () => {

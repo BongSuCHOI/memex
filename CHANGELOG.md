@@ -2,6 +2,36 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.4 - 2026-09-14
+
+Corrections from the post-release review of 0.7.3.
+
+### Documentation
+
+- The README no longer claims that nothing leaves the machine while sync is
+  off. The data root, indexes and logs stay local and nothing is synchronised to
+  another device unless sync is on; model work — fact extraction, ontology
+  classification, and `memex models test` (a fixed one-line probe) — goes to the
+  model provider Codex is configured with. GUIDE.md says the same.
+- Guarded delete removes the fact, its revisions and its Chronicle rows; only
+  deactivate/restore keeps history. A sync tombstone is not a restorable record.
+- 0.7.3's #115 note is corrected: `--json` key structure is unchanged, but
+  human-readable string values (`error.message`, simulation `reason`) are now
+  English.
+
+### Gates
+
+- The e2e cache-pin helper requires the files the default pipeline actually
+  loads (`config.json`, `tokenizer.json`, `tokenizer_config.json`,
+  `onnx/model_quantized.onnx`) and its fail-fast message names a command that
+  fills the checked path — `npm run warm:model-cache`
+  (`scripts/warm-checkout-model-cache.mjs`) — instead of a bare
+  `memex deps warm`, which would download into the data root. (#114)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.3 - 2026-09-14
 
 README rebuilt around the 0.7.0 workspace, plus two small fixes.
@@ -24,8 +54,13 @@ README rebuilt around the 0.7.0 workspace, plus two small fixes.
   the model into a temporary root; `memex backfill all` now names the cause when
   a stage fails (worker exit code, signal, output tail) instead of only
   "embeddings backfill failed". (#114)
-- `memex gate …` and `memex extract …` speak English like the rest of the CLI;
-  `--json` payloads are unchanged. (#115)
+- `memex gate …` and `memex extract …` speak English like the rest of the CLI.
+  The `--json` KEY structure is unchanged — no field was added, removed or
+  renamed — but the human-readable string VALUES changed language with the rest:
+  `error.message` is the first display line (`fail()` in `src/gate-cli.ts` and
+  `src/extract-cli.ts`), and the impact simulation's `reason` is the same string
+  the terminal prints. A consumer matching on `error.code` is unaffected; one
+  matching on Korean message text is not. (#115)
 
 ### Upgrade
 

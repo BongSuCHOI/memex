@@ -21,8 +21,13 @@
  * Rules:
  *   - An explicit `MEMEX_MODEL_CACHE_DIR` from the caller always wins (a gate
  *     runner pointing at a shared cache is not overridden).
- *   - A COLD checkout cache fails fast, naming `memex deps warm`, rather than
- *     letting the gate download the model into a temp root.
+ *   - A COLD checkout cache fails fast, naming the ONE command that fills the
+ *     directory the check just looked at (`npm run warm:model-cache`), rather
+ *     than letting the gate download the model into a temp root. A bare `memex
+ *     deps warm` is NOT that command: with the default environment it resolves
+ *     `<data root>/models` (`embeddingCacheDir()`, src/model-cache.ts) and so
+ *     downloads 129 MB into the operator's REAL data root while leaving the
+ *     checkout cache — and therefore the gate — exactly as cold as before.
  *   - `MEMEX_EMBEDDING_STUB=1` replaces the model entirely, so the pin is still
  *     applied (nothing may be written to a temp root) but no weights are
  *     required.
@@ -46,12 +51,39 @@ export const CHECKOUT_MODEL_CACHE_DIR = path.join(
 export const DEFAULT_EMBEDDING_MODEL = "Xenova/multilingual-e5-small";
 
 /**
+ * Exactly the files the default embedding pipeline loads, every one of them
+ * required — derived, not guessed:
+ *
+ *   - `src/embeddings.ts` calls `pipeline('feature-extraction', EMBEDDING_MODEL)`
+ *     with NO options, so `@xenova/transformers` applies its own defaults.
+ *   - `quantized` defaults to `true` (node_modules/@xenova/transformers/src/models.js),
+ *     and the weights path is `onnx/${fileName}${quantized ? '_quantized' : ''}.onnx`
+ *     — so the file loaded is `onnx/model_quantized.onnx`, and a cache holding
+ *     only the full-precision `onnx/model.onnx` still has to download.
+ *   - the tokenizer loads `tokenizer.json` and `tokenizer_config.json` with
+ *     `fatal: true` (…/src/tokenizers.js), and the model config `config.json`.
+ *
+ * A "some .onnx file exists" check passed caches missing any of these, and
+ * `env.allowRemoteModels` is deliberately left at `true` (see `applyEmbeddingCacheDir`
+ * in src/embeddings.ts), so the pipeline would quietly fetch the rest from the
+ * Hub — exactly the network dependency this pin exists to remove.
+ */
+export const REQUIRED_MODEL_FILES = [
+  "config.json",
+  "tokenizer.json",
+  "tokenizer_config.json",
+  path.join("onnx", "model_quantized.onnx"),
+];
+
+/**
  * Is `<cacheDir>/<model>` a USABLE cache?
  *
- * Same verdict as `inspectModelCacheDir()` (src/model-cache.ts): a directory holding
- * only `config.json` is an interrupted download, not a warm cache. Re-implemented
- * on node builtins so the pin works before `npm run build` and without loading
- * the model library.
+ * STRICTER than `inspectModelCacheDir()` (src/model-cache.ts), on purpose: that
+ * one answers "has this root ever held the model" for `doctor` and the legacy
+ * adoption, where a non-empty `.onnx` plus `config.json` is the useful signal.
+ * A gate that must not touch the network needs the whole file list, because any
+ * one missing file is a download. Re-implemented on node builtins so the pin
+ * works before `npm run build` and without loading the model library.
  */
 export function inspectPinnedModelCache(
   cacheDir = CHECKOUT_MODEL_CACHE_DIR,
@@ -59,7 +91,6 @@ export function inspectPinnedModelCache(
 ) {
   const modelDir = path.join(cacheDir, ...model.split("/"));
   let files = 0;
-  let weights = false;
   const walk = (dir) => {
     let entries;
     try {
@@ -74,32 +105,46 @@ export function inspectPinnedModelCache(
         continue;
       }
       if (!entry.isFile()) continue;
-      let size = 0;
       try {
-        size = fs.statSync(full).size;
+        fs.statSync(full);
       } catch {
         continue;
       }
       files++;
-      if (full.toLowerCase().endsWith(".onnx") && size > 0) weights = true;
     }
   };
   walk(modelDir);
-  const config = (() => {
+  const missing = REQUIRED_MODEL_FILES.filter((relative) => {
     try {
-      return fs.statSync(path.join(modelDir, "config.json")).size > 0;
+      return fs.statSync(path.join(modelDir, relative)).size <= 0;
     } catch {
-      return false;
+      return true;
     }
-  })();
-  return { modelDir, files, present: weights && config };
+  });
+  return { modelDir, files, missing, present: missing.length === 0 };
+}
+
+/**
+ * The `npm run` alias that fills `cacheDir`, and the raw command behind it.
+ *
+ * `scripts/warm-checkout-model-cache.mjs` pins `MEMEX_MODEL_CACHE_DIR` at
+ * `CHECKOUT_MODEL_CACHE_DIR` before delegating to `memex deps warm`, which is
+ * the whole point: the warm and the check then agree on one directory, and no
+ * default-env run can put the download in the operator's real data root.
+ */
+export function warmCommands(cacheDir = CHECKOUT_MODEL_CACHE_DIR) {
+  return [
+    "npm run warm:model-cache",
+    `MEMEX_MODEL_CACHE_DIR=${JSON.stringify(cacheDir)} node scripts/warm-embedding-cache.mjs`,
+  ];
 }
 
 /**
  * Decide the pin without touching `process.env` — the unit-testable half.
  *
- * Returns `{ dir, source }`; throws when the checkout cache is cold, with a
- * message naming `memex deps warm`. Read-only: it never creates a directory.
+ * Returns `{ dir, source }`; throws when the checkout cache is cold or
+ * incomplete, naming a command that fills the directory it just checked.
+ * Read-only: it never creates a directory.
  */
 export function resolveE2EModelCachePin({
   env = process.env,
@@ -112,17 +157,23 @@ export function resolveE2EModelCachePin({
   if (env.MEMEX_EMBEDDING_STUB === "1") {
     return { dir: cacheDir, source: "stub" };
   }
-  const { modelDir, files, present } = inspectPinnedModelCache(cacheDir, model);
+  const { modelDir, files, missing, present } = inspectPinnedModelCache(cacheDir, model);
   if (!present) {
-    const partial =
+    const [alias, raw] = warmCommands(cacheDir);
+    const state =
       files > 0
-        ? ` ${modelDir} holds ${files} file(s) but no usable weights (an interrupted download).`
-        : "";
+        ? `it holds ${files} file(s) but is INCOMPLETE (an interrupted download): ` +
+          `missing ${missing.join(", ")}`
+        : "it is empty";
     throw new Error(
-      `${label}: the embedding model cache is cold at ${modelDir}.${partial}\n` +
-        `This gate pins MEMEX_MODEL_CACHE_DIR at the checkout cache so it never downloads the ` +
-        `129 MB model into its temporary data root (issue #114). Warm it once with ` +
-        `'memex deps warm' (or 'node scripts/warm-embedding-cache.mjs') and re-run the gate. ` +
+      `${label}: the embedding model cache at ${modelDir} is not usable — ${state}.\n` +
+        `Every one of ${REQUIRED_MODEL_FILES.join(", ")} is required: the default pipeline ` +
+        `loads all of them and would fetch any missing one from the Hub, which is the network ` +
+        `dependency this pin exists to remove (issue #114).\n` +
+        `Warm THIS directory once — a bare 'memex deps warm' fills <data root>/models instead ` +
+        `and leaves the gate cold:\n` +
+        `  ${alias}\n` +
+        `  (equivalently: ${raw})\n` +
         `To use a different cache, set MEMEX_MODEL_CACHE_DIR yourself.`,
     );
   }
