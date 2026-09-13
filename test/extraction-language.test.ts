@@ -17,7 +17,9 @@ import { describe, expect, it } from "vitest";
 import {
   HANGUL_WEIGHT,
   appendExtractionLanguageClause,
+  classifyTextLanguage,
   classifyWindowLanguage,
+  detectTextLanguage,
   detectWindowLanguage,
   renderExtractionLanguageClause,
   resolveExtractionLanguage,
@@ -82,6 +84,48 @@ describe("detectWindowLanguage (#123 §1)", () => {
     expect(window[0].user_message.match(/[A-Za-z]/g)!.length).toBeGreaterThan(result.hangul);
     expect(result.language).toBe("ko");
     expect(result.latin).toBeLessThan(result.hangul);
+  });
+
+  it("does not let a fence literal INSIDE a code block close the block (post-0.7.5 P2 #2)", () => {
+    // The reviewer's repro: a Korean question plus one JS block whose source
+    // contains the three-backtick string. The closing fence must be a line of
+    // its own, or the block ends at that literal and the remaining English
+    // identifiers are counted as the human's prose.
+    const window = [
+      ex(
+        "이 코드를 설명해주세요.\n" +
+          "```js\n" +
+          'const fence = "```";\n' +
+          "function renderDeploymentPipeline(config) {\n" +
+          "  const stages = config.stages.filter(Boolean);\n" +
+          "  return stages.map((stage) => ({ name: stage.name, run: stage.command }));\n" +
+          "}\n" +
+          "export default renderDeploymentPipeline;\n" +
+          "```\n",
+      ),
+    ];
+    const result = classifyWindowLanguage(window);
+    expect(result.latin).toBe(0);
+    expect(result.language).toBe("ko");
+  });
+
+  it("closes a fence only with the same fence run, on its own line", () => {
+    // A `~~~` block is not closed by a backtick line, and ``` does not close
+    // a ````` block — both would leak the code into the prose count.
+    expect(
+      detectWindowLanguage([
+        ex("이 설정이 맞나요?\n~~~\n```\nDEPLOY_TARGET=production_cluster_alpha\n~~~\n"),
+      ]),
+    ).toBe("ko");
+    expect(
+      detectWindowLanguage([
+        ex("이 diff 확인해주세요.\n````\n```\nrenameSessionStoreAdapterFactory()\n````\n"),
+      ]),
+    ).toBe("ko");
+    // An unterminated fence still runs to the end of the message.
+    expect(detectWindowLanguage([ex("이거 왜 이래요?\n```\nunterminated english code here\n")])).toBe(
+      "ko",
+    );
   });
 
   it("weights a Hangul syllable at 2.5 Latin letters — the units are not comparable raw", () => {
@@ -248,6 +292,24 @@ describe("resolveExtractionLanguage — the override order (#123 §2)", () => {
     expect(resolveExtractionLanguage(null, "ko")).toEqual({ language: "ko", source: "window" });
     expect(resolveExtractionLanguage(undefined, "en")).toEqual({ language: "en", source: "window" });
     expect(resolveExtractionLanguage(null, null)).toEqual({ language: null, source: "none" });
+  });
+});
+
+describe("classifyTextLanguage — one stored sentence (post-0.7.5 P3 #6)", () => {
+  it("reads a Korean fact as ko even when it names English products", () => {
+    const result = classifyTextLanguage("Flutter 상태관리는 Riverpod으로 결정했습니다.");
+    expect(result.language).toBe("ko");
+    // Raw Latin still outnumbers Hangul — the weight is what decides.
+    expect(result.latin).toBeGreaterThan(result.hangul);
+  });
+
+  it("reads an English fact as en and an undecidable string as null", () => {
+    expect(detectTextLanguage("Session storage stays on SQLite for local-first reads.")).toBe("en");
+    expect(detectTextLanguage("")).toBeNull();
+    expect(detectTextLanguage(null)).toBeNull();
+    expect(detectTextLanguage("2026-09-14 / 42 :: ---")).toBeNull();
+    // `humanProse` applies here too: a fact that is only a code span decides nothing.
+    expect(detectTextLanguage("`openReadDb()`")).toBeNull();
   });
 });
 
