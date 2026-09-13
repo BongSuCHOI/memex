@@ -21,14 +21,33 @@ import { runCodex } from "../dist/codex-exec.js";
 import { openWriteDb } from "../dist/db.js";
 import { detectTextLanguage } from "../dist/extraction-language.js";
 import { validateTranslationBatch } from "./translation-response.mjs";
-import { basename } from "node:path";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // This script does its work at module top level (it is a batch CLI). Importing
 // it from anywhere else — a test, a REPL probe, `import()` to "check that it
 // loads" — used to run the whole batch against the caller's data root. Refuse
 // unless this file IS the entry point.
-if (basename(process.argv[1] ?? "") !== basename(fileURLToPath(import.meta.url))) {
+//
+// The comparison is FILE IDENTITY, not the basename (post-0.7.6 review P2 #1).
+// A basename check answers the wrong question in both directions: any other
+// `translate-facts.mjs` anywhere on disk could `import()` this one and the batch
+// ran against the caller's data root, while running the real file through a
+// symlink named anything else (`translate-ko`, a `node_modules/.bin` shim) was
+// refused even though it IS the entry point. `realpathSync` on both sides
+// collapses symlinks and `.`/`..` so `npm run`, an absolute path from another
+// cwd and a symlink all resolve to the same file. A missing or unreadable
+// `argv[1]` (`node -e`, `node --eval`) is not this file, so it stays refused.
+const entryIdentity = (value) => {
+  try {
+    return realpathSync(value);
+  } catch {
+    return null;
+  }
+};
+const selfPath = entryIdentity(fileURLToPath(import.meta.url));
+const argvPath = process.argv[1] ? entryIdentity(process.argv[1]) : null;
+if (selfPath === null || argvPath === null || argvPath !== selfPath) {
   throw new Error("scripts/translate-facts.mjs runs only as a CLI entry point (node scripts/translate-facts.mjs)");
 }
 
