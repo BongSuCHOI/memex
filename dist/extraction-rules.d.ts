@@ -369,10 +369,15 @@ export declare function unionCustomFactKinds(snapshot: readonly CustomFactKind[]
  * first — project beta's fact was labelled with project alpha's word, and
  * reordering the overrides silently changed what the screen said a stored value
  * MEANT. So the registry is keyed by `(project, id)`: the global definition is
- * the fallback entry (`project: null`), and a project override contributes its
- * OWN entry whenever its definition actually differs from the global one. An
- * override that repeats the global definition verbatim adds nothing but its name
- * to `projects`, so the common case still ships one row per id.
+ * the fallback entry (`project: null`), and two overrides that spell a kind the
+ * global set does NOT define differently get a row each.
+ *
+ * What never gets a second row is an id the GLOBAL list defines (post-0.7.7
+ * review P2 #2). `resolveFromDoc()` resolves that collision global-first for
+ * every project, so a project row would let the screen name a definition the
+ * extraction prompt never carried. `KIND_ID_SHADOWS_GLOBAL` refuses a DIFFERING
+ * override at the door; here such a project simply joins the global row's
+ * `projects`, exactly as an override that repeats the definition verbatim does.
  */
 export type CustomFactKindRegistryEntry = CustomFactKind & {
     /** True for the file's global definition — the fallback when no override matches. */
