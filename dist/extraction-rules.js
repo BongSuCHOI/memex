@@ -911,7 +911,7 @@ function formatRegex(pattern) {
  * byte-identical prompt and `rules_hash` keeps meaning what it means.
  */
 export function renderCustomFactKindLines(rules) {
-    if (rules.customFactKinds.length === 0)
+    if ((rules.customFactKinds ?? []).length === 0)
         return [];
     const lines = [
         "- Additional category values are defined on this machine. They extend the five built-in",
@@ -941,7 +941,8 @@ export function renderExtractionConstraintClause(rules) {
     // all, instead of a restriction preamble with nothing to restrict.
     if (rules.excludeTopics.length === 0 &&
         rules.neverExtract.length === 0 &&
-        rules.decisionHints.length === 0) {
+        rules.decisionHints.length === 0 &&
+        (rules.customFactKinds ?? []).length === 0) {
         return "";
     }
     const lines = [
