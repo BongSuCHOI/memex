@@ -60,6 +60,12 @@ function fixture(options={}){
 }
 class FixtureCore{
  constructor(f){Object.assign(this,{fixture:f,root:path.resolve(__dirname,'../../..'),home:f.home,dbPath:f.filename===':memory:'?path.join(f.home,'db.sqlite'):f.filename,db:f.db,store:f.store,version:'0.4.2 · fixture',busy:new Set()});}
+ /**
+  * #121 — 부트스트랩이 요구하는 표면. 기본은 빈 목록(= 사용자 정의 종류 없음)이고,
+  * 종류를 다루는 테스트가 `core.customKinds = [...]`로 갈아끼운다. 여기서 기본값에 항목을
+  * 넣으면 배지·종류 칩을 세는 다른 픽스처 단정이 조용히 달라진다.
+  */
+ async customFactKinds(){return this.customKinds||[];}
  async connect(){return this.store;}environment(){return {root:this.root,home:this.home,dbPath:this.dbPath,version:this.version,node:process.version,platform:process.platform,pid:process.pid,values:{MEMEX_AUTO_ONTOLOGY:null,MEMEX_MODEL_BUDGET_MAX_ATTEMPTS:null},autoOntology:false,mutable:false,commands:false,sync:true,demo:true,note:'검증용 환경입니다. 실제 플러그인을 실행하지 않습니다.'};}
  async pipeline(){const a=this.store.overview(this.store.scope(new URLSearchParams({scope:'all'})));return {dataRootEmpty:false,conversations:{sessionsIndexed:a.sessions,exchanges:a.exchanges,archiveFiles:16,ready:true},extraction:{total:16,done:13,pending:1,excluded:0,deferred:0,claimed:1,failedPermanent:1,retriable:1,lastSuccessAt:this.fixture.ts(34)},embeddings:{activeFacts:a.facts.active,factVectorsPending:6},ontology:{classifiedFacts:a.facts.active-a.facts.unclassified,pendingFacts:a.facts.unclassified},relations:{total:120},readiness:{conversationReady:true,factReady:true,graphReady:true},lifecycleLastEventAt:this.fixture.ts(4)};}
  async mutate(){throw new HttpError(403,'검증용 예제에서는 실제 코어 변경을 실행하지 않습니다.','FIXTURE_READ_ONLY');}

@@ -48,8 +48,54 @@ export declare const EXTRACTION_RULES_LIMITS: Readonly<{
         neverExtractPatterns: 32;
         decisionPatterns: 16;
         projectOverrides: 32;
+        customFactKinds: 8;
+        customFactKindChars: Readonly<{
+            label: 40;
+            description: 200;
+            hint: 200;
+        }>;
     }>;
 }>;
+/**
+ * The five values `facts.category` has always held.
+ *
+ * Named here rather than imported from `fact-extractor.ts` on purpose: this
+ * module is a DB-free leaf that the Web UI loads without the extractor, and the
+ * extractor's own `FACT_CATEGORIES` set is the runtime check. A custom kind id
+ * that collides with one of these is refused, so the two lists can never
+ * disagree about what a built-in means.
+ */
+export declare const BUILTIN_FACT_KINDS: readonly ["decision", "preference", "pattern", "knowledge", "constraint"];
+/**
+ * A custom kind id. Lowercase snake_case, 2–24 characters.
+ *
+ * The same shape as a built-in category, because the id IS what lands in
+ * `facts.category`: it travels through search filters, exports, sync payloads
+ * and the `category = ?` predicates unchanged, so anything a built-in value can
+ * survive a custom one has to survive too.
+ */
+export declare const CUSTOM_FACT_KIND_ID: RegExp;
+/**
+ * One operator-defined fact kind (#121).
+ *
+ * A kind is a FACT CATEGORY, not a taxonomy category: it says what sort of
+ * statement the fact is, exactly like `decision` or `constraint`, and it has
+ * nothing to do with the ontology's domain/category classification. The two stay
+ * orthogonal — `ontology_category_id` is still assigned by the classifier, and a
+ * custom kind never appears in `ontology_categories`.
+ *
+ * Labels are carried in the overlay rather than the `badge.*` dictionary because
+ * an operator's kind cannot have a translation key: `badge.custom.<id>` is NOT a
+ * dictionary key, and the UI resolves the label from here by locale.
+ */
+export interface CustomFactKind {
+    id: string;
+    label_en: string;
+    label_ko: string;
+    description: string;
+    /** One line appended to the prompt clause telling the model when to pick it. */
+    extraction_hint?: string;
+}
 /** The four enforcement points the storage boundary covers (§3.3). */
 export declare const EXTRACTION_RULE_ENFORCEMENT_POINTS: readonly ["fact_insert", "incident", "remediation", "chronicle"];
 /** Where a `never_extract` pattern is matched. `both` is the default. */
@@ -74,6 +120,7 @@ export interface ExtractionRuleSet {
     exclude_topics?: string[];
     never_extract_patterns?: NeverExtractPattern[];
     always_treat_as_decision_patterns?: DecisionHintPattern[];
+    custom_fact_kinds?: CustomFactKind[];
 }
 export interface ExtractionRulesDoc extends ExtractionRuleSet {
     schema: string;
@@ -95,6 +142,8 @@ export interface ResolvedExtractionRules {
     excludeTopics: string[];
     neverExtract: NeverExtractPattern[];
     decisionHints: DecisionHintPattern[];
+    /** #121 — the kinds `facts.category` may hold on top of the five built-ins. */
+    customFactKinds: CustomFactKind[];
 }
 export interface LoadedExtractionRules {
     /** The file exists (even if it failed to load). */
@@ -199,6 +248,20 @@ export declare function resolveExtractionRules(projectId: string | null, loaded?
 /** True when this rule set has nothing to say. The prompt clause is then empty. */
 export declare function isEmptyExtractionRules(rules: ResolvedExtractionRules): boolean;
 /**
+ * #121 — the custom kind block, rendered AFTER the built-in category list.
+ *
+ * The five built-ins stay in `EXTRACTION_SYSTEM_PROMPT`, byte-identical; this
+ * block only adds values the operator defined. The wording has to keep the
+ * clause's monotonic promise honest: a custom kind is a LABEL for a candidate
+ * that already cleared every gate above, never a way to admit one that did not.
+ * Extraction of a fact that fails the durability or evidence bar is still
+ * nothing, whatever its category would have been.
+ *
+ * Deterministic: the kinds render in file order, so a no-op re-save produces a
+ * byte-identical prompt and `rules_hash` keeps meaning what it means.
+ */
+export declare function renderCustomFactKindLines(rules: ResolvedExtractionRules): string[];
+/**
  * Render the bounded structured block the extractor already consumes.
  *
  * Deterministic: same rules in, byte-identical block out, so a no-op re-save
@@ -251,6 +314,22 @@ export type BlockSetResult<T> = BlockSetOk<T> | BlockSetFailed;
  * RELAXATION applies from the next claim, automatically.
  */
 export declare function unionNeverExtract(snapshot: readonly NeverExtractPattern[], latest: readonly NeverExtractPattern[]): NeverExtractPattern[];
+/** Ids only, in snapshot-then-latest order, first definition winning. */
+export declare function unionCustomFactKinds(snapshot: readonly CustomFactKind[], latest: readonly CustomFactKind[]): CustomFactKind[];
+/**
+ * Which custom ids the candidate validator may accept right now.
+ *
+ * `claim snapshot ∪ the latest valid rules`, the same union `never_extract` uses
+ * and for the same reason read in the other direction: a kind DELETED from the
+ * file mid-run must not start dropping candidates from a job that was claimed
+ * while it existed (that would burn a model call and lose the fact), and a kind
+ * ADDED mid-run is safe to honour immediately. So removal takes effect from the
+ * next claim and addition from the next read — automatically, with no CAS.
+ *
+ * Never throws and never reads the database: an unreadable or invalid file just
+ * contributes nothing, leaving the snapshot in force.
+ */
+export declare function acceptedCustomFactKindIds(snapshot?: ResolvedExtractionRules | null): Set<string>;
 /**
  * Decide which candidates the commit must skip.
  *

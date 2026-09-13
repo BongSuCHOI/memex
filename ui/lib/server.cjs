@@ -108,7 +108,10 @@ function createServer(options={}){
     // bootstrap의 DB 오류는 HTTP 200 본문에 실린다 — 유일한 catch를 통과하지 않으므로
     // 여기서도 같은 봉투를 쓴다(설계 §5.2 · C1.5). 신규 사용자가 가장 먼저 보는 오류다.
     let store=null,error=null,projects=[],factTotals=null;try{store=await core.connect();projects=store.projects();factTotals=store.factTotals();}catch(e){error=errorBody(e);}
-    return {uiVersion:VERSION,csrfToken:token,environment:core.environment(),db:{available:!!store,error},capabilities:store?.capabilities()||{},projects,factTotals,commands:COMMANDS,revision,serverStartedAt:startedAt};
+    // #121 — 사용자 정의 fact 종류의 라벨은 DB가 아니라 오버레이 파일에서 온다. DB가 없어도
+    // 실리고, 읽을 수 없으면 빈 목록이다(core.customFactKinds()는 던지지 않는다).
+    const customFactKinds=await core.customFactKinds();
+    return {uiVersion:VERSION,csrfToken:token,environment:core.environment(),db:{available:!!store,error},capabilities:store?.capabilities()||{},projects,factTotals,customFactKinds,commands:COMMANDS,revision,serverStartedAt:startedAt};
   }
   const startedAt=new Date().toISOString();
   function guard(req,write){

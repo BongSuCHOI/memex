@@ -17,6 +17,7 @@
 // 이 모듈은 i18n 런타임 외에는 아무것도 import하지 않는다 — ui.mjs가 배지 툴팁을 위해 이 파일을
 // 읽기 때문이다(leaf 유지). 설명은 코드 동작과 일치해야 하고 추측하지 않는다("제공됨 ≠ 활용됨").
 import {t,tHtml,hasKey} from './i18n/index.mjs';
+import {customFactKind} from './fact-kinds.mjs';
 import {DOC_ANCHORS as A} from './i18n/doc-anchors.mjs';
 
 const REPO='https://github.com/BongSuCHOI/memex';
@@ -149,6 +150,9 @@ export const helpFor=key=>BY_KEY.get(key)||null;
  * 상태 배지의 한 줄 설명. 설명이 없는 값에는 `null`을 돌려준다 — `t()`를 바로 부르면 임의의
  * 배지 값마다 "missing key" 콘솔 오류가 쏟아진다.
  */
-export const badgeHelp=value=>{const key=`badge.${value}.help`;return hasKey(key)?t(key):null;};
+// #121 — 사전에 없으면 사용자 정의 fact 종류의 `description`을 쓴다. 사전이 언제나 먼저이고
+// (내장 배지 키가 이긴다) 그 외에는 여전히 null이다 — 없는 배지에 설명을 지어내지 않는다.
+export const badgeHelp=value=>{const key=`badge.${value}.help`;if(hasKey(key))return t(key);
+ return customFactKind(value)?.description||null;};
 /** 모든 source 앵커. 테스트가 문서에 실제로 있는지 검사한다. */
 export const SOURCES=[...new Set([...ALL.map(([,v])=>v.source),...GLOSSARY.map(g=>g.source)])];

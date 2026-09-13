@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { freshClaimPredicate, getExtractionConfig, } from "./pending-extraction.js";
 import { claimExtractionTargetWithReason, commitExtractionPage, ensureExtractionTarget, FACT_EXTRACTION_POLICY_VERSION, readExtractionTargetItems, recordExtractionFailure, renewMemoryJobLease, setExtractionTargetRulesHash, supersedeStaleExtractionTarget, } from "./continuity-store.js";
 import { deferMemoryJobForModelBudget, findExhaustedModelBudgetForClaim, isAutomaticOntologyEnabled, isModelBudgetExhausted, releaseExtractionClaimOnHold, withResolvedModelWorkContext, HOLD_REASONS, } from "./model-budget.js";
-import { buildBlockSet, composeEffectivePolicyVersion, composeExtractionSystemPrompt, extractionMatcherAvailable, extractionRulesPreClaimBlock, loadExtractionRules, reloadExtractionRulesIfChanged, resolveExtractionRules, unionNeverExtract, } from "./extraction-rules.js";
+import { acceptedCustomFactKindIds, buildBlockSet, CUSTOM_FACT_KIND_ID, composeEffectivePolicyVersion, composeExtractionSystemPrompt, extractionMatcherAvailable, extractionRulesPreClaimBlock, loadExtractionRules, reloadExtractionRulesIfChanged, resolveExtractionRules, unionNeverExtract, } from "./extraction-rules.js";
 import { oneShotMatcher } from "./overlay-matcher.js";
 export const EXTRACTION_POLICY_VERSION = "precision-durability-v4";
 export const FACT_ENTAILMENT_POLICY_VERSION = "authoritative-entailment-v3";
@@ -660,6 +660,8 @@ const FACT_CATEGORIES = new Set([
     "knowledge",
     "constraint",
 ]);
+/** #121 — "no custom kinds", shared so the default parameter allocates nothing. */
+const EMPTY_FACT_KIND_SET = new Set();
 const FACT_SCOPES = new Set(["global", "project"]);
 const GROUNDING_TYPES = new Set([
     "explicit",
@@ -1002,6 +1004,7 @@ export function createFactExtractionObservability() {
         rejected_grounding_rule: 0,
         rejected_confidence: 0,
         rejected_semantic_verifier: 0,
+        rejected_unknown_fact_kind: 0,
         grounding_explicit: 0,
         grounding_verified: 0,
         grounding_inferred: 0,
@@ -1076,7 +1079,13 @@ function hasPotentialLocalContextBeforeRatification(exchanges, ratificationIndic
         .slice(0, exchangeIndex - 1)
         .some((exchange) => contextBindingMaterial(exchange).length > 0));
 }
-function validateExtractedFactCandidateDetailed(candidate, exchanges, referentCandidates = []) {
+function validateExtractedFactCandidateDetailed(candidate, exchanges, referentCandidates = [], 
+/**
+ * #121 — the custom kind ids the current rules define (claim snapshot ∪ the
+ * latest valid file). Empty by default, so every caller that does not know
+ * about the overlay keeps exactly the five built-in categories.
+ */
+customFactKinds = EMPTY_FACT_KIND_SET) {
     const reject = (reason) => ({ accepted: false, reason });
     if (!isRecord(candidate))
         return reject("invalid_schema");
@@ -1093,9 +1102,18 @@ function validateExtractedFactCandidateDetailed(candidate, exchanges, referentCa
     if (factKr !== undefined && typeof factKr !== "string") {
         return reject("invalid_schema");
     }
-    if (typeof category !== "string" ||
-        !FACT_CATEGORIES.has(category)) {
+    if (typeof category !== "string")
         return reject("invalid_schema");
+    if (!FACT_CATEGORIES.has(category)) {
+        // #121 — a custom kind is accepted only while the rules still define it.
+        // A well-formed id the rules do NOT define is its own drop reason: the
+        // operator removed the kind (or the model invented one), and neither is a
+        // malformed candidate. Anything that is not even a valid id stays
+        // `invalid_schema`, which is what it has always been.
+        if (!CUSTOM_FACT_KIND_ID.test(category))
+            return reject("invalid_schema");
+        if (!customFactKinds.has(category))
+            return reject("unknown_fact_kind");
     }
     if (typeof scopeType !== "string" ||
         !FACT_SCOPES.has(scopeType)) {
@@ -1249,6 +1267,11 @@ function validateExtractedFactCandidateDetailed(candidate, exchanges, referentCa
         });
     }
     const classifierNotes = [];
+    // #121 — a custom kind has no Chronicle slot prefix, so `normalizeSubjectKey`
+    // returns null for it and the fact simply carries no `subject_key`. That is
+    // the intended outcome, not a gap: inventing a prefix would let two custom
+    // kinds collide in the slot space the built-in five already own. The prompt
+    // clause tells the model to omit it, and the note below records any proposal.
     const subjectKey = normalizeSubjectKey(candidate.subject_key, category);
     if (candidate.subject_key !== undefined && candidate.subject_key !== null && !subjectKey) {
         classifierNotes.push(`unresolved subject_key proposal: ${String(candidate.subject_key).slice(0, 80)}`);
@@ -1682,6 +1705,31 @@ function recordCandidateObservation(observability, result) {
         observability.context_resolved_ratification += 1;
     }
 }
+/**
+ * #121 — the `rules.kind-dropped` audit line.
+ *
+ * Awaited rather than floating for the same reason `rules.blocked` is: a
+ * one-shot extraction worker can exit before a detached promise resolves, and
+ * then the only record that a candidate was dropped would be missing exactly
+ * when someone asks why a memory did not appear. Best-effort — a log that cannot
+ * be written must never turn a completed extraction into a failure.
+ */
+async function auditDroppedFactKinds(dropped, rules) {
+    if (dropped.size === 0)
+        return;
+    try {
+        const { appendUiAuditLine } = await import("./ontology-admin.js");
+        appendUiAuditLine("rules.kind-dropped", {
+            to_hash: rules?.hash ?? null,
+            project: rules?.projectId ?? null,
+            kinds: [...dropped.keys()].sort().join(","),
+            dropped: [...dropped.values()].reduce((sum, count) => sum + count, 0),
+        });
+    }
+    catch {
+        /* the audit line must never be able to fail an extraction that succeeded */
+    }
+}
 /** Extract facts, optionally renewing a claim and processing rows after a watermark. */
 export async function extractFactsFromExchanges(db, sessionId, stats, renewLease, options) {
     // Evaluation/shadow readers may open a released read-only fixture before
@@ -1758,6 +1806,13 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     // string object as before, so an installation with no rules sends a
     // byte-identical prompt.
     const extractionSystemPrompt = composeExtractionSystemPrompt(EXTRACTION_SYSTEM_PROMPT, options?.extractionRules);
+    // Issue #121 — the custom fact kinds this run may accept, resolved ONCE from
+    // `claim snapshot ∪ latest valid rules` so that every window of one claim
+    // judges categories by the same list. A candidate carrying an id that is not
+    // in it is dropped and counted here; the audit line below is the only record,
+    // and it carries ids and counts, never candidate text.
+    const acceptedFactKinds = acceptedCustomFactKindIds(options?.extractionRules);
+    const droppedFactKinds = new Map();
     const allFacts = [];
     const factIndexByKey = new Map();
     // transient(공급자 장애·빈 응답)로 실패한 window. >0 이면 이 세션은 "처리 완료"가 아니다.
@@ -1800,8 +1855,12 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
                         }
                         continue;
                     }
-                    const validation = validateExtractedFactCandidateDetailed(candidate, window, referentCandidates);
+                    const validation = validateExtractedFactCandidateDetailed(candidate, window, referentCandidates, acceptedFactKinds);
                     if (!validation.accepted) {
+                        if (validation.reason === "unknown_fact_kind" && isRecord(candidate)) {
+                            const kind = String(candidate.category ?? "");
+                            droppedFactKinds.set(kind, (droppedFactKinds.get(kind) ?? 0) + 1);
+                        }
                         recordCandidateObservation(options?.observability, validation);
                         continue;
                     }
@@ -1924,6 +1983,11 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
             }
         }
     }
+    // Issue #121 — one audit line per run for the candidates an undefined fact
+    // kind dropped. Written BEFORE the failure throws below, because a dropped
+    // candidate is a thing that happened whether or not the rest of the run
+    // survived, and ids/counts only: the dropped fact's text is never logged.
+    await auditDroppedFactKinds(droppedFactKinds, options?.extractionRules ?? null);
     // 공급자 장애가 하나라도 있었으면 이 세션을 완료로 기록하면 안 된다. 호출자
     // (extractAndSaveFacts)가 extraction_log 기록을 건너뛰도록 throw 로 표면화한다.
     //

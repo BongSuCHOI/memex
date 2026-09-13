@@ -1,5 +1,5 @@
 import {request,setToken} from './api.mjs';
-import {esc,icon,btn,linkBtn,banner,errorCard,skeleton,empty,options,basename,short,number,copy,download,name,factText,setPreferTranslatedFacts,docsNoticeTag} from './ui.mjs';
+import {esc,icon,btn,linkBtn,banner,errorCard,skeleton,empty,options,basename,short,number,copy,download,name,factText,setPreferTranslatedFacts,docsNoticeTag,setCustomFactKinds} from './ui.mjs';
 import {renderDetail,commandModal} from './details.mjs';
 import {helpFor,docUrl,GLOSSARY,CONTROLS} from './help.mjs';
 import * as overview from './pages/overview.mjs';import * as facts from './pages/facts.mjs';import * as conversations from './pages/conversations.mjs';import * as taxonomy from './pages/taxonomy.mjs';import * as graph from './pages/graph.mjs';import * as activity from './pages/activity.mjs';import * as settings from './pages/settings.mjs';
@@ -130,5 +130,8 @@ document.addEventListener('keydown',e=>{
 });window.addEventListener('popstate',()=>render());
 setInterval(()=>{if(prefs.live&&routePath()==='/activity'&&document.visibilityState==='visible'&&!detail.open&&!modal.open&&!loading&&!document.activeElement?.matches('input,select,textarea')){const y=window.scrollY;render(true).then(()=>window.scrollTo({top:y}));}},10000);
 function connectEvents(){eventSource?.close();eventSource=new EventSource('/api/v2/events');eventSource.addEventListener('connected',()=>{connected=true;renderShell();});eventSource.addEventListener('change',()=>{unread=true;renderShell();});eventSource.onerror=()=>{connected=false;renderShell();};}
-async function boot(refresh=false){try{bootstrap=await request('bootstrap');setToken(bootstrap.csrfToken);if(refresh){lastPageKey='';lastDrawerKey='';}connectEvents();await render(true);}catch(e){main.innerHTML=errorCard(e)+`<p class="caption mt">${esc(t('shell.boot.serverHint'))}</p>`;main.querySelector('[data-action="refresh"]')?.addEventListener('click',()=>boot(true));}}
+async function boot(refresh=false){try{bootstrap=await request('bootstrap');setToken(bootstrap.csrfToken);
+ // #121 — 사용자 정의 fact 종류의 라벨은 사전이 아니라 오버레이가 갖는다. 첫 render() 앞에
+ // 꽂아야 배지·종류 칩이 첫 그림부터 id가 아닌 이름으로 뜬다.
+ setCustomFactKinds(bootstrap.customFactKinds);if(refresh){lastPageKey='';lastDrawerKey='';}connectEvents();await render(true);}catch(e){main.innerHTML=errorCard(e)+`<p class="caption mt">${esc(t('shell.boot.serverHint'))}</p>`;main.querySelector('[data-action="refresh"]')?.addEventListener('click',()=>boot(true));}}
 canonicalize();boot();
