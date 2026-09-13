@@ -606,6 +606,30 @@ class Core {
       });
     }finally{if(write)this.overlayBusy=false;}
   }
+  /**
+   * #121 — 사용자 정의 fact 종류. `/api/v2/bootstrap`이 매 부팅에 한 번 싣는다.
+   *
+   * 배지·종류 칩이 **모든 화면에서** 이 라벨을 써야 하므로 오버레이 탭이 아니라 부트스트랩에
+   * 있다. 화면 하나(관리 › 오버레이)를 열어야 다른 화면의 배지가 고쳐지는 구조는 "기억 목록에
+   * 왜 id가 그대로 떠 있나"로 돌아온다.
+   *
+   * **절대 던지지 않는다.** 코어를 빌드하지 않았거나 오버레이가 깨져 있으면 빈 목록이고, 그러면
+   * 종류는 코어 원문(id)으로 표시된다 — 부트스트랩이 신규 사용자가 가장 먼저 보는 응답이라
+   * 여기서의 실패는 화면 전체를 막는다. 오버레이가 유효하지 않다는 사실은 관리 › 오버레이의
+   * `issues[]`와 doctor가 말하는 쪽이 옳다.
+   */
+  async customFactKinds(){
+    try{
+      return await this.pinned(async()=>{
+        if(!fs.existsSync(path.join(this.root,'dist','extraction-rules.js')))return [];
+        const rules=await this.module('extraction-rules');
+        const loaded=rules.loadExtractionRules();
+        // 전역 규칙만 — 부트스트랩에는 프로젝트 범위가 없고, 프로젝트 오버라이드는 전역에
+        // **추가만** 하므로(§3.1 합집합) 전역이 모든 화면이 공유하는 하한이다.
+        return rules.resolveExtractionRules(null,loaded).customFactKinds.map(kind=>({...kind}));
+      });
+    }catch{return [];}
+  }
   /** 오버레이 모듈은 없을 수 있다 — 코어를 빌드하지 않은 설치에서 503의 사유가 이것이다. */
   async overlayModule(name){
     if(!fs.existsSync(path.join(this.root,'dist',name+'.js')))
@@ -640,7 +664,13 @@ class Core {
         builtin:{patterns:catalog.builtin.map(p=>({id:p.id,intent:p.intent,source:p.source,flags:p.flags,form:p.form})),
           words:Object.fromEntries(Object.entries(catalog.words).map(([k,v])=>[k,[...v]]))},
         user:{patterns:(doc?.patterns?.add??[]).map(p=>({...p})),disabled:[...loadedGate.disabled],
-          words:{add:{...loadedGate.words.add},disable:{...loadedGate.words.disable}}},
+          words:{add:{...loadedGate.words.add},disable:{...loadedGate.words.disable}},
+          config:{...loadedGate.config}},
+        // #120 임계값. 카탈로그(이름·종류·범위·내장값)는 코어가 소유하고 화면은 그리기만 한다 —
+        // 범위를 UI가 복제하면 저장은 되고 화면만 거짓말하는 상태가 생긴다.
+        config:{fields:catalog.config.map(f=>({...f})),
+          effective:gate.effectiveGateConfig(loadedGate.config),
+          overridden:gate.overriddenGateConfigKeys(loadedGate.config)},
         quarantined:loadedGate.quarantined.map(q=>({...q})),
         issues:loadedGate.issues,
         history:admin.listOverlayHistory('recall-gate',20),
@@ -652,7 +682,9 @@ class Core {
         schema:rules.EXTRACTION_RULES_OVERLAY_SCHEMA,version:rules.EXTRACTION_RULES_OVERLAY_VERSION,
         doc:loadedRules.doc,emptyDoc:rules.emptyExtractionRulesDoc(),
         resolved:{preferredLanguage:resolved.preferredLanguage,excludeTopics:resolved.excludeTopics,
-          neverExtract:resolved.neverExtract,decisionHints:resolved.decisionHints},
+          neverExtract:resolved.neverExtract,decisionHints:resolved.decisionHints,
+          customFactKinds:resolved.customFactKinds},
+        builtinFactKinds:[...rules.BUILTIN_FACT_KINDS],
         clause:(text=>({chars:text.length,text}))(rules.renderExtractionConstraintClause(resolved)),
         // 검증기·증거 기준은 오버레이가 건드릴 수 없다 — 화면이 그 사실을 단정으로 말한다.
         verifierUnchanged:true,
@@ -852,9 +884,12 @@ class Core {
     const disable=Array.isArray(body.patternsDisable)?body.patternsDisable:[];
     const enable=Array.isArray(body.patternsEnable)?body.patternsEnable:[];
     const words=body.words&&typeof body.words==='object'?body.words:null;
-    const chosen=[add.length?'add':null,disable.length?'disable':null,enable.length?'enable':null,words?'words':null].filter(Boolean);
+    const config=body.config&&typeof body.config==='object'&&!Array.isArray(body.config)?body.config:null;
+    const configReset=Array.isArray(body.configReset)?body.configReset.map(String):body.configReset===true?true:null;
+    const chosen=[add.length?'add':null,disable.length?'disable':null,enable.length?'enable':null,words?'words':null,
+      config?'config':null,configReset?'configReset':null].filter(Boolean);
     if(chosen.length!==1)throw new HttpError(400,{code:'INVALID_PATCH',key:'overlays.error.invalidPatch',
-      message:'a patch carries exactly one of patternsAdd, patternsDisable, patternsEnable, words'});
+      message:'a patch carries exactly one of patternsAdd, patternsDisable, patternsEnable, words, config, configReset'});
     if(chosen[0]==='add'){
       const input=add[0];
       if(!input||typeof input!=='object')throw new HttpError(400,{code:'INVALID_PATTERN',key:'overlays.error.invalidPattern',
@@ -872,6 +907,25 @@ class Core {
           message:`${id} is not disabled`,details:{issues:[{field:'patternId',key:'overlays.error.patternNotDisabled',params:{id}}]}});
       return admin.applyOverlayChange('recall-gate',{delta:{patternsRemove:[id]}},
         {surface:'web-ui',expectedRevision,probe:false,auditAction:'gate.pattern-enable',history:{removed:[id]}});
+    }
+    // #120 임계값. 이름·형·범위는 전부 코어의 카탈로그가 판정한다. 여기서 400을 내는 이유는
+    // 하나뿐이다 — 사용자가 고른 값이 숫자가 아니면 lock을 잡을 이유가 없다. 범위 위반은
+    // `applyOverlayChange`의 검증기가 `config.<key>` path와 함께 422로 돌려준다.
+    if(chosen[0]==='config'){
+      const key=String(config.key||'');
+      if(!gate.gateConfigField(key))throw new HttpError(400,{code:'INVALID_CONFIG_KEY',key:'overlays.error.invalidConfigKey',
+        params:{key},message:`unknown threshold: ${text(key,40)}`});
+      const value=Number(config.value);
+      if(!Number.isFinite(value))throw new HttpError(400,{code:'INVALID_CONFIG_VALUE',key:'overlays.error.invalidConfigValue',
+        params:{key},message:`${key} must be a finite number`});
+      return admin.setGateConfig({set:{[key]:value}},{surface:'web-ui',expectedRevision});
+    }
+    if(chosen[0]==='configReset'){
+      const applied=gate.overriddenGateConfigKeys(gate.loadRecallGateOverlay().config);
+      const remove=configReset===true?applied:configReset.filter(key=>applied.includes(key));
+      if(!remove.length)throw new HttpError(422,{code:'CONFIG_NOT_OVERRIDDEN',key:'overlays.error.configNotOverridden',
+        params:{key:configReset===true?'':String(configReset[0]||'')},message:'that threshold is not overridden'});
+      return admin.setGateConfig({remove},{surface:'web-ui',expectedRevision});
     }
     const lexicon=String(words.lexicon||'');
     if(!['ack','continue','filler'].includes(lexicon))throw new HttpError(400,{code:'INVALID_LEXICON',key:'overlays.error.invalidLexicon',

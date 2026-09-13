@@ -415,3 +415,82 @@ test('HTTP: 쓰기는 이 서버가 해석한 임시 home에만 쓴다',async()=
     assert.ok(auditLines().some(line=>line.action==='overlays.patch'&&line.status==='completed'));
   }finally{app.close();}
 });
+
+/* -------------------------------------------------------------------------- */
+/* #120 회수 게이트 임계값                                                      */
+/* -------------------------------------------------------------------------- */
+
+test('임계값 카탈로그는 코어가 소유하고 status가 내장값·범위·덮어쓴 것을 함께 싣는다',async()=>{
+  const c=core();
+  const before=await c.overlays('status');
+  assert.equal(before.gate.config.fields.length,8,'임계값 8개가 전부 실린다');
+  assert.deepEqual(before.gate.config.overridden,[]);
+  for(const field of before.gate.config.fields){
+    assert.ok(['integer','fraction'].includes(field.kind),field.key);
+    assert.ok(field.min<field.max,field.key);
+    assert.equal(before.gate.config.effective[field.key],field.default,field.key+' 는 덮어쓰기 전이면 내장값이다');
+  }
+  const saved=await c.overlays('patch',{overlay:'gate',config:{key:'safetyRefreshInterval',value:10}});
+  assert.deepEqual(saved.status.gate.config.overridden,['safetyRefreshInterval']);
+  assert.equal(saved.status.gate.config.effective.safetyRefreshInterval,10);
+  assert.equal(saved.status.gate.config.effective.ackMaxTokens,4,'나머지는 내장값 그대로다');
+  assert.deepEqual(saved.status.gate.user.config,{safetyRefreshInterval:10});
+  assert.deepEqual(readJson(gateFile()).config,{safetyRefreshInterval:10});
+  c.close();
+});
+
+test('범위를 벗어난 임계값은 422 + config.<key> path로 거절되고 파일은 그대로다',async()=>{
+  const c=core();
+  await c.overlays('patch',{overlay:'gate',config:{key:'ackMaxTokens',value:6}});
+  const snapshot=fs.readFileSync(gateFile(),'utf8');
+  const e=await refused(()=>c.overlays('patch',{overlay:'gate',config:{key:'ackMaxTokens',value:99}}),422,'OVERLAY_INVALID');
+  const issue=e.details.issues.find(i=>i.severity==='error');
+  assert.equal(issue.code,'CONFIG_VALUE_INVALID');
+  assert.equal(issue.key,'overlays.issue.configValueInvalid');
+  assert.equal(issue.path,'config.ackMaxTokens','어느 임계값을 고쳐야 하는지가 사라졌다');
+  // 정수 자리에 소수, 이름 오타, 숫자가 아닌 값은 각각 다른 코드로 거절된다.
+  await refused(()=>c.overlays('patch',{overlay:'gate',config:{key:'ackMaxTokens',value:1.5}}),422,'OVERLAY_INVALID');
+  await refused(()=>c.overlays('patch',{overlay:'gate',config:{key:'nope',value:1}}),400,'INVALID_CONFIG_KEY');
+  await refused(()=>c.overlays('patch',{overlay:'gate',config:{key:'ackMaxTokens',value:'six'}}),400,'INVALID_CONFIG_VALUE');
+  // 한 요청에 한 가지 변경 — 임계값도 같은 규칙을 받는다.
+  await refused(()=>c.overlays('patch',{overlay:'gate',config:{key:'ackMaxTokens',value:7},configReset:true}),400,'INVALID_PATCH');
+  assert.equal(fs.readFileSync(gateFile(),'utf8'),snapshot,'거절된 요청은 파일을 건드리지 않는다');
+  c.close();
+});
+
+test('임계값 되돌리기는 내장값으로 돌아가고 config 블록 자체가 사라진다',async()=>{
+  const c=core();
+  // 이 파일은 하나의 임시 home을 공유하므로, 앞선 테스트가 남긴 덮어쓰기부터 지운다.
+  if((await c.overlays('status')).gate.config.overridden.length)await c.overlays('patch',{overlay:'gate',configReset:true});
+  await c.overlays('patch',{overlay:'gate',config:{key:'ackMaxTokens',value:6}});
+  await c.overlays('patch',{overlay:'gate',config:{key:'coherentMargin',value:0.2}});
+  const one=await c.overlays('patch',{overlay:'gate',configReset:['ackMaxTokens']});
+  assert.deepEqual(one.status.gate.config.overridden,['coherentMargin']);
+  assert.equal(one.status.gate.config.effective.ackMaxTokens,4);
+  const all=await c.overlays('patch',{overlay:'gate',configReset:true});
+  assert.deepEqual(all.status.gate.config.overridden,[]);
+  assert.equal('config' in readJson(gateFile()),false,'빈 블록을 남기지 않는다');
+  await refused(()=>c.overlays('patch',{overlay:'gate',configReset:['ackMaxTokens']}),422,'CONFIG_NOT_OVERRIDDEN');
+  c.close();
+});
+
+test('임계값 카드는 8행을 내장값·범위와 함께 그리고 덮어쓴 행만 되돌리기를 준다',()=>{
+  const page=require('../public/pages/settings-overlays.mjs');
+  const fields=[
+    {key:'ackMaxTokens',kind:'integer',min:0,max:32,default:4},
+    {key:'coherentMargin',kind:'fraction',min:0,max:1,default:0.08},
+  ];
+  const html=page.configCard({config:{fields,
+    effective:{ackMaxTokens:6,coherentMargin:0.08},overridden:['ackMaxTokens']}});
+  // 범위는 코어가 준 값 그대로 input에 실린다 — 화면이 min/max를 복제하지 않는다.
+  assert.match(html,/name="ackMaxTokens"[^>]*value="6"[^>]*min="0"[^>]*max="32"[^>]*step="1"/);
+  assert.match(html,/name="coherentMargin"[^>]*value="0\.08"[^>]*min="0"[^>]*max="1"[^>]*step="any"/);
+  assert.match(html,/data-config-save="ackMaxTokens"/);
+  assert.match(html,/data-config-save="coherentMargin"/);
+  // 되돌리기는 덮어쓴 행에만 붙는다: 내장값 행에는 되돌릴 것이 없다.
+  assert.match(html,/data-config-reset="ackMaxTokens"/);
+  assert.doesNotMatch(html,/data-config-reset="coherentMargin"/);
+  assert.match(html,/data-config-reset-all/);
+  // 카탈로그가 비면 카드 자체를 그리지 않는다(코어가 없는 설치에서 빈 카드가 남지 않는다).
+  assert.equal(page.configCard({}),'');
+});

@@ -166,7 +166,11 @@ export interface ExtractionTarget {
     state: MemoryJobState;
     /** Issue #30: the rule overlay hash recorded at claim time, if any. */
     rulesHash?: string | null;
+    /** Issue #123: the fact language the last run of this target wrote in. */
+    factLanguage?: ExtractionFactLanguage;
 }
+/** `mixed` = the claim's windows did not agree; `null` = no clause applied. */
+export type ExtractionFactLanguage = "ko" | "en" | "mixed" | null;
 /** Create one immutable target from a claim-time snapshot, never live completion MAX. */
 export declare function ensureExtractionTarget(db: Database.Database, input: {
     sessionId: string;
@@ -184,6 +188,15 @@ export declare function ensureExtractionTarget(db: Database.Database, input: {
  * it unconditionally.
  */
 export declare function setExtractionTargetRulesHash(db: Database.Database, targetId: string, rulesHash: string | null): boolean;
+/**
+ * Issue #123 — record the fact language one claim actually ran under.
+ *
+ * The twin of `setExtractionTargetRulesHash`: reporting only, local only, never
+ * scheduled on. Called once after the model work, because the language is
+ * decided per window and only the finished page knows whether the windows
+ * agreed. Idempotent, and a no-op when the value is already what it should be.
+ */
+export declare function setExtractionTargetFactLanguage(db: Database.Database, targetId: string, language: ExtractionFactLanguage): boolean;
 export declare function readExtractionTargetItems(db: Database.Database, targetId: string, afterOrdinal: number, limit: number): ExtractionTargetItem[];
 export declare function recordExtractionFailure(db: Database.Database, input: {
     targetId: string;
@@ -217,9 +230,9 @@ export declare function supersedeStaleExtractionTarget(db: Database.Database, in
  * `target has no pending page despite incomplete state`. Re-queueing has to mean
  * "start again from the first ordinal", so the cursor is reset with everything else.
  *
- * `rules_hash` is cleared because the next run will stamp the hash it actually ran
- * under; `lease_generation` is NOT touched, because it is monotonic fencing and
- * rewinding it would let a stale lease look current again.
+ * `rules_hash` and `fact_language` are cleared because the next run will stamp the
+ * values it actually ran under; `lease_generation` is NOT touched, because it is
+ * monotonic fencing and rewinding it would let a stale lease look current again.
  *
  * CAS on `completed`: a target a worker has since re-claimed is left alone, and the
  * returned map is empty for it.

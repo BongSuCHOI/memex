@@ -12,6 +12,32 @@ Fact는 대화 전체 요약이 아니라 다음 작업에서 재사용할 가�
 - `knowledge`
 - `constraint`
 
+### 사용자 정의 category (`custom_fact_kinds`, 0.7.x · #121)
+
+추출 규칙 오버레이(`overlays/extraction-rules.json`)가 위 다섯 개 **위에** 최대 8개의 category 값을
+더할 수 있습니다. id는 `^[a-z][a-z0-9_]{1,23}$`이고 **내장 다섯 개와 겹칠 수 없으며**, 그 id가 그대로
+`facts.category`에 저장됩니다. `facts.category`는 CHECK 없는 `TEXT` 컬럼이라 스키마 변경은 없습니다.
+
+이것은 **분류(ontology) category가 아닙니다.** 두 축은 직교합니다: `facts.category`는 "이 문장이 어떤
+종류의 진술인가"이고 `facts.ontology_category_id`는 분류기가 정하는 주제입니다. 사용자 정의 종류는
+`ontology_categories`에 나타나지 않고, 분류기·관계 도출에 **분기를 만들지 않습니다** — 내장 5종과
+똑같이 `fact_category` 문맥 한 줄로 프롬프트에 실릴 뿐이고(`ontology-classifier.ts`), 어떤 코드도
+category 값으로 분류 동작을 갈라놓지 않습니다.
+
+라이프사이클에서 달라지는 것은 두 곳뿐입니다.
+
+- **후보 검증**: `validateExtractedFactCandidateDetailed`는 내장 5종을 먼저 보고, 그 외의 값은
+  **claim 스냅숏 ∪ 최신 유효 규칙**의 사용자 정의 id 집합에 있을 때만 받습니다(`never_extract`와 같은
+  합집합 방향). 없으면 그 후보만 `unknown_fact_kind`로 탈락하고 `rules.kind-dropped` 감사 1줄이
+  남습니다 — 예외도, 실패 범위도, attempt 소모도 없습니다. 종류를 지우는 변경은 그래서 **다음 claim
+  부터** 효력이 있습니다.
+- **Chronicle subject_key**: 슬롯 접두어(§"subject_key" 참고)는 내장 5종의 것입니다. 사용자 정의
+  종류의 fact는 `subject_key` 없이 저장되고, 모델이 제안했다면 classifier note로만 남습니다. 접두어를
+  지어내면 두 사용자 정의 종류가 내장 5종이 쓰는 슬롯 공간에서 충돌합니다.
+
+증거 기준·durability 게이트·`authoritative-entailment-v3` 검증기·consolidation·revision은 전부
+그대로입니다. 종류는 fact를 **무엇이라 부르는지**만 바꿉니다.
+
 fact는 scope와 source exchange provenance를 가지며 검색, revision, consolidation, ontology의 기준이 됩니다. extraction-time `confidence`는 저장 후보 필터에만 사용하고 fact row에는 보존하지 않습니다.
 
 Phase 3부터 project fact는 stable `project_id`와 `subject_key`를 가집니다. Absolute path는
@@ -263,6 +289,10 @@ recall text는 authority가 아니며 cardinality에도 포함하지 않습니�
 
 프로젝트 override는 `preferred_language`만 덮어쓰고 **나머지 제약은 전역과 합집합**입니다. 다른 곳에
 한 줄을 더해 전역 금지를 느슨하게 만드는 경로를 두지 않기 위해서입니다.
+
+`preferred_language`는 #123부터 **기본값(대화 언어를 따름)의 override**입니다. 규칙 블록에는 더 이상
+렌더되지 않고 [§10 추출 언어](#10-기억-언어와-kr-translation)의 언어 절 하나로 나갑니다 — 그래서
+`preferred_language`만 들어 있는 규칙 파일은 규칙 블록 자체를 만들지 않습니다.
 
 **금지 후보는 탈락이지 실패가 아닙니다.** 예외도, `extraction_failed_ranges` 행도, 소모된 attempt도
 없고 같은 배치의 다른 후보는 정상 저장됩니다. 대화 archive는 그대로입니다 — 규칙이 금지하는 것은
@@ -583,7 +613,53 @@ embedding과 stale-vector 복구는 계속 수행합니다. 자동 번역이나 
 분류 overlay는 pending으로 유지합니다. 호출별 usage가 빠진 경우 전체 합계를 완전 관측으로
 해석하지 않습니다. 실제 한도와 재개 방법은 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단)를 따릅니다.
 
-## 10. KR translation
+## 10. 기억 언어와 KR translation
+
+### 추출 언어 (#123)
+
+추출은 **대화의 언어로 fact를 씁니다**. 판정은 결정론적입니다 — 추출 창의 **사람 메시지**
+**가중** 글자 수 다수결(Hangul 음절 × 2.5 vs Latin 문자)이고, 동률이면 마지막 사람 메시지의 언어, 셀 글자가
+없으면 **판정 없음**입니다. 코드 블록·인라인 코드·URL은 세기 전에 제거하고 assistant 메시지와
+tool 결과는 애초에 세지 않습니다(`src/extraction-language.ts`).
+
+우선순위는 `preferred_language`(명시 override) > 창 언어 판정 > **절 없음**(모델 자유)입니다.
+판정된 언어는 한 문장으로 프롬프트 **뒤에 덧붙기만** 합니다 —
+
+```text
+## Fact language
+Write `fact` (and subject_key stays snake_case ASCII) in Korean; keep code identifiers, paths and product names verbatim.
+```
+
+`EXTRACTION_SYSTEM_PROMPT`는 바이트 단위로 그대로이므로 `policy_version`
+(`precision-durability-v4`)의 뜻이 바뀌지 않고, 언어는 스케줄 키에 **섞이지 않습니다** —
+대화 언어 판정이 달라졌다고 전량 재추출이 일어나지는 않습니다. 적용된 언어는 영수증으로
+`extraction_targets.fact_language`(`ko`/`en`/`mixed`/NULL, nullable, 로컬 전용, sync 대상 아님)에
+남습니다. `mixed`는 한 claim의 창들이 서로 다른 언어로 판정된 경우입니다.
+
+**가중치가 왜 필요한가**: Hangul 음절 블록은 초성·중성·종성 묶음으로 **단어 하나에 가까운 정보**를
+담고 Latin 문자 1자는 **음소 하나**를 담습니다. 단위가 다르므로 그냥 세면
+`Flutter 상태관리는 Riverpod으로 결정했습니다.`(Hangul 13 : Latin 15)가 **영어**로 판정됩니다 —
+영어 제품명 두 개 때문에 명백한 한국어 문장이 영어가 되는 것이고, 이 프로젝트의 실제 대화가
+정확히 이 모양입니다. 그래서 Hangul 음절 1자 = Latin 2.5자로 셉니다(`HANGUL_WEIGHT`). 2.5는
+"음절당 2–3자" 범위의 중앙이고 이진 부동소수점에서 **정확히 표현**되므로 위 동률 규칙이
+epsilon 비교가 아니라 진짜 등호로 남습니다. raw counts(`hangul`/`latin`)와 가중 점수
+(`koScore`/`enScore`)를 모두 노출하고, 아래 세 경계 사례를
+`test/extraction-language.test.ts`가 고정합니다.
+
+| 입력 | raw | 가중 | 판정 |
+| --- | --- | --- | --- |
+| `Flutter 상태관리는 Riverpod으로 결정했습니다.` | 13 : 15 | 32.5 : 15 | `ko` |
+| `세션 저장소 경로를 src/continuity-store.ts 의 readExtractionTargetItems 에서 읽도록 바꿨습니다.` | 19 : 45 | 47.5 : 45 | `ko` |
+| `We keep the 한글 label on the button so translators can find it.` | 2 : 47 | 5 : 47 | `en` |
+
+기존 fact는 다시 쓰지 않습니다. 이 정책은 **새로 추출되는 fact부터** 적용됩니다.
+
+### KR translation (레거시 표시 경로)
+
+`fact_kr`는 이제 **이 정책 이전에 영어로 저장된 fact를 한국어로 보여 주기 위한 레거시 경로**입니다.
+새 fact는 대화 언어로 저장되므로 `fact_kr`를 새로 만들지 않습니다(추출 프롬프트는 예나 지금이나
+`fact_kr` 방출을 금지합니다). 아래 스크립트와 `vec_facts_kr`,
+`prefs.preferTranslatedFacts`는 기존 영어 fact를 위해 그대로 유지합니다.
 
 `fact_kr`는 local derived state이며 sync하지 않습니다. 자동 SessionStart translation은 수행하지 않습니다. 번역 모델 호출 비용을 명시적으로 통제하기 위해 현재는 수동 스크립트를 사용합니다.
 

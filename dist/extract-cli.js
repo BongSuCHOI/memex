@@ -21,7 +21,7 @@
  */
 import fs from "fs";
 import { OverlayInvalidError, OverlayLockedError, OverlayStaleError, PROBE_WALL_MS, listOverlayHistory, listOverlaySnapshots, overlayPaths, readOverlaySnapshot, } from "./overlay-admin.js";
-import { EXTRACTION_RULES_LIMITS, EXTRACTION_RULE_ENFORCEMENT_POINTS, buildBlockSet, composeEffectivePolicyVersion, currentExtractionRulesRevision, emptyExtractionRulesDoc, emptyLoadedExtractionRules, extractionRulesDocHash, isEmptyExtractionRules, loadExtractionRules, overlaysDisabled, readExtractionRulesFile, renderExtractionConstraintClause, resetExtractionRules, resolveExtractionRules, rollbackExtractionRules, setExtractionRules, validateExtractionRules, validateExtractionRulesDoc, } from "./extraction-rules.js";
+import { EXTRACTION_RULES_LIMITS, EXTRACTION_RULE_ENFORCEMENT_POINTS, buildBlockSet, composeEffectivePolicyVersion, currentExtractionRulesRevision, emptyExtractionRulesDoc, emptyLoadedExtractionRules, extractionRulesDocHash, BUILTIN_FACT_KINDS, isEmptyExtractionRules, loadExtractionRules, overlaysDisabled, readExtractionRulesFile, renderExtractionConstraintClause, resetExtractionRules, resolveExtractionRules, rollbackExtractionRules, setExtractionRules, validateExtractionRules, validateExtractionRulesDoc, } from "./extraction-rules.js";
 import { MATCH_WALL_MS, oneShotMatcher, readQuarantine, } from "./overlay-matcher.js";
 import { extractionRulesOverlayPath, getDbPath } from "./paths.js";
 const USAGE = `Usage:
@@ -43,6 +43,12 @@ The extraction-rules overlay adds your own RESTRICTIONS to fact extraction:
 topics to stay away from, regexes that must never be stored, decision hints and a
 preferred language. Restrictions only ever suppress — nothing here can widen what
 the built-in policy accepts.
+
+'custom_fact_kinds' is the one item that adds rather than removes, and it adds a
+LABEL only: up to 8 of your own category values on top of decision, preference,
+pattern, knowledge and constraint. A kind renames what a fact is called; it never
+lowers the evidence bar and never makes an ineligible candidate eligible. Edit
+them in the rules file ('rules set'), not with a dedicated verb.
 
 READ-ONLY verbs: show, validate, test, history, and every --dry-run. They call no
 model and no embedding, and write neither the overlay nor the database.
@@ -451,6 +457,30 @@ function ruleSummaryLines(rules) {
     for (const hint of rules.decisionHints) {
         lines.push(`${CONTINUE}hint      ${pad(hint.id, 20)}/${hint.source}/${hint.flags ?? ""}`);
     }
+    lines.push(...customKindLines(rules));
+    return lines;
+}
+/**
+ * #121 — the custom fact kinds, listed with the id that actually lands in
+ * `facts.category` so an operator can paste it straight into a search filter.
+ *
+ * Editing them is file-based this release (`rules set`); there is no
+ * `rules kind add`, and this listing says so rather than implying one exists.
+ */
+function customKindLines(rules) {
+    if (rules.customFactKinds.length === 0)
+        return [];
+    const lines = [
+        row("Fact kinds", `${rules.customFactKinds.length} custom kind(s) on top of the five built-ins ` +
+            `(${BUILTIN_FACT_KINDS.join(", ")}) — edit them with 'memex extract rules set <file>'`),
+    ];
+    for (const kind of rules.customFactKinds) {
+        lines.push(`${CONTINUE}kind      ${pad(kind.id, 20)}${kind.label_en} / ${kind.label_ko}`);
+        lines.push(`${CONTINUE}          ${pad("", 20)}${kind.description}`);
+        if (kind.extraction_hint) {
+            lines.push(`${CONTINUE}          ${pad("", 20)}hint: ${kind.extraction_hint}`);
+        }
+    }
     return lines;
 }
 async function cmdShow() {
@@ -476,6 +506,12 @@ async function cmdShow() {
         schedulingPolicyVersion: policy.scheduling,
         enforcementPoints: [...EXTRACTION_RULE_ENFORCEMENT_POINTS],
         rules: loaded.global,
+        // Issue #123 — the effective default is not in the overlay, so --json has
+        // to carry it or a consumer cannot tell "unset" from "nothing decides".
+        language: {
+            default: "conversation",
+            override: loaded.global.preferredLanguage,
+        },
         quarantine: quarantined,
         issues: loaded.issues,
         heldJobs: report.heldJobs,
@@ -496,6 +532,12 @@ async function cmdShow() {
         row("Effective", "The rules in force when a job is claimed ride in its prompt,"),
         `${CONTINUE}and never_extract patterns are re-read from the file at the storage boundary.`,
         `${CONTINUE}→ a tightened restriction applies at once; a relaxed one from the next job on.`,
+        // Issue #123 — the effective DEFAULT, which is not in the overlay file at
+        // all. Without this line an operator reading `preferred language unset`
+        // below would conclude that nothing decides the language.
+        row("Language", loaded.global.preferredLanguage === null
+            ? "follows the conversation (override: preferred_language)"
+            : `${loaded.global.preferredLanguage} — preferred_language overrides the default, which follows the conversation`),
         ...ruleSummaryLines(loaded.global),
         ...(quarantined.length > 0
             ? [
@@ -753,7 +795,7 @@ function simulationLines(report, rules) {
         lines.push(`    decision hints (model-only)  ${report.advisoryOnly.decisionHints.join(" · ")}`);
     }
     if (report.advisoryOnly.preferredLanguage !== null) {
-        lines.push(`    preferred language (model-only)  ${report.advisoryOnly.preferredLanguage}`);
+        lines.push(`    preferred language (model-only)  ${report.advisoryOnly.preferredLanguage} — an override; the default follows the conversation`);
     }
     return lines;
 }

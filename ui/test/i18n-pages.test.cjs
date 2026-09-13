@@ -1128,8 +1128,25 @@ const RULES_DOC = {
   preferred_language: 'ko', exclude_topics: ['salary review'],
   never_extract_patterns: [{id: 'user.9c1e4d07', source: '\\bsk-[A-Za-z0-9_-]{16,}', flags: '', scope: 'both', note: 'api key shape'}],
   always_treat_as_decision_patterns: [{id: 'user.aa11bb22', source: '(final decision)', flags: 'i'}],
+  // #121 — 라벨은 사전이 아니라 이 문서에서 온다. 그래서 이 탭을 훑는 미번역 리터럴 검사에
+  // 잡히지 않아야 하는 값이기도 하다(운영자 데이터이지 UI 문구가 아니다).
+  custom_fact_kinds: [{id: 'runbook', label_en: 'Runbook step', label_ko: 'Runbook step',
+    description: 'A recovery step an operator must follow.', extraction_hint: 'the human describes a repeatable recovery action'}],
   project_overrides: {'project-atlas': {preferred_language: 'en'}},
 };
+/** #120 — 코어 카탈로그가 주는 임계값 8개. 화면은 범위를 복제하지 않고 이 값을 그린다. */
+const GATE_CONFIG_FIELDS = [
+  {key: 'ackMaxTokens', kind: 'integer', min: 0, max: 32, default: 4},
+  {key: 'safetyRefreshInterval', kind: 'integer', min: 1, max: 100, default: 6},
+  {key: 'driftJaccard', kind: 'fraction', min: 0, max: 1, default: 0.12},
+  {key: 'driftMinTokens', kind: 'integer', min: 1, max: 100, default: 5},
+  {key: 'coverageMinTokens', kind: 'integer', min: 1, max: 100, default: 8},
+  {key: 'coherentMargin', kind: 'fraction', min: 0, max: 1, default: 0.08},
+  {key: 'substantiveMinTokens', kind: 'integer', min: 1, max: 100, default: 5},
+  {key: 'lexicalCoherentJaccard', kind: 'fraction', min: 0, max: 1, default: 0.35},
+];
+const GATE_CONFIG_EFFECTIVE = Object.fromEntries(
+  GATE_CONFIG_FIELDS.map(f => [f.key, f.key === 'safetyRefreshInterval' ? 10 : f.default]));
 const OVERLAY_STATUS = (gate = {}, rules = {}, extra = {}) => ({
   available: true, shared: false, disabledByEnv: false,
   limits: {fileBytes: 32768, patternSource: 200, quantifiers: 8, noteChars: 200, matchWallMs: 50, probeWallMs: 300,
@@ -1142,6 +1159,7 @@ const OVERLAY_STATUS = (gate = {}, rules = {}, extra = {}) => ({
     user: {patterns: [USER_PATTERN], disabled: ['ack.en.1'],
       words: {add: {ack: ['ack'], continue: [], filler: []}, disable: {ack: ['sure'], continue: [], filler: []}}},
     quarantined: [], issues: [], history: [HISTORY_ROW], snapshots: [8],
+    config: {fields: GATE_CONFIG_FIELDS, effective: GATE_CONFIG_EFFECTIVE, overridden: ['safetyRefreshInterval']},
     ...gate,
   },
   rules: {
@@ -1149,7 +1167,9 @@ const OVERLAY_STATUS = (gate = {}, rules = {}, extra = {}) => ({
     schema: 'memex.extraction-rules-overlay', version: 1, doc: RULES_DOC,
     emptyDoc: {schema: 'memex.extraction-rules-overlay', version: 1, revision: 0},
     resolved: {preferredLanguage: 'ko', excludeTopics: ['salary review'],
-      neverExtract: RULES_DOC.never_extract_patterns, decisionHints: RULES_DOC.always_treat_as_decision_patterns},
+      neverExtract: RULES_DOC.never_extract_patterns, decisionHints: RULES_DOC.always_treat_as_decision_patterns,
+      customFactKinds: RULES_DOC.custom_fact_kinds},
+    builtinFactKinds: ['decision', 'preference', 'pattern', 'knowledge', 'constraint'],
     clause: {chars: 180, text: '## User rule overlay (local, operator-authored)\nrules_hash: 9c1e4d07'},
     verifierUnchanged: true, enforcementPoints: ['fact_insert', 'incident', 'remediation', 'chronicle'],
     schedulingPolicyVersion: 'continuity-fact-v1', effectivePolicyVersion: 'continuity-fact-v1+rules:9c1e4d07',
@@ -1174,6 +1194,7 @@ const overlayVariants = () => [
   ['overlays/gateEmpty', overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV,
     OVERLAY_STATUS({present: false, revision: 0, hash: null, updatedAt: null, updatedBy: null,
       user: {patterns: [], disabled: [], words: {add: {ack: [], continue: [], filler: []}, disable: {ack: [], continue: [], filler: []}}},
+      config: {fields: GATE_CONFIG_FIELDS, effective: Object.fromEntries(GATE_CONFIG_FIELDS.map(f => [f.key, f.default])), overridden: []},
       history: []}), null)],
   ['overlays/gateFiltered', overlayPage.overlayTab(l2ctx('tab=overlays&intent=trace'), OVERLAY_ENV, OVERLAY_STATUS(), null)],
   ['overlays/rules', overlayPage.overlayTab(l2ctx('tab=overlays&overlay=rules'), OVERLAY_ENV, OVERLAY_STATUS(), null)],
@@ -1219,6 +1240,32 @@ test('F en: 오버레이 탭의 모든 상태가 en으로 렌더되고 한글·�
     assertEnglishOnly(label, html);
     assertNoOverlayKeys(label, html);
   }
+});
+
+/**
+ * #121 — 규칙 화면의 사용자 정의 fact 종류 표.
+ *
+ * 읽기 전용이라는 사실이 화면에 **쓰여 있어야** 한다. "왜 여기서 못 고치나"의 답이 코드 주석에만
+ * 있으면, 다음 사람이 편집 폼을 붙이고 id가 이미 저장된 기억에 붙어 있다는 사실을 나중에 안다.
+ */
+test('F: 사용자 정의 fact 종류는 개수와 함께 읽기 전용 표로 뜨고 편집 폼을 만들지 않는다', () => {
+  locale.useEn();
+  const rules = overlayPage.overlayTab(l2ctx('tab=overlays&overlay=rules'), OVERLAY_ENV, OVERLAY_STATUS(), null);
+  assert.ok(rules.includes('id="rules-kinds"'), '종류 표가 없다');
+  assert.ok(rules.includes('<code>runbook</code>'), 'id(= 저장되는 값)를 보여주지 않는다');
+  assert.ok(rules.includes('Runbook step'), '오버레이 라벨을 보여주지 않는다');
+  assert.ok(rules.includes('A recovery step an operator must follow.'));
+  assert.ok(rules.includes('the human describes a repeatable recovery action'), '추출 힌트가 빠졌다');
+  assert.ok(rules.includes('<code>decision</code>'), '다시 정의할 수 없는 내장 종류를 말하지 않는다');
+  // 문장 전체가 아니라 앞부분으로 본다 — 렌더는 esc()를 지나므로 작은따옴표가 &#39;가 된다.
+  assert.ok(rules.includes('Editing is file-based in this release'), '파일 기반 편집이라는 사실을 말하지 않는다');
+  // 표뿐이다 — 이번 릴리스에는 종류를 쓰는 입력이 없다.
+  assert.ok(!/name="kind[A-Za-z]*"/.test(rules), '종류 편집 입력이 생겼다');
+  assert.ok(!rules.includes('data-kind-remove'), '종류 삭제 버튼이 생겼다');
+
+  const empty = overlayPage.overlayTab(l2ctx('tab=overlays&overlay=rules'), OVERLAY_ENV,
+    OVERLAY_STATUS({}, {resolved: {preferredLanguage: null, excludeTopics: [], neverExtract: [], decisionHints: [], customFactKinds: []}}), null);
+  assert.ok(empty.includes(locale.en['overlays.rules.kinds.empty']), '비었을 때의 문장이 없다');
 });
 
 test('F en: 하위 내비가 두 화면을 가르고 딥링크로 고를 수 있다', () => {

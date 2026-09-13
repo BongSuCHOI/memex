@@ -253,7 +253,7 @@ receipt-only commit 뒤에는 runtime, tests, generated artifacts, scripts, owne
 | 블록 | 필드 | 어디서 왔는가 |
 | --- | --- | --- |
 | `environment.models` | `llm_model`, `llm_model_source`, `llm_reasoning`, `llm_reasoning_source`, `embedding_model`, `embedding_model_source`, `embedding_version`, `embedding_dims`, `embedding_source`, `embedding_stub` | `resolveLlmSelection()`(`src/model-settings.ts`) + `EMBEDDING_MODEL`/`EMBEDDING_VERSION`/`embeddingStubEnabled()`(`src/embeddings.ts`). `embedding_dims`는 선언이 아니라 **실제 생성한 벡터의 길이**입니다 |
-| `environment.overlays` | `recall_gate`, `extraction_rules`, `quarantine`, `disabled_by_env` | `observeOverlayBenchmarkEnvironment()`(`src/extraction-rules.ts`) — env 변수를 되읊는 것이 아니라 **벤치마크 루트의 파일시스템을 관측**합니다. 오염된 루트가 "깨끗했다"는 주장만으로 통과할 수 없습니다 |
+| `environment.overlays` | `recall_gate`, `extraction_rules`, `quarantine`, `config`, `disabled_by_env` | `observeOverlayBenchmarkEnvironment()`(`src/extraction-rules.ts`) — env 변수를 되읊는 것이 아니라 **벤치마크 루트의 파일시스템을 관측**합니다. 오염된 루트가 "깨끗했다"는 주장만으로 통과할 수 없습니다. `config`(#120)는 `recall-gate.json`이 회수 게이트 **임계값 8개**를 덮어썼는지를 따로 관측합니다 — 패턴을 하나도 바꾸지 않아도 `safetyRefreshInterval`·`coherentMargin`이 움직이면 AC_PERF_03이 세는 "회수한 프롬프트 수"가 달라지므로 `present`면 계약 실패입니다 |
 
 `scripts/benchmark-contract.mjs`의 `validateBenchmarkReport()`는 두 블록과 **모든 하위 필드**를
 요구합니다. **블록 누락도, 하위 필드 1개 누락도 실패**입니다 — "있을 때만 검사한다"는 규칙은 마음에
@@ -290,6 +290,8 @@ hook/daemon transport·Chrome 프로브만 씁니다). 따라서 `llm_*`는 "관
 `test/benchmark-contract.test.mjs`의 "published record satisfies the contract"와
 `benchmark-contract` gate는 **의도적으로 FAIL**입니다. 코퍼스·Chrome 실행이 불가능하면 계약을
 고치지 말고 릴리스 receipt에 현재 성능을 `NOT_PROVEN`으로 기록하십시오.
+
+**0.7.x에서 계약이 한 번 더 넓어졌습니다(#120).** `environment.overlays.config`가 필수 하위 필드로 추가됐으므로, 0.7.0에서 재생성한 `docs/verification/benchmark.json`은 그 필드가 없어 **오늘의 계약을 만족하지 않습니다**. 위와 같은 규칙이 그대로 적용됩니다 — receipt를 손으로 고치지도, 계약을 느슨하게 하지도 않습니다. 위 `node scripts/benchmark.mjs` 명령으로 **재생성**할 때까지 `test/benchmark-contract.test.mjs`의 "published record satisfies the contract"와 `benchmark-contract` gate는 **의도적으로 FAIL**입니다.
 
 `benchmark-pre-*.json`은 `package.json`의 `files` 안 `!docs/verification/benchmark-pre-*.json`이
 tarball에서 제외합니다(§4의 `npm pack --dry-run` 관측값으로 확인).

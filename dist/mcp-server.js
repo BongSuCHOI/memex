@@ -23688,7 +23688,13 @@ function ensureContinuitySchema(db, options = {}) {
         -- overlay history. It is REPORTING only \u2014 the scheduling key is
         -- policy_version, and mixing the rule hash into it would turn one
         -- edited character into a full-corpus re-extraction.
-        rules_hash TEXT
+        rules_hash TEXT,
+        -- Issue #123: the fact language this target was extracted in
+        -- ('ko'/'en'/'mixed'/NULL when no language clause applied). Same
+        -- contract as rules_hash: LOCAL, never synced, REPORTING only. It is
+        -- not in the scheduling key, so changing what a conversation detects as
+        -- never re-opens a completed target.
+        fact_language TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_target_items (
@@ -24344,6 +24350,9 @@ function ensureContinuitySchema(db, options = {}) {
     const extractionTargetColumns = columnNames(db, "extraction_targets");
     if (!extractionTargetColumns.has("rules_hash")) {
       db.exec("ALTER TABLE extraction_targets ADD COLUMN rules_hash TEXT");
+    }
+    if (!extractionTargetColumns.has("fact_language")) {
+      db.exec("ALTER TABLE extraction_targets ADD COLUMN fact_language TEXT");
     }
     options.afterMigrationStage?.("evidence-sequence");
     const repaired = db.prepare(`
@@ -28196,6 +28205,23 @@ var INTENTS = [
   "minorCorrection"
 ];
 var LEXICONS = ["ack", "continue", "filler"];
+var GATE_CONFIG_FIELDS = Object.freeze([
+  { key: "ackMaxTokens", kind: "integer", min: 0, max: 32, default: DEFAULT_RECALL_GATE_CONFIG.ackMaxTokens },
+  { key: "safetyRefreshInterval", kind: "integer", min: 1, max: 100, default: DEFAULT_RECALL_GATE_CONFIG.safetyRefreshInterval },
+  { key: "driftJaccard", kind: "fraction", min: 0, max: 1, default: DEFAULT_RECALL_GATE_CONFIG.driftJaccard },
+  { key: "driftMinTokens", kind: "integer", min: 1, max: 100, default: DEFAULT_RECALL_GATE_CONFIG.driftMinTokens },
+  { key: "coverageMinTokens", kind: "integer", min: 1, max: 100, default: DEFAULT_RECALL_GATE_CONFIG.coverageMinTokens },
+  { key: "coherentMargin", kind: "fraction", min: 0, max: 1, default: DEFAULT_RECALL_GATE_CONFIG.coherentMargin },
+  { key: "substantiveMinTokens", kind: "integer", min: 1, max: 100, default: DEFAULT_RECALL_GATE_CONFIG.substantiveMinTokens },
+  { key: "lexicalCoherentJaccard", kind: "fraction", min: 0, max: 1, default: DEFAULT_RECALL_GATE_CONFIG.lexicalCoherentJaccard }
+]);
+var GATE_CONFIG_KEYS = GATE_CONFIG_FIELDS.map((field) => field.key);
+var CONFIG_FIELD_BY_KEY = new Map(
+  GATE_CONFIG_FIELDS.map((field) => [field.key, field])
+);
+function overriddenGateConfigKeys(config2 = {}) {
+  return GATE_CONFIG_KEYS.filter((key) => config2[key] !== void 0);
+}
 function emptyWords() {
   return { add: { ack: [], continue: [], filler: [] }, disable: { ack: [], continue: [], filler: [] } };
 }
@@ -28206,12 +28232,15 @@ var EMPTY_OVERLAY = Object.freeze({
   patterns: Object.freeze([]),
   disabled: Object.freeze([]),
   words: Object.freeze(emptyWords()),
+  config: Object.freeze({}),
   quarantined: Object.freeze([]),
   issues: Object.freeze([]),
   doc: null
 });
 function recallGateOverlayHash(doc) {
+  const configEntries = GATE_CONFIG_KEYS.filter((key) => doc.config?.[key] !== void 0).map((key) => [key, doc.config[key]]);
   const rules = {
+    ...configEntries.length > 0 ? { config: Object.fromEntries(configEntries) } : {},
     patterns: {
       add: (doc.patterns?.add ?? []).map((pattern) => ({
         id: pattern.id,
@@ -28236,7 +28265,8 @@ var KNOWN_TOP_LEVEL = /* @__PURE__ */ new Set([
   "updated_at",
   "updated_by",
   "patterns",
-  "words"
+  "words",
+  "config"
 ]);
 var BUILTIN_IDS = new Set(BUILTIN_GATE_PATTERNS.map((pattern) => pattern.id));
 var BUILTIN_SOURCES = new Set(
@@ -28472,7 +28502,37 @@ function validateRecallGateOverlayDoc(raw, opts = {}) {
       }
     }
   }
+  const config2 = {};
+  const configRaw = doc.config;
+  if (configRaw !== void 0) {
+    if (typeof configRaw !== "object" || configRaw === null || Array.isArray(configRaw)) {
+      error2("OVERLAY_NOT_OBJECT", "`config` must be an object of threshold overrides", { path: "config" });
+    } else {
+      for (const [key, value] of Object.entries(configRaw)) {
+        const field = CONFIG_FIELD_BY_KEY.get(key);
+        if (!field) {
+          error2("CONFIG_KEY_UNKNOWN", `unknown threshold ${JSON.stringify(key)}`, {
+            path: `config.${key}`,
+            field: key,
+            params: { key, allowed: GATE_CONFIG_KEYS.join(", ") }
+          });
+          continue;
+        }
+        const problem = configValueProblem(field, value);
+        if (problem !== null) {
+          error2("CONFIG_VALUE_INVALID", problem, {
+            path: `config.${key}`,
+            field: key,
+            params: { key, kind: field.kind, min: field.min, max: field.max, value }
+          });
+          continue;
+        }
+        config2[field.key] = value;
+      }
+    }
+  }
   const ok = !issues.some((issue2) => issue2.severity === "error");
+  const configKeys = overriddenGateConfigKeys(config2);
   return {
     ok,
     issues,
@@ -28483,9 +28543,24 @@ function validateRecallGateOverlayDoc(raw, opts = {}) {
       ...typeof doc.updated_at === "string" ? { updated_at: doc.updated_at } : {},
       ...doc.updated_by && typeof doc.updated_by === "object" ? { updated_by: doc.updated_by } : {},
       patterns: { add, disable },
-      words: { add: words.add, disable: words.disable }
+      words: { add: words.add, disable: words.disable },
+      // An empty `config` is dropped, not written as `{}`: the document a
+      // no-threshold install writes stays byte-identical to the 0.7.0 one.
+      ...configKeys.length > 0 ? { config: config2 } : {}
     } : null
   };
+}
+function configValueProblem(field, value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return `${field.key} must be a finite number (found ${JSON.stringify(value ?? null)})`;
+  }
+  if (field.kind === "integer" && !Number.isInteger(value)) {
+    return `${field.key} must be a whole number of tokens (found ${value})`;
+  }
+  if (value < field.min || value > field.max) {
+    return `${field.key} must be between ${field.min} and ${field.max} (found ${value})`;
+  }
+  return null;
 }
 function statKey(file) {
   try {
@@ -28578,6 +28653,7 @@ function readValidateCompile(file) {
       add: doc.words?.add,
       disable: doc.words?.disable
     },
+    config: doc.config ?? {},
     quarantined: quarantined.filter(Boolean),
     issues,
     doc
@@ -28804,7 +28880,10 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       incidentMatched: incidents.length > 0,
       residentRevisionStale: revisionCorrections.length > 0,
       hotEvidencePending: hot.length > 0,
-      config: options.gateConfig,
+      // Issue #120 — the overlay's threshold overrides sit UNDER `options.gateConfig`:
+      // a caller that passes thresholds explicitly (tests, the benchmark) still wins,
+      // and an install with no `config` block is byte-identical to 0.7.0.
+      config: { ...gateOverlay.config, ...options.gateConfig ?? {} },
       userHits
     });
     if (options.gate === false) {
@@ -28833,7 +28912,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       embedding = await embedOnce();
       if (embedding) {
         baseline = await queryBaseline(embedding);
-        decision = resolveAmbiguousDecision(decision, embedding, blobToEmbedding(gateRow?.topic_embedding), baseline, options.gateConfig);
+        decision = resolveAmbiguousDecision(decision, embedding, blobToEmbedding(gateRow?.topic_embedding), baseline, { ...gateOverlay.config, ...options.gateConfig ?? {} });
       } else {
         decision = { ...decision, action: "retrieve", triggers: [...decision.triggers, "no_topic_embedding"], skipReason: null };
       }
@@ -32593,7 +32672,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.4"
+    version: "0.7.5"
   },
   {
     capabilities: {

@@ -162,6 +162,56 @@ function wordsCard(gate){
  </form></section>`;
 }
 
+/**
+ * 임계값 카드 (#120). 8개 행은 전부 **덮어쓰지 않으면 내장값**이고, 화면은 그 둘을 같은 줄에서
+ * 보여 준다 — "지금 무슨 숫자로 판정하는가"와 "내가 무엇을 바꿨는가"가 한 눈에 갈려야 한다.
+ *
+ * 범위는 코어 카탈로그(`gate.config.fields`)가 준 값만 쓴다. UI가 min/max를 복제하면 저장은
+ * 코어가 거절하는데 화면만 통과시키는 상태가 생긴다. `step`도 같은 출처다.
+ *
+ * 이름은 8개 리터럴 t() 호출로 둔다 — 런타임 조립 키는 추출 린트에 보이지 않는다.
+ */
+const thresholdLabel=key=>key==='ackMaxTokens'?t('overlays.gate.config.key.ackMaxTokens')
+ :key==='safetyRefreshInterval'?t('overlays.gate.config.key.safetyRefreshInterval')
+ :key==='driftJaccard'?t('overlays.gate.config.key.driftJaccard')
+ :key==='driftMinTokens'?t('overlays.gate.config.key.driftMinTokens')
+ :key==='coverageMinTokens'?t('overlays.gate.config.key.coverageMinTokens')
+ :key==='coherentMargin'?t('overlays.gate.config.key.coherentMargin')
+ :key==='substantiveMinTokens'?t('overlays.gate.config.key.substantiveMinTokens')
+ :key==='lexicalCoherentJaccard'?t('overlays.gate.config.key.lexicalCoherentJaccard')
+ :key;
+
+export function configCard(gate){
+ const config=gate.config||{fields:[],effective:{},overridden:[]};
+ const fields=config.fields||[];
+ if(!fields.length)return '';
+ const overridden=new Set(config.overridden||[]);
+ const rows=fields.map(field=>{
+  const isOverridden=overridden.has(field.key);
+  const value=config.effective?.[field.key]??field.default;
+  return [
+   `${esc(thresholdLabel(field.key))} <code>${esc(field.key)}</code>`,
+   `<div class="row wrap" data-config-row="${esc(field.key)}">
+     <input class="input" style="max-width:120px" type="number" inputmode="decimal" name="${esc(field.key)}"
+       value="${esc(value)}" min="${esc(field.min)}" max="${esc(field.max)}"
+       step="${field.kind==='integer'?'1':'any'}" aria-label="${esc(thresholdLabel(field.key))}">
+     ${btn(t('overlays.gate.config.save'),'check',`type="button" data-config-save="${esc(field.key)}"`)}
+     ${isOverridden?btn(t('overlays.gate.config.reset'),'refresh',`type="button" data-config-reset="${esc(field.key)}"`):''}
+     ${isOverridden?`<span class="tag blue">${esc(t('overlays.gate.config.overridden'))}</span>`
+       :`<span class="tag outline">${esc(t('overlays.gate.config.builtin'))}</span>`}
+    </div>
+    <p class="caption">${esc(t('overlays.gate.config.rowHint',{default:field.default,min:field.min,max:field.max}))}</p>`,
+  ];
+ });
+ return `<section class="card pad mt" id="gate-config"><div class="spread"><h2>${esc(t('overlays.gate.config.title'))}</h2>
+ ${overridden.size?btn(t('overlays.gate.config.resetAll'),'refresh','type="button" data-config-reset-all="1"'):''}</div>
+ <p class="caption mt">${esc(t('overlays.gate.config.body'))}</p>
+ <p class="caption">${esc(t('overlays.gate.config.summary',{overridden:number(overridden.size),total:number(fields.length)}))}</p>
+ ${kv(rows)}
+ <div id="gate-config-issues"></div>
+ <p class="caption mt">${esc(t('overlays.gate.config.caption'))}</p></section>`;
+}
+
 function testCard(){
  return `<section class="card pad mt" id="gate-test"><h2>${esc(t('overlays.gate.test.title'))}</h2>
  <p class="caption mt">${esc(t('overlays.gate.test.body'))}</p>
@@ -208,9 +258,11 @@ function gateView(ctx,data){
   [t('overlays.gate.summary.builtin'),esc(t('overlays.gate.summary.builtinValue',{n:number((gate.builtin.patterns||[]).length)}))],
   [t('overlays.gate.summary.user'),esc(t('overlays.gate.summary.userValue',{added:number((gate.user.patterns||[]).length),
     disabled:number((gate.user.disabled||[]).length),quarantined:number((gate.quarantined||[]).length)}))],
+  [t('overlays.gate.summary.thresholds'),esc(t('overlays.gate.summary.thresholdsValue',
+    {overridden:number((gate.config?.overridden||[]).length),total:number((gate.config?.fields||[]).length)}))],
   [t('overlays.gate.summary.updated'),gate.updatedAt?esc(date(gate.updatedAt)):`<span class="muted">${esc(t('overlays.never'))}</span>`],
  ])}</section>
- ${testCard()}${patternsCard(ctx,gate)}${addPatternCard(data.limits)}${wordsCard(gate)}${historyCard(gate,'gate')}`;
+ ${testCard()}${patternsCard(ctx,gate)}${addPatternCard(data.limits)}${wordsCard(gate)}${configCard(gate)}${historyCard(gate,'gate')}`;
 }
 
 /* ── 추출 규칙 ───────────────────────────────────────────────────────────────── */
@@ -283,6 +335,32 @@ function rulesEditorCard(rules){
  <p class="caption mt">${esc(t('overlays.rules.editor.caption'))}</p></section>`;
 }
 
+/**
+ * #121 — 사용자 정의 fact 종류. 이번 릴리스는 **읽기 전용 목록**이다.
+ *
+ * 편집이 파일·CLI에만 있는 것은 미완성이 아니라 의도다: 종류 id는 그대로 `facts.category`에
+ * 저장돼 이미 쌓인 기억을 가리키므로, id를 화면에서 고치거나 지우는 순간 그 값으로 저장된
+ * 기억들이 정의 없는 라벨을 달게 된다. 그 마이그레이션 경로가 생기기 전까지 이 화면은 무엇이
+ * 정의돼 있는지만 말한다.
+ *
+ * 라벨은 사전이 아니라 오버레이가 갖는다 — 두 언어를 나란히 보여 주는 이유도 그것이다.
+ */
+function customKindsCard(rules,limits){
+ const kinds=rules.resolved?.customFactKinds||[];
+ const builtin=(rules.builtinFactKinds||[]).map(id=>`<code>${esc(id)}</code>`).join(' · ');
+ return `<section class="card pad mt" id="rules-kinds"><div class="spread"><h2>${esc(t('overlays.rules.kinds.title'))}</h2>
+  <span class="caption">${esc(t('overlays.rules.kinds.count',{n:number(kinds.length),limit:number(limits?.rules?.counts?.customFactKinds??0)}))}</span></div>
+ <p class="caption mt">${esc(t('overlays.rules.kinds.body'))}</p>
+ ${builtin?`<p class="caption mt">${esc(t('overlays.rules.kinds.builtin'))} ${builtin}</p>`:''}
+ ${kinds.length?table([esc(t('overlays.rules.kinds.col.id')),esc(t('overlays.rules.kinds.col.label')),
+   esc(t('overlays.rules.kinds.col.description')),esc(t('overlays.rules.kinds.col.hint'))],
+   kinds.map(kind=>`<tr><td class="nowrap"><code>${esc(kind.id)}</code></td>
+    <td class="nowrap">${esc(kind.label_en)} / ${esc(kind.label_ko)}</td>
+    <td>${esc(kind.description)}</td><td>${esc(kind.extraction_hint||'—')}</td></tr>`))
+  :`<p class="caption mt">${esc(t('overlays.rules.kinds.empty'))}</p>`}
+ <p class="caption mt">${esc(t('overlays.rules.kinds.readOnly'))}</p></section>`;
+}
+
 function clauseCard(rules){
  const clause=rules.clause||{chars:0,text:''};
  return `<section class="card pad mt" id="rules-clause"><h2>${esc(t('overlays.rules.clause.title'))}</h2>
@@ -342,7 +420,7 @@ function rulesView(ctx,data){
  ${heldJobsBanner(rules.drift)}
  ${rules.issues?.length?`<div class="card pad mt">${renderIssues(rules.issues)}</div>`:''}
  ${quarantineCard(rules.quarantined||[],'rules')}
- ${rulesFactsCard(rules)}${rulesEditorCard(rules)}${clauseCard(rules)}${simulateCard(rules)}${driftCard(rules)}${historyCard(rules,'rules')}`;
+ ${rulesFactsCard(rules)}${rulesEditorCard(rules)}${customKindsCard(rules,data.limits)}${clauseCard(rules)}${simulateCard(rules)}${driftCard(rules)}${historyCard(rules,'rules')}`;
 }
 
 /* ── 탭 본문 ─────────────────────────────────────────────────────────────────── */
@@ -447,6 +525,35 @@ export function mountOverlayTab(el,ctx){
   ctx.toast(t('overlays.toast.saved',{revision:number(result.revision)}));
   ctx.invalidate();
  })));
+ // #120 임계값. 한 번에 한 행만 저장한다 — 감사 줄과 히스토리 항목이 "무엇이 바뀌었나"를
+ // 말할 수 있어야 하고, 범위 위반은 코어가 `config.<key>` path를 단 422로 돌려주므로
+ // 화면은 그 행별 사유를 lane-0의 renderIssues()로 그대로 그린다.
+ el.querySelectorAll('[data-config-save]').forEach(button=>button.addEventListener('click',()=>{
+  const key=button.dataset.configSave;
+  const input=el.querySelector(`[data-config-row="${key}"] input[name="${key}"]`);
+  const raw=String(input?.value??'').trim();
+  if(raw==='')return ctx.toast(t('overlays.gate.config.needValue'));
+  const value=Number(raw);
+  if(!Number.isFinite(value))return ctx.toast(t('overlays.gate.config.needNumber'));
+  showIssues(el,'#gate-config-issues',[]);
+  guard(async()=>{
+   const result=await write(ctx,{overlay:'gate',action:'patch',config:{key,value}});
+   ctx.toast(t('overlays.toast.saved',{revision:number(result.revision)}));
+   ctx.invalidate();
+  },'#gate-config-issues');
+ }));
+ el.querySelectorAll('[data-config-reset]').forEach(button=>button.addEventListener('click',()=>guard(async()=>{
+  const result=await write(ctx,{overlay:'gate',action:'patch',configReset:[button.dataset.configReset]});
+  ctx.toast(t('overlays.toast.saved',{revision:number(result.revision)}));
+  ctx.invalidate();
+ },'#gate-config-issues')));
+ el.querySelector('[data-config-reset-all]')?.addEventListener('click',()=>{
+  ctx.confirm(t('overlays.gate.config.resetAllTitle'),t('overlays.gate.config.resetAllBody'),async()=>{
+   const result=await write(ctx,{overlay:'gate',action:'patch',configReset:true});
+   ctx.toast(t('overlays.toast.saved',{revision:number(result.revision)}));
+   ctx.invalidate();
+  });
+ });
  el.querySelectorAll('[data-quarantine-clear]').forEach(button=>button.addEventListener('click',()=>guard(async()=>{
   const result=await write(ctx,{overlay:button.dataset.overlay,action:'quarantine-clear',patternId:button.dataset.quarantineClear});
   ctx.toast(t('overlays.toast.quarantineCleared',{n:number(result.cleared??0)}));

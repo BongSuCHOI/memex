@@ -1356,6 +1356,9 @@ memex gate patterns disable <id|regex>        # 'patterns remove'는 같은 뜻�
 memex gate patterns enable <id>
 memex gate words list
 memex gate words add|remove <ack|continue|filler> <word>
+memex gate config show
+memex gate config set <key> <value>
+memex gate config reset [<key>]                # 키를 생략하면 덮어쓴 임계값 전부
 memex gate test "<prompt>" [--session <id>] [--compare-builtin]
 memex gate replay [--limit <n>] [--project <path>]
 memex gate validate [--file <path>]
@@ -1370,15 +1373,51 @@ memex gate rollback --to <revision>
 단어 사전은 `ack`·`continue`·`filler` 3개입니다. 모든 서브커맨드가 `--json`을 받고,
 `--limit`의 기본값은 `20`, `--flags`의 기본값은 `i`입니다.
 
-오버레이가 할 수 있는 일은 **어떤 intent가 발동하는가**를 바꾸는 것뿐입니다. 패턴에 우선순위가
-없고 allow/deny도 없으며, 게이트 **임계값**이나 embedding·bundle 경로에는 손댈 수 없습니다
-(임계값 조정은 0.7.1입니다). 한 intent의 모든 분기를 끄면 그 intent는 발동하지 않습니다.
+오버레이가 할 수 있는 일은 **어떤 intent가 발동하는가**와 **게이트 임계값 8개**를 바꾸는 것입니다.
+패턴에 우선순위가 없고 allow/deny도 없으며, embedding·bundle 경로에는 손댈 수 없습니다.
+한 intent의 모든 분기를 끄면 그 intent는 발동하지 않습니다.
 
-**읽기 전용 동사**: `show`, `patterns list`, `words list`, `test`, `replay`, `validate`, `history`,
-`quarantine list`. `test`와 `replay`는 **모델도 embedding도 호출하지 않고** inject 로그·recall
+#### 게이트 임계값 (`memex gate config`, #120)
+
+내장 게이트가 프롬프트를 판정할 때 쓰는 숫자 8개입니다. **전부 선택 사항**이라 덮어쓰지 않은
+임계값은 내장값 그대로이고, `recall-gate.json`의 `config` 블록이 없으면 0.7.0과 바이트 단위로
+같은 문서입니다.
+
+| 키 | 종류 | 범위 | 내장값 | 뜻 |
+| --- | --- | --- | --- | --- |
+| `ackMaxTokens` | 정수 | 0–32 | `4` | 이 길이 이하면 응답·이어가기로 보고 회수를 건너뜁니다 |
+| `safetyRefreshInterval` | 정수 | 1–100 | `6` | 회수 없이 이만큼 실질 프롬프트가 지나면 안전 갱신을 강제합니다 |
+| `driftJaccard` | 실수 | 0–1 | `0.12` | 주제 지문과의 Jaccard가 이 값 미만이면 주제 이탈입니다 |
+| `driftMinTokens` | 정수 | 1–100 | `5` | 이탈 판정에 필요한 최소 프롬프트 길이입니다 |
+| `coverageMinTokens` | 정수 | 1–100 | `8` | 이 길이부터 "상주 커버리지 없음"을 검사합니다 |
+| `coherentMargin` | 실수 | 0–1 | `0.08` | ambiguous 경로에서 `cos − baseline`이 이 마진을 넘으면 같은 주제입니다 |
+| `substantiveMinTokens` | 정수 | 1–100 | `5` | 다른 신호가 없어도 이 길이부터 실질 프롬프트입니다 |
+| `lexicalCoherentJaccard` | 실수 | 0–1 | `0.35` | 지문과 이만큼 겹치면 embedding 없이 어휘 연속으로 봅니다 |
+
+```bash
+memex gate config show                              # 8개를 내장값·덮어쓴 값·범위와 함께
+memex gate config set safetyRefreshInterval 10      # 회수 간격을 넓힌다
+memex gate config set coherentMargin 0.05 --dry-run # 검증만, 아무것도 쓰지 않는다
+memex gate config reset coherentMargin              # 이 하나만 내장값으로
+memex gate config reset                             # 덮어쓴 임계값 전부 내장값으로
+```
+
+범위를 벗어나거나 이름이 틀린 값은 `config.<key>` path를 단 오류로 거절되고 파일은 그대로입니다.
+정수 자리에 소수를 넣는 것도 오류입니다. **알 수 없는 임계값 이름은 경고가 아니라 오류**입니다 —
+최상위 필드와 반대인데, 임계값은 되돌아갈 구조가 없는 맨 숫자라 "모르면 무시"가 사용자가 적지
+않은 게이트를 적용해 버리기 때문입니다. 오버레이가 아예 읽히지 않으면 임계값도 전부 내장값으로
+돌아갑니다(패턴과 같은 fail-safe 방향).
+
+임계값은 숫자라 worker에서 돌지 않고 격리되지도 않습니다. 다만 **무엇을 회수하는지를 바꾸므로**
+오버레이 해시에 들어가고, `gate config set|reset` 하나하나가 자기 revision과 rollback 스냅숏을
+남깁니다. `memex gate test`는 판정에 쓴 임계값 8개를 전부 출력하고 덮어쓴 것을 표시합니다.
+
+**읽기 전용 동사**: `show`, `patterns list`, `words list`, `config show`, `test`, `replay`,
+`validate`, `history`, `quarantine list`. `test`와 `replay`는 **모델도 embedding도 호출하지 않고** inject 로그·recall
 영수증·세션 상태를 **쓰지 않습니다**.
 
-**쓰기 동사**(`patterns add|disable|enable`, `words add|remove`, `reset`, `rollback`)는 오버레이
+**쓰기 동사**(`patterns add|disable|enable`, `words add|remove`, `config set|reset`, `reset`,
+`rollback`)는 오버레이
 쓰기 lock을 잡고 `revision`을 올리며 rollback 스냅숏을 남기고 `logs/ui-audit.jsonl`과
 `overlays/history.jsonl`에 메타데이터 1줄을 적습니다(규칙 본문은 남기지 않습니다). `--dry-run`은
 검증만 하고 **아무것도 쓰지 않으며** 현재 revision을 박은 재실행 명령을 출력합니다.
@@ -1424,20 +1463,71 @@ memex gate rollback --to <revision>
 
 ### 22.2 추출 규칙 오버레이 (`memex extract`)
 
-어떤 대화를 fact로 만들지에 대한 자기 규칙입니다. 네 가지를 전역 또는 프로젝트별
+어떤 대화를 fact로 만들지에 대한 자기 규칙입니다. 다섯 가지를 전역 또는 프로젝트별
 (`project_overrides`, 32개까지)로 지정합니다.
 
 | 항목 | 집행 | 상한 |
 | --- | --- | --- |
-| `preferred_language` (`ko`/`en`/미지정) | 프롬프트 절 | — |
+| `preferred_language` (`ko`/`en`/미지정) | 프롬프트 절 — **기본값의 override** | — |
 | `exclude_topics` | **프롬프트 절뿐 — 아무것도 강제하지 않습니다** | 24개, 항목당 2–80자 |
 | `never_extract_patterns` | **저장 경계에서 결정론적 차단** | 32개 |
 | `always_treat_as_decision_patterns` | **프롬프트 절뿐** | 16개 |
+| `custom_fact_kinds` (0.7.x, #121) | 프롬프트 절 + **후보 검증기가 현재 규칙에 있는 id만 허용** | 8개 |
 
 `never_extract_patterns`의 각 항목은 `{ id, source, flags, scope, note? }`이고 `scope`는
 `fact_text`·`evidence`·`both`(기본)입니다. 정규식 제한은 게이트 오버레이와 같고 note는 200자입니다.
-프로젝트 override는 `preferred_language`만 덮어쓰고 **나머지 세 제약은 전역과 합집합**입니다 —
+프로젝트 override는 `preferred_language`만 덮어쓰고 **나머지 네 항목은 전역과 합집합**입니다 —
 다른 곳에 한 줄을 더해 전역 금지를 느슨하게 만드는 경로를 두지 않기 위해서입니다.
+(`custom_fact_kinds`의 합집합에서 id가 겹치면 **전역 정의가 이깁니다**. 프로젝트마다 같은 id의 라벨이
+달라지면 이미 저장된 같은 `facts.category` 값에 두 이름이 붙습니다.)
+
+#### `custom_fact_kinds` — 나만의 기억 유형
+
+내장 유형은 `decision`·`preference`·`pattern`·`knowledge`·`constraint` 다섯 개이고, 그 위에 최대
+8개를 더할 수 있습니다. **다섯 개 중 하나와 같은 id는 거부**됩니다(`KIND_ID_RESERVED`).
+
+```jsonc
+"custom_fact_kinds": [
+  { "id": "runbook",                       // ^[a-z][a-z0-9_]{1,23}$ — 그대로 facts.category에 저장됨
+    "label_en": "Runbook step",            // 40자 이내 한 줄, 두 언어 모두 필수
+    "label_ko": "운영 절차",
+    "description": "이 시스템이 이상할 때 운영자가 따라야 하는 절차.",   // 200자 이내 한 줄, 필수
+    "extraction_hint": "사람이 반복 가능한 복구 동작을 설명할 때" }      // 200자 이내 한 줄, 선택
+]
+```
+
+이 항목은 **유일하게 값을 더하는 규칙**이지만, 더하는 것은 **이름뿐**입니다. 증거 기준·durability
+게이트·의미 검증기는 그대로이고, 종류를 만들어도 정책이 거부한 후보가 적격이 되지는 않습니다.
+프롬프트 절은 내장 5종 목록 **뒤에** 이 종류들을 힌트와 함께 싣습니다.
+
+- **id가 저장값입니다.** `facts.category`에 그대로 들어가므로 Web UI의 유형 칩·검색 필터·내보내기가
+  모두 이 문자열을 씁니다. DB 스키마는 바뀌지 않았습니다(`facts.category`는 CHECK 없는 `TEXT`).
+- **라벨은 오버레이가 갖습니다.** 운영자가 만든 id에는 번역 키를 발급할 수 없으므로 Web UI는
+  `label_en`/`label_ko`를 로케일로 골라 배지에 씁니다. 정의되지 않은 종류는 id 원문으로 보입니다.
+- **후보 검증기는 "지금 규칙"만 믿습니다.** 허용 집합은 `never_extract`와 같은 **claim 스냅숏 ∪ 최신
+  유효 규칙**입니다. 그래서 종류를 **지우면 다음 claim부터** 적용되고, 진행 중인 작업의 후보가
+  갑자기 탈락하지 않습니다(모델 호출은 이미 썼으므로 그 탈락은 fact를 잃는 것입니다). 정의되지 않은
+  id를 가진 후보는 **탈락 + `rules.kind-dropped` 감사 1줄**이며 실패도, attempt 소모도 아닙니다.
+- **Chronicle slot은 없습니다.** subject_key 접두어(`decision.`·`state.`…)는 내장 5종의 것이므로
+  사용자 정의 종류의 fact는 `subject_key` 없이 저장되고, 모델이 제안했다면 classifier note로 남습니다.
+- **편집은 파일·CLI뿐입니다**(이번 릴리스). id가 이미 저장된 기억에 붙어 있어서, 화면에서 이름을
+  바꾸거나 지우면 그 기억들이 아무 데도 정의되지 않은 종류를 달게 됩니다. 관리 › 오버레이의 규칙
+  화면은 **읽기 전용 표**로 무엇이 정의돼 있는지만 보여 줍니다.
+
+**언어 기본값(#123)**: `preferred_language`를 지정하지 않아도 추출은 **대화의 언어**로 fact를
+씁니다. 추출 창의 사람 메시지 가중 글자 수 다수결(Hangul 음절 × 2.5 vs Latin 문자, 코드 블록·URL
+제외 — 근거는 [FACT-LIFECYCLE §10](FACT-LIFECYCLE.md#10-기억-언어와-kr-translation))로 정하고, 동률이면 마지막 사람
+메시지, 셀 글자가 없으면 절을 붙이지 않습니다. 즉 `preferred_language`는 이 기본값을 덮는
+**override**입니다. `memex extract rules show`의 `Language` 줄이 현재 유효한 값을 그대로 찍습니다.
+
+```text
+Language     follows the conversation (override: preferred_language)
+```
+
+적용된 언어는 `extraction_targets.fact_language`(`ko`/`en`/`mixed`/NULL, 로컬 전용, sync 대상
+아님)에 영수증으로 남습니다. 기존에 영어로 저장된 fact는 다시 쓰지 않으며 `fact_kr`
+(`node scripts/translate-facts.mjs`, `prefs.preferTranslatedFacts`)는 그 기존 fact를 위한 레거시
+표시 경로로 남습니다 — 새 fact에는 생성하지 않습니다.
 
 프롬프트 절은 내장 프롬프트를 **고치지 않고 덧붙이기만** 하며(`policy_version`은 그대로), 의미
 검증기 프롬프트는 오버레이가 있든 없든 바이트 단위로 동일합니다.
@@ -1539,3 +1629,7 @@ id·개수·해시만 남깁니다 — 저장을 거부한 코드가 그 본문�
 작업은 그냥 `pending`으로 보입니다(무해). 컬럼 3개(`memory_jobs.hold_reason`,
 `extraction_targets.rules_hash`, `recall_events.gate_overlay_hash`)는 nullable 추가이므로 기존 행은
 `NULL`입니다.
+
+**0.7.0 코어로 내려가면** `config` 블록만 조용히 무시됩니다(알 수 없는 최상위 필드는 경고 1줄이고
+나머지 규칙은 그대로 적용됩니다). 임계값은 내장값으로 돌아가지만 **패턴과 어휘는 계속 적용되므로**
+`memex gate show`의 해시가 0.7.x에서 본 값과 달라집니다 — 임계값이 해시에 들어가기 때문입니다.

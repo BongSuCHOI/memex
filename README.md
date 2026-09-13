@@ -2,7 +2,7 @@
 
 **A local-first long-term memory layer for Codex.** It collects your conversations, distills the decisions worth keeping, binds each one to the exchange that proves it, and brings the right ones back the next time they matter.
 
-[![Release](https://img.shields.io/badge/release-0.7.4-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.7.5-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -437,7 +437,7 @@ Model work is budgeted per run ([GUIDE §17](docs/GUIDE.md#17-모델-작업-예�
 | `MEMEX_MODEL_BUDGET_MAX_OUTPUT_CHARS` | `16000` | characters of the final answer; domain schema/field validation applies on top |
 | `MEMEX_AUTO_MODEL_MAX_ATTEMPTS` | `256` | shared 24-hour call cap for automatic maintenance in one data root; `0` blocks it |
 
-Token counts are provider observations. Unobserved usage is `null` / `NOT_PROVEN` and partially observed usage is `partial`; missing usage and dollar cost are never estimated as zero. The model selection and the user overlays are **local to one machine** and never enter a sync generation, because the set of usable models and the rules you want differ per device. Optional Korean fact translations (`fact_kr`) are local derived state, intentionally not synced and not generated on every session; from a source checkout they can be filled with `node scripts/translate-facts.mjs`, which records a translation only if the fact meaning is unchanged since the request began. Complete list: [GUIDE §19](docs/GUIDE.md#19-환경-변수).
+Token counts are provider observations. Unobserved usage is `null` / `NOT_PROVEN` and partially observed usage is `partial`; missing usage and dollar cost are never estimated as zero. The model selection and the user overlays are **local to one machine** and never enter a sync generation, because the set of usable models and the rules you want differ per device. Facts are written in the language of the conversation they came from — decided deterministically from a weighted character majority of your own messages in the extraction window (one Hangul syllable counts as 2.5 Latin letters, so a Korean sentence full of English identifiers stays Korean), and overridable per machine or per project with the extraction rules' `preferred_language`. The optional Korean translations (`fact_kr`) are a legacy display path for facts stored in English before that: local derived state, intentionally not synced and not generated for new facts; from a source checkout they can be filled with `node scripts/translate-facts.mjs`, which records a translation only if the fact meaning is unchanged since the request began. Complete list: [GUIDE §19](docs/GUIDE.md#19-환경-변수).
 
 </details>
 

@@ -58,7 +58,12 @@ import {
   type ValidationResult,
 } from "./recall-gate-overlay.js";
 import { appendUiAuditLine } from "./ontology-admin.js";
-import { BUILTIN_GATE_PATTERNS, type GateIntent, type GateLexicon } from "./recall-gate.js";
+import {
+  BUILTIN_GATE_PATTERNS,
+  type GateIntent,
+  type GateLexicon,
+  type RecallGateConfig,
+} from "./recall-gate.js";
 
 const BUILTIN_BY_INTENT = new Map<GateIntent, Array<{ id: string }>>();
 for (const pattern of BUILTIN_GATE_PATTERNS) {
@@ -743,6 +748,10 @@ export interface GateDelta {
     removeAdd?: Partial<Record<GateLexicon, string[]>>;
     removeDisable?: Partial<Record<GateLexicon, string[]>>;
   };
+  /** Issue #120 — threshold overrides to set (validated inside the lock). */
+  config?: Partial<RecallGateConfig>;
+  /** Threshold names to drop back to the built-in value. */
+  configRemove?: (keyof RecallGateConfig)[];
 }
 
 function mergeGateDelta(current: RecallGateOverlayDoc, delta: GateDelta): RecallGateOverlayDoc {
@@ -785,6 +794,19 @@ function mergeGateDelta(current: RecallGateOverlayDoc, delta: GateDelta): Recall
       next.words![side]![lexicon as GateLexicon] =
         (next.words![side]![lexicon as GateLexicon] ?? []).filter((word) => !drop.has(word));
     }
+  }
+  // Thresholds (#120). `configRemove` drops a key back to the built-in value, and
+  // an override set that ends up EMPTY loses the `config` block entirely rather
+  // than leaving `{}` behind — the hash of a fully reset overlay then matches the
+  // hash it had before anything was ever overridden.
+  if (delta.config || delta.configRemove?.length) {
+    const config: Partial<RecallGateConfig> = { ...(current.config ?? {}) };
+    for (const [key, value] of Object.entries(delta.config ?? {})) {
+      config[key as keyof RecallGateConfig] = value as number;
+    }
+    for (const key of delta.configRemove ?? []) delete config[key];
+    if (Object.keys(config).length > 0) next.config = config;
+    else delete next.config;
   }
   return next;
 }
@@ -1056,6 +1078,34 @@ export async function setGateWords(
       probe: opts.probe,
       auditAction: "gate.words",
       history: { counts: { lexicons: 1 } },
+    },
+  );
+}
+
+/**
+ * Issue #120 — set or clear recall-gate thresholds.
+ *
+ * A delta, not a document: two operators editing different thresholds from the
+ * CLI and the Web UI must not overwrite each other inside the same revision, and
+ * the merge happens under the lock like every other gate change. `probe: false`
+ * because no regex is involved — a number cannot burn the match budget.
+ */
+export async function setGateConfig(
+  change: { set?: Partial<RecallGateConfig>; remove?: (keyof RecallGateConfig)[] },
+  opts: { surface: Surface; expectedRevision?: number },
+): Promise<WriteResult> {
+  const set = change.set ?? {};
+  const remove = change.remove ?? [];
+  const touched = [...Object.keys(set), ...remove];
+  return applyOverlayChange(
+    "recall-gate",
+    { delta: { ...(Object.keys(set).length > 0 ? { config: set } : {}), ...(remove.length > 0 ? { configRemove: remove } : {}) } },
+    {
+      surface: opts.surface,
+      expectedRevision: opts.expectedRevision,
+      probe: false,
+      auditAction: "gate.config",
+      history: { counts: { thresholds: touched.length } },
     },
   );
 }

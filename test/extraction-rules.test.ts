@@ -142,14 +142,17 @@ describe("schema validation", () => {
     expect(codes(rulesDoc([], { preferred_language: "kr" }))).toContain("LANGUAGE_UNKNOWN");
   });
 
-  it("ignores an unknown field as a WARNING, so 0.7.1 can add one", () => {
-    // `custom_fact_kinds` is out of scope by decision; 0.7.0 must ignore it
-    // quietly rather than refuse the whole file and hold extraction.
-    const result = validateExtractionRulesDoc(rulesDoc([], { custom_fact_kinds: ["x"] }));
+  it("ignores an unknown field as a WARNING, so a later version can add one", () => {
+    // A field this build does not know must be ignored QUIETLY rather than refuse
+    // the whole file and hold extraction — that is what lets 0.7.x add an item
+    // without 0.7.0 stopping every extraction on a machine that saw the new file.
+    // (`custom_fact_kinds` used to be that field; #121 made it real, and its own
+    // suite asserts the rule set it is subject to now.)
+    const result = validateExtractionRulesDoc(rulesDoc([], { threshold_overrides: { recall: 1 } }));
     expect(result.ok).toBe(true);
     const issue = result.issues.find((i) => i.code === "OVERLAY_UNKNOWN_FIELD");
     expect(issue?.severity).toBe("warning");
-    expect(issue?.path).toBe("custom_fact_kinds");
+    expect(issue?.path).toBe("threshold_overrides");
   });
 });
 
@@ -237,6 +240,9 @@ describe("the constraint clause (§3.2)", () => {
       { id: "user.9c1e4d07", source: "\\bsk-[A-Za-z0-9_-]{16,}", flags: "", scope: "both" as const },
     ],
     decisionHints: [{ id: "user.dec1", source: "(확정|최종 결정)", flags: "" }],
+    // #121 — this suite pins the clause WITHOUT custom kinds; their own block is
+    // asserted in extraction-rules-custom-kinds.test.ts.
+    customFactKinds: [],
   };
 
   it("renders deterministically and says restrictions only go one way", () => {
@@ -249,12 +255,21 @@ describe("the constraint clause (§3.2)", () => {
     expect(clause).toContain("the gate wins");
     expect(clause).toContain("- Never extract facts about: 사내 인사 평가; 급여");
     expect(clause).toContain("- Never emit a fact or observation whose text matches: /\\bsk-[A-Za-z0-9_-]{16,}/");
-    expect(clause).toContain("- Prefer fact_kr in Korean");
+    // #123 — the language left this block. It is an OVERRIDE of the
+    // conversation-language default now, so both travel in the one language
+    // clause appended after this one. The old bullet also told the model to
+    // "prefer fact_kr", a field the base prompt forbids in the same prompt.
+    expect(clause).not.toContain("Prefer fact_kr in Korean");
+    expect(clause).not.toContain("Prefer fact in English");
   });
 
   it("is EMPTY when there is nothing to say, and then the prompt is unchanged", () => {
     const empty = { ...rules, excludeTopics: [], neverExtract: [], decisionHints: [], preferredLanguage: null };
     expect(renderExtractionConstraintClause(empty)).toBe("");
+    // #123 — and equally empty when the ONLY thing left is the language, which
+    // no longer renders here: a restriction preamble with nothing to restrict
+    // is worse than no block at all.
+    expect(renderExtractionConstraintClause({ ...empty, preferredLanguage: "ko" })).toBe("");
     expect(composeExtractionSystemPrompt("BASE", empty)).toBe("BASE");
     expect(composeExtractionSystemPrompt("BASE", null)).toBe("BASE");
   });
@@ -412,6 +427,7 @@ describe("doctor checks and the benchmark observation", () => {
       recall_gate: "absent",
       extraction_rules: "absent",
       quarantine: "absent",
+      config: "absent",
       disabled_by_env: false,
     });
     writeRules(root, rulesDoc([{ id: "p", source: "sk-[a-z]{4,}" }]));
@@ -421,8 +437,36 @@ describe("doctor checks and the benchmark observation", () => {
     // merely claiming it was clean.
     expect(observeOverlayBenchmarkEnvironment()).toMatchObject({
       extraction_rules: "present",
+      config: "absent",
       disabled_by_env: true,
     });
+  });
+
+  it("observes recall-gate THRESHOLDS separately from the gate file (#120)", () => {
+    const gateFile = path.join(root, "overlays", "recall-gate.json");
+    const gateDoc = (config: unknown): string =>
+      JSON.stringify({
+        schema: "memex.recall-gate-overlay",
+        version: 1,
+        revision: 1,
+        patterns: { add: [], disable: [] },
+        ...(config === undefined ? {} : { config }),
+      });
+    fs.mkdirSync(path.dirname(gateFile), { recursive: true });
+
+    // A gate overlay with no thresholds: the FILE is present, `config` is not.
+    fs.writeFileSync(gateFile, gateDoc(undefined));
+    expect(observeOverlayBenchmarkEnvironment()).toMatchObject({ recall_gate: "present", config: "absent" });
+    // An empty block is not an override either.
+    fs.writeFileSync(gateFile, gateDoc({}));
+    expect(observeOverlayBenchmarkEnvironment()).toMatchObject({ config: "absent" });
+    // One threshold is enough: AC_PERF_03 is no longer a clean-room measurement.
+    fs.writeFileSync(gateFile, gateDoc({ coherentMargin: 0.2 }));
+    expect(observeOverlayBenchmarkEnvironment()).toMatchObject({ config: "present" });
+    // Observed from the FILE, so an unparseable document claims no thresholds
+    // rather than throwing and losing the rest of the observation.
+    fs.writeFileSync(gateFile, "{ not json");
+    expect(observeOverlayBenchmarkEnvironment()).toMatchObject({ recall_gate: "present", config: "absent" });
   });
 });
 

@@ -63,8 +63,12 @@ const REQUIRED_OVERLAY_FIELDS = [
   'recall_gate',
   'extraction_rules',
   'quarantine',
+  'config',
   'disabled_by_env',
 ];
+
+/** The three observations that name an overlay FILE under `overlays/`. */
+const OVERLAY_FILE_FIELDS = ['recall_gate', 'extraction_rules', 'quarantine'];
 
 const REGENERATE = 'node scripts/benchmark.mjs';
 
@@ -141,12 +145,22 @@ function validateOverlays(report, errors) {
 
   // AC_PERF_03 is decided by the recall gate and the matcher worker, so a user
   // overlay in the benchmark root would silently change what is being measured.
-  for (const field of ['recall_gate', 'extraction_rules', 'quarantine']) {
+  for (const field of OVERLAY_FILE_FIELDS) {
     if (!OVERLAY_PRESENCE.has(overlays[field])) {
       errors.push(`environment.overlays.${field} is not an observation (${overlays[field]})`);
     } else if (overlays[field] !== 'absent') {
       errors.push(`benchmark ran with a user overlay loaded (overlays/${field.replace(/_/g, '-')}.json is present)`);
     }
+  }
+  // #120 — the gate thresholds are their own observation: AC_PERF_03 counts how
+  // many prompts retrieve at all, so a moved threshold changes the measurement
+  // even though it moves no pattern.
+  if (!OVERLAY_PRESENCE.has(overlays.config)) {
+    errors.push(`environment.overlays.config is not an observation (${overlays.config})`);
+  } else if (overlays.config !== 'absent') {
+    errors.push(
+      'benchmark ran with recall-gate thresholds overridden (overlays/recall-gate.json declares a `config` block)',
+    );
   }
   if (overlays.disabled_by_env !== true) {
     errors.push('benchmark did not run with MEMEX_DISABLE_OVERLAYS=1');

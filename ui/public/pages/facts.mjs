@@ -1,5 +1,5 @@
-import{esc,icon,header,btn,linkBtn,badge,number,date,relative,basename,empty,pagination,table,th,options,searchField,banner,download,tierBadge,tierHiddenTotal}from'../ui.mjs';
-import{t,tHtml,tn}from'../i18n/index.mjs';
+import{esc,icon,header,btn,linkBtn,badge,number,date,relative,basename,empty,pagination,table,th,options,searchField,banner,download,tierBadge,tierHiddenTotal,customFactKinds,customFactKindLabel}from'../ui.mjs';
+import{t,tHtml,tn,localeTag}from'../i18n/index.mjs';
 /** 현재 술어 밖의 같은 프로젝트 기억을 알리는 배너. tiers=all일 때는 되돌리는 쪽을 제안한다. */
 export function tierBanner(page,ctx){
   const hidden=page.hiddenByTier,total=tierHiddenTotal(hidden);
@@ -10,8 +10,15 @@ export function tierBanner(page,ctx){
     ?banner(shell(t('pages.facts.hiddenTier.included.title'),t('pages.facts.hiddenTier.included.body',{parts}),btn(t('pages.facts.hiddenTier.action.reset'),'left','data-param-key="tiers" data-param-value=""','small')),'neutral','layers')
     :banner(shell(tn('pages.facts.hiddenTier.more.title',total,{n:number(total)}),t('pages.facts.hiddenTier.more.body',{parts}),btn(t('pages.shared.action.includeTiers'),'layers','data-param-key="tiers" data-param-value="all"','small')),'warning','layers');
 }
-/** 기억의 유형(category) 칩. 사전은 boot()에서 꽂히므로 상수가 아니라 함수다(설계 §2.6). */
-const kinds=()=>[['',t('pages.facts.kind.all')],['decision',t('pages.facts.kind.decision')],['preference',t('pages.facts.kind.preference')],['constraint',t('pages.facts.kind.constraint')],['pattern',t('pages.facts.kind.pattern')],['knowledge',t('pages.facts.kind.knowledge')]];
+/**
+ * 기억의 유형(category) 칩. 사전은 boot()에서 꽂히므로 상수가 아니라 함수다(설계 §2.6).
+ *
+ * #121 — 내장 5종 **뒤에** 추출 규칙 오버레이의 사용자 정의 종류를 붙인다. 라벨은 사전이 아니라
+ * 오버레이의 `label_en`/`label_ko`에서 로케일로 고르고(`badge.custom.<id>`는 존재하지 않는 키다),
+ * 값은 그대로 `facts.category` 필터로 나간다 — 그래서 칩이 곧 저장된 값이다.
+ */
+const kinds=()=>[['',t('pages.facts.kind.all')],['decision',t('pages.facts.kind.decision')],['preference',t('pages.facts.kind.preference')],['constraint',t('pages.facts.kind.constraint')],['pattern',t('pages.facts.kind.pattern')],['knowledge',t('pages.facts.kind.knowledge')],
+ ...customFactKinds().map(kind=>[kind.id,customFactKindLabel(kind.id,localeTag())||kind.id])];
 export async function render(ctx){
   const query=Object.fromEntries(ctx.p);const [page,tax]=await Promise.all([ctx.api('facts',{...query,limit:50}),ctx.api('taxonomy')]);
   const category=ctx.p.get('category')||'',state=ctx.p.get('state')||'active',taxonomy=ctx.p.get('taxonomy')||'',sort=ctx.p.get('sort')||'updated',q=ctx.p.get('q')||'';const selected=new Set();

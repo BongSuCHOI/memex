@@ -8,9 +8,9 @@ require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 k
  */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
 const help=require('../public/help.mjs');
-const {badge,th,header,name}=require('../public/ui.mjs');
+const {badge,th,header,name,setCustomFactKinds}=require('../public/ui.mjs');
 const {COMMANDS}=require('../lib/operations.cjs');
-const {en,ko}=require('./helpers/locale.cjs');
+const {en,ko,useEn,useKo}=require('./helpers/locale.cjs');
 const {DOC_ANCHORS}=require('../public/i18n/doc-anchors.mjs');
 const ROOT=path.resolve(__dirname,'../..');
 const APP=fs.readFileSync(path.join(__dirname,'../public/app.mjs'),'utf8');
@@ -55,7 +55,14 @@ test('메뉴 7개에 모두 도움말 항목이 있다',()=>{
  * 사전을 단일 출처로 삼고 `ui.mjs`·`help.mjs` 양쪽 조회 함수가 그것을 실제로 반환하는지 본다 —
  * 어느 한쪽이 사전을 안 보게 되면(= 자기 테이블을 다시 들이면) 여기서 드러난다.
  */
-test('배지 종류 전종에 짧은 라벨과 한 줄 설명이 쌍으로 있다',()=>{
+test('배지 종류 전종에 짧은 라벨과 한 줄 설명이 쌍으로 있다',t=>{
+ // #121: 사용자 정의 fact 종류가 꽂혀 있어도 이 1:1 계약은 흔들리지 않아야 한다. 런타임 종류는
+ // **사전 키가 아니고**(`badge.custom.<id>`는 존재하지 않는다), 조회는 사전을 먼저 보므로
+ // 여기서 세는 집합도 사전 그대로여야 한다. 그래서 등록해 둔 채로 검사한다 — 등록이 사전 값
+ // 하나라도 가리게 되면 아래 `name()`/`badgeHelp()` 비교에서 바로 드러난다.
+ setCustomFactKinds([{id:'runbook',label_en:'Runbook step',label_ko:'운영 절차',description:'운영자가 따라야 하는 절차입니다.'},
+  {id:'active',label_en:'Never wins',label_ko:'절대 이기지 않음',description:'내장 배지 키와 겹쳐도 사전이 이긴다.'}]);
+ t.after(()=>setCustomFactKinds([]));
  const kinds=Object.keys(ko).filter(k=>k.startsWith('badge.')&&k.endsWith('.label')).map(k=>k.slice(6,-6));
  assert(kinds.length>60,'badge.*.label 추출 실패: '+kinds.length);
  const problems=[];
@@ -74,6 +81,41 @@ test('배지 종류 전종에 짧은 라벨과 한 줄 설명이 쌍으로 있�
  assert.deepEqual(orphan,[],'짝이 없는 배지 설명: '+orphan.join(', '));
  assert.equal(help.badgeHelp('no-such-badge'),null,'없는 배지에는 null을 돌려줘야 합니다');
  assert(badge('dead').includes('title="'),'배지가 툴팁을 싣지 않습니다');
+});
+
+/**
+ * #121 — 사용자 정의 fact 종류의 배지.
+ *
+ * 이 종류들은 **사전에 키가 없다**. 운영자가 만든 id에 번역 키를 발급할 방법이 없으므로 라벨은
+ * 오버레이의 `label_en`/`label_ko`에서 로케일로 고른다. 그래서 검사할 것이 세 가지다:
+ *   · 두 로케일에서 각자의 라벨이 나오는가(다른 언어로 흘러넘치지 않는가),
+ *   · 등록되지 않은 값은 여전히 코어 원문 그대로인가("모르는 값의 이름을 지어내지 않는다"),
+ *   · 내장 배지 키와 겹치는 id를 등록해도 사전이 이기는가(위 1:1 계약이 무너지지 않는다).
+ */
+test('사용자 정의 fact 종류는 사전이 아니라 오버레이 라벨로 두 로케일 모두에서 렌더된다',t=>{
+ t.after(()=>{setCustomFactKinds([]);useKo();});
+ setCustomFactKinds([{id:'runbook',label_en:'Runbook step',label_ko:'운영 절차',
+   description:'이 시스템이 이상할 때 운영자가 따라야 하는 절차입니다.'}]);
+
+ assert.equal(name('runbook'),'운영 절차');
+ assert.equal(help.badgeHelp('runbook'),'이 시스템이 이상할 때 운영자가 따라야 하는 절차입니다.');
+ assert(badge('runbook').includes('운영 절차'));
+ assert(badge('runbook').includes('title="'),'사용자 정의 종류도 한 줄 설명을 싣는다');
+
+ useEn();
+ assert.equal(name('runbook'),'Runbook step');
+ useKo();
+
+ // 사전 키는 생기지 않는다 — `badge.custom.<id>`도, `badge.runbook.label`도 없다.
+ assert.equal(ko['badge.runbook.label'],undefined);
+ assert.equal(ko['badge.custom.runbook.label'],undefined);
+ // 등록되지 않은 종류는 코어 원문 그대로다.
+ assert.equal(name('postmortem'),'postmortem');
+ assert.equal(help.badgeHelp('postmortem'),null);
+ // 내장 배지 키와 겹치면 사전이 이긴다.
+ setCustomFactKinds([{id:'active',label_en:'Never wins',label_ko:'절대 이기지 않음',description:'x'}]);
+ assert.equal(name('active'),ko['badge.active.label']);
+ assert.equal(help.badgeHelp('active'),ko['badge.active.help']);
 });
 
 test('관리 명령 전종에 무엇을 하는지·모델을 부르는지가 적혀 있다',()=>{

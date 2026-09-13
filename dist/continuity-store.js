@@ -166,7 +166,13 @@ export function ensureContinuitySchema(db, options = {}) {
         -- overlay history. It is REPORTING only — the scheduling key is
         -- policy_version, and mixing the rule hash into it would turn one
         -- edited character into a full-corpus re-extraction.
-        rules_hash TEXT
+        rules_hash TEXT,
+        -- Issue #123: the fact language this target was extracted in
+        -- ('ko'/'en'/'mixed'/NULL when no language clause applied). Same
+        -- contract as rules_hash: LOCAL, never synced, REPORTING only. It is
+        -- not in the scheduling key, so changing what a conversation detects as
+        -- never re-opens a completed target.
+        fact_language TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_target_items (
@@ -835,6 +841,11 @@ export function ensureContinuitySchema(db, options = {}) {
         const extractionTargetColumns = columnNames(db, "extraction_targets");
         if (!extractionTargetColumns.has("rules_hash")) {
             db.exec("ALTER TABLE extraction_targets ADD COLUMN rules_hash TEXT");
+        }
+        // Issue #123 — the language the fact text was written in. Additive,
+        // nullable, local, reporting-only, exactly like rules_hash above.
+        if (!extractionTargetColumns.has("fact_language")) {
+            db.exec("ALTER TABLE extraction_targets ADD COLUMN fact_language TEXT");
         }
         options.afterMigrationStage?.("evidence-sequence");
         // Issue #34 repair: continuity-worker used to overwrite the terminal
@@ -1613,6 +1624,9 @@ function targetFromRow(row) {
         policyVersion: String(row.policy_version),
         state: row.state,
         rulesHash: typeof row.rules_hash === "string" ? row.rules_hash : null,
+        factLanguage: row.fact_language === "ko" || row.fact_language === "en" || row.fact_language === "mixed"
+            ? row.fact_language
+            : null,
     };
 }
 /**
@@ -1628,6 +1642,19 @@ export function setExtractionTargetRulesHash(db, targetId, rulesHash) {
     if (!columnNames(db, "extraction_targets").has("rules_hash"))
         return false;
     return db.prepare("UPDATE extraction_targets SET rules_hash = ? WHERE target_id = ? AND IFNULL(rules_hash, '') IS NOT ?").run(rulesHash, targetId, rulesHash ?? "").changes === 1;
+}
+/**
+ * Issue #123 — record the fact language one claim actually ran under.
+ *
+ * The twin of `setExtractionTargetRulesHash`: reporting only, local only, never
+ * scheduled on. Called once after the model work, because the language is
+ * decided per window and only the finished page knows whether the windows
+ * agreed. Idempotent, and a no-op when the value is already what it should be.
+ */
+export function setExtractionTargetFactLanguage(db, targetId, language) {
+    if (!columnNames(db, "extraction_targets").has("fact_language"))
+        return false;
+    return db.prepare("UPDATE extraction_targets SET fact_language = ? WHERE target_id = ? AND IFNULL(fact_language, '') IS NOT ?").run(language, targetId, language ?? "").changes === 1;
 }
 export function readExtractionTargetItems(db, targetId, afterOrdinal, limit) {
     return db.prepare(`
@@ -1817,9 +1844,9 @@ export function supersedeStaleExtractionTarget(db, input) {
  * `target has no pending page despite incomplete state`. Re-queueing has to mean
  * "start again from the first ordinal", so the cursor is reset with everything else.
  *
- * `rules_hash` is cleared because the next run will stamp the hash it actually ran
- * under; `lease_generation` is NOT touched, because it is monotonic fencing and
- * rewinding it would let a stale lease look current again.
+ * `rules_hash` and `fact_language` are cleared because the next run will stamp the
+ * values it actually ran under; `lease_generation` is NOT touched, because it is
+ * monotonic fencing and rewinding it would let a stale lease look current again.
  *
  * CAS on `completed`: a target a worker has since re-claimed is left alone, and the
  * returned map is empty for it.
@@ -1834,7 +1861,8 @@ export function requeueCompletedExtractionTarget(db, input) {
     const target = db.prepare(`
     UPDATE extraction_targets
        SET state = 'pending', attempts = 0, cursor_ordinal = 0, lease_owner = NULL,
-           lease_until = NULL, last_error = NULL, rules_hash = NULL, updated_at = ?
+           lease_until = NULL, last_error = NULL, rules_hash = NULL, fact_language = NULL,
+           updated_at = ?
      WHERE target_id = ? AND state = 'completed'
   `).run(now, input.targetId).changes;
     if (target === 0)
