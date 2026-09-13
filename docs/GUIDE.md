@@ -169,6 +169,9 @@ node scripts/translate-facts.mjs
 
 스크립트는 batch cardinality/type을 검증하고 fact의 semantic generation/text가 바뀌지 않은 경우에만 번역을 저장합니다.
 
+- 대상은 번역이 없는 활성 fact 전부이고, 그중 **이미 한국어로 저장된 문장은 건너뜁니다**(추출
+  창과 같은 가중 판정기 — 영어 식별자가 섞인 한국어 문장도 한국어로 읽습니다). 건너뛴 수는
+  `Skipped N fact(s) already written in Korean`으로 찍힙니다.
 - 이 실행으로 `fact_kr`가 채워집니다.
 - `vec_facts_kr`는 이후 reembed maintenance 또는 다음 SessionStart에서 생성됩니다.
 
@@ -1531,7 +1534,9 @@ Language     follows the conversation (override: preferred_language)
 적용된 언어는 `extraction_targets.fact_language`(`ko`/`en`/`mixed`/NULL, 로컬 전용, sync 대상
 아님)에 영수증으로 남습니다. 기존에 영어로 저장된 fact는 다시 쓰지 않으며 `fact_kr`
 (`node scripts/translate-facts.mjs`, `prefs.preferTranslatedFacts`)는 그 기존 fact를 위한 레거시
-표시 경로로 남습니다 — 새 fact에는 생성하지 않습니다.
+표시 경로로 남습니다 — 추출은 새 fact에 `fact_kr`를 만들지 않고, 스크립트는 번역이 없는 활성
+fact 전부를 읽은 뒤 **이미 한국어인 문장을 건너뜁니다**(같은 가중 판정기). 자세한 선택 조건은
+[FACT-LIFECYCLE.md](FACT-LIFECYCLE.md#kr-translation-레거시-표시-경로)에 있습니다.
 
 프롬프트 절은 내장 프롬프트를 **고치지 않고 덧붙이기만** 하며(`policy_version`은 그대로), 의미
 검증기 프롬프트는 오버레이가 있든 없든 바이트 단위로 동일합니다.
