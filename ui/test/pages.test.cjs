@@ -535,6 +535,39 @@ test('서버 지문이 그대로면 목록을 꽂지도 다시 그리지도 않�
  }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
 });
 
+/**
+ * 0.7.7 후속 검토 P2 #1 — 세대 검사가 디바운스 경로를 지나지 않았다.
+ *
+ * 세대를 `load()`가 **끝난 뒤에** 떼면 먼저 출발한 조회가 늦게 도착하면서 더 큰 번호를 받는다.
+ * 그래서 초기화 뒤의 빈 목록이 먼저 적용되고도 그 전에 시작한 옛 목록이 나중에 도착해
+ * 레지스트리와 서버 지문을 함께 되살렸다. 여기서는 두 디바운스 조회의 완료 순서를 뒤집는다.
+ */
+test('디바운스된 재조회도 세대를 지킨다 — 먼저 시작해 늦게 도착한 응답은 버려진다',async()=>{
+ const RUNBOOK=[{id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}];
+ try{
+  setCustomFactKinds([]);setCustomFactKindsHash(null);
+  let releaseOld;
+  const oldPayload=new Promise(resolve=>{releaseOld=()=>resolve({customFactKinds:RUNBOOK,hash:'hA'});});
+  // A: 먼저 시작한 조회. 타이머는 발화했고 응답은 아직 오지 않았다.
+  const older=scheduleCustomFactKindsSync(()=>oldPayload,1);
+  await new Promise(resolve=>setTimeout(resolve,10));
+  // B: 나중에 시작한 조회(초기화 뒤의 빈 목록)가 **먼저** 완료된다.
+  assert.equal(await scheduleCustomFactKindsSync(async()=>({customFactKinds:[],hash:'hB'}),1),false,
+   '이미 비어 있는 레지스트리를 바꿨다고 보고했다');
+  // 이제 A의 응답이 도착한다 — 버려져야 한다.
+  releaseOld();
+  assert.equal(await older,false,'낡은 응답이 재렌더를 요구했다');
+  assert.deepEqual(customFactKinds(),[],'늦게 도착한 옛 응답이 삭제된 종류를 되살렸다');
+  assert.equal(name('runbook'),'runbook','삭제된 종류의 라벨이 되살아났다');
+  // 서버 지문도 낡은 응답이 덮지 않았다 — hB가 그대로여야 같은 지문의 다음 알림이 적용을 건너뛴다.
+  let applied=false;
+  assert.equal(await scheduleCustomFactKindsSync(async()=>{applied=true;return {customFactKinds:RUNBOOK,hash:'hB'};},1),false,
+   '낡은 응답이 서버 지문을 자기 것으로 덮었다');
+  assert(applied,'로더는 불렸어야 한다');
+  assert.deepEqual(customFactKinds(),[],'지문이 같은데 목록을 갈아 끼웠다');
+ }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
+});
+
 test('종류 재조회 디바운스 기본값은 250ms다',()=>{
  assert.equal(FACT_KINDS_SYNC_DEBOUNCE_MS,250);
 });
