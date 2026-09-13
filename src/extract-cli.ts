@@ -235,8 +235,8 @@ function issueLines(issues: readonly Issue[]): string[] {
 }
 
 const SLOW_PATTERN_NOTE = [
-  "참고: 문법 검사만으로는 이런 패턴을 전부 걸러낼 수 없습니다. 저장되더라도 실행은",
-  `      ${MATCH_WALL_MS}ms 상한 안에서만 일어나고, 상한을 넘으면 그 패턴은 격리되며 추출은 보류됩니다.`,
+  "Note: a syntax check alone cannot catch every pattern like this. Even once stored, it only",
+  `      runs inside the ${MATCH_WALL_MS}ms budget, and a pattern that exceeds it is quarantined and extraction is held.`,
 ];
 
 function hasRegexIssue(issues: readonly Issue[]): boolean {
@@ -250,7 +250,7 @@ function failFromError(error: unknown): never {
     fail(
       "OVERLAY_INVALID",
       [
-        "거부 — 아무것도 저장하지 않았습니다.",
+        "Refused — nothing was saved.",
         ...issueLines(error.issues),
         ...(hasRegexIssue(errors) ? SLOW_PATTERN_NOTE : []),
       ],
@@ -261,8 +261,8 @@ function failFromError(error: unknown): never {
     fail(
       "OVERLAY_STALE",
       [
-        "거부 — 아무것도 저장하지 않았습니다.",
-        `  OVERLAY_STALE  현재 revision ${error.currentRevision} (기대 ${error.expectedRevision}) — 다른 곳에서 먼저 바뀌었습니다.`,
+        "Refused — nothing was saved.",
+        `  OVERLAY_STALE  current revision ${error.currentRevision} (expected ${error.expectedRevision}) — it changed somewhere else first.`,
       ],
       { currentRevision: error.currentRevision, expectedRevision: error.expectedRevision },
     );
@@ -271,16 +271,16 @@ function failFromError(error: unknown): never {
     fail(
       "OVERLAY_LOCKED",
       [
-        "거부 — 아무것도 저장하지 않았습니다.",
+        "Refused — nothing was saved.",
         error.holderPid === null
-          ? "  OVERLAY_LOCKED  다른 프로세스가 규칙을 쓰고 있습니다 (lock을 읽을 수 없었습니다)."
-          : `  OVERLAY_LOCKED  다른 프로세스(pid ${error.holderPid})가 규칙을 쓰고 있습니다.`,
+          ? "  OVERLAY_LOCKED  another process is writing the rules (the lock could not be read)."
+          : `  OVERLAY_LOCKED  another process (pid ${error.holderPid}) is writing the rules.`,
       ],
       { holderPid: error.holderPid },
     );
   }
   fail("EXTRACT_CLI_ERROR", [
-    "거부 — 아무것도 저장하지 않았습니다.",
+    "Refused — nothing was saved.",
     `  ${error instanceof Error ? error.message : String(error)}`,
   ]);
 }
@@ -392,16 +392,16 @@ function heldLines(report: DbReport): string[] {
   const heldJobs = report.heldJobs;
   // "No held job" and "we could not look" are different answers, and the one a
   // stopped pipeline needs is the second one.
-  if (!report.exists) return [row("보류", `확인 못 함 — 데이터베이스가 없습니다 (${report.dbPath}).`)];
-  if (heldJobs.length === 0) return [row("보류", "없음 — 규칙 때문에 멈춘 추출 작업이 없습니다.")];
+  if (!report.exists) return [row("Held", `unknown — there is no database (${report.dbPath}).`)];
+  if (heldJobs.length === 0) return [row("Held", "none — no extraction job is stopped by the rules.")];
   const total = heldJobs.reduce((sum, entry) => sum + entry.jobs, 0);
   return [
     row(
-      "보류",
-      `${total}건이 설정 대기 중입니다 (${heldJobs.map((entry) => `${entry.reason} ${entry.jobs}`).join(" · ")})`,
+      "Held",
+      `${total} job(s) are waiting on the rules (${heldJobs.map((entry) => `${entry.reason} ${entry.jobs}`).join(" · ")})`,
     ),
-    `${CONTINUE}금지 검사를 끝내지 못해 아무것도 저장하지 않았습니다. 재시도 횟수는 쓰지 않았습니다.`,
-    `${CONTINUE}규칙을 고치고 set/reset/rollback 중 하나를 실행하면 즉시 재개됩니다.`,
+    `${CONTINUE}The forbidden-string check did not finish, so nothing was stored. No retry was spent.`,
+    `${CONTINUE}Fix the rules and run set/reset/rollback, and they resume immediately.`,
   ];
 }
 
@@ -442,8 +442,8 @@ interface CandidateFile {
 function readCandidate(file: string): CandidateFile {
   if (!fs.existsSync(file)) {
     fail("FILE_NOT_FOUND", [
-      "거부 — 아무것도 저장하지 않았습니다.",
-      `  FILE_NOT_FOUND  ${file} 가 없습니다.`,
+      "Refused — nothing was saved.",
+      `  FILE_NOT_FOUND  ${file} does not exist.`,
     ]);
   }
   const text = fs.readFileSync(file, "utf8");
@@ -452,8 +452,8 @@ function readCandidate(file: string): CandidateFile {
     return { path: file, bytes, raw: JSON.parse(text) as unknown };
   } catch (error) {
     fail("OVERLAY_UNREADABLE", [
-      "거부 — 아무것도 저장하지 않았습니다.",
-      `  OVERLAY_UNREADABLE  ${file} 를 JSON으로 읽을 수 없습니다 — ${error instanceof Error ? error.message : String(error)}`,
+      "Refused — nothing was saved.",
+      `  OVERLAY_UNREADABLE  ${file} is not readable as JSON — ${error instanceof Error ? error.message : String(error)}`,
     ]);
   }
 }
@@ -512,21 +512,21 @@ function writeReceipt(
     [
       ...headline,
       row(
-        "파일",
-        `${extractionRulesOverlayPath()}  (revision ${before.revision} → ${result.revision}, ${before.hash ?? "없음"} → ${result.hash ?? "없음"})`,
+        "File",
+        `${extractionRulesOverlayPath()}  (revision ${before.revision} → ${result.revision}, ${before.hash ?? "none"} → ${result.hash ?? "none"})`,
       ),
       row(
-        "재개",
-        `설정 대기(hold) 중이던 추출 작업 ${result.released}건을 즉시 대기로 돌렸습니다.`,
+        "Resumed",
+        `${result.released} extraction job(s) on hold went straight back to the queue.`,
       ),
-      ...(result.issues.length > 0 ? ["경고", ...issueLines(result.issues)] : []),
+      ...(result.issues.length > 0 ? ["Warnings", ...issueLines(result.issues)] : []),
       row(
-        "적용 시점",
-        "진행 중인 작업은 중단하지 않습니다 — 그 작업의 프롬프트는 시작 시 규칙 그대로이고,",
+        "Effective",
+        "Jobs already running are not interrupted — their prompt keeps the rules it started with,",
       ),
-      `${CONTINUE}새 금지 패턴은 그 작업의 저장 직전부터 적용됩니다. 이미 추출된 기억은 바뀌지 않습니다.`,
+      `${CONTINUE}and new never_extract patterns apply from that job's storage boundary on. Memories already extracted do not change.`,
       row(
-        "감사",
+        "Audit",
         `logs/ui-audit.jsonl action=${action} · overlays/history.jsonl overlay=extraction-rules revision=${result.revision}`,
       ),
     ],
@@ -557,32 +557,32 @@ async function openWriteDbIfPresent(): Promise<{ db: unknown; close: () => void 
 /* -------------------------------------------------------------------------- */
 
 function statusLine(loaded: LoadedExtractionRules): string {
-  if (loaded.disabledByEnv) return "읽지 않음 — MEMEX_DISABLE_OVERLAYS=1 · 오버레이 없이 동작합니다";
-  if (!loaded.present) return "없음 — 추출은 내장 정책만 따릅니다";
+  if (loaded.disabledByEnv) return "not read — MEMEX_DISABLE_OVERLAYS=1 · running without the overlay";
+  if (!loaded.present) return "absent — extraction follows the built-in policy only";
   const errors = loaded.issues.filter((issue) => issue.severity === "error");
   if (errors.length > 0) {
-    return `무효 — 오류 ${errors.length}개 · 추출이 보류됩니다 (memex extract rules validate)`;
+    return `invalid — ${errors.length} error(s) · extraction is held (memex extract rules validate)`;
   }
-  return `적용됨 · revision ${loaded.revision} · ${loaded.hash ?? "없음"} · ${shortTime(loaded.doc?.updated_at)}`;
+  return `applied · revision ${loaded.revision} · ${loaded.hash ?? "none"} · ${shortTime(loaded.doc?.updated_at)}`;
 }
 
 function ruleSummaryLines(rules: ResolvedExtractionRules): string[] {
-  if (isEmptyExtractionRules(rules)) return [row("규칙", "—")];
+  if (isEmptyExtractionRules(rules)) return [row("Rules", "—")];
   const lines = [
     row(
-      "규칙",
-      `주제 제외 ${rules.excludeTopics.length}개 · 금지 패턴 ${rules.neverExtract.length}개 · ` +
-        `결정 힌트 ${rules.decisionHints.length}개 · 선호 언어 ${rules.preferredLanguage ?? "지정 없음"}`,
+      "Rules",
+      `${rules.excludeTopics.length} excluded topic(s) · ${rules.neverExtract.length} never_extract pattern(s) · ` +
+        `${rules.decisionHints.length} decision hint(s) · preferred language ${rules.preferredLanguage ?? "unset"}`,
     ),
   ];
-  for (const topic of rules.excludeTopics) lines.push(`${CONTINUE}주제 제외  ${topic}`);
+  for (const topic of rules.excludeTopics) lines.push(`${CONTINUE}exclude   ${topic}`);
   for (const pattern of rules.neverExtract) {
     lines.push(
-      `${CONTINUE}금지      ${pad(pattern.id, 20)}/${pattern.source}/${pattern.flags ?? ""}  scope=${pattern.scope ?? "both"}`,
+      `${CONTINUE}never     ${pad(pattern.id, 20)}/${pattern.source}/${pattern.flags ?? ""}  scope=${pattern.scope ?? "both"}`,
     );
   }
   for (const hint of rules.decisionHints) {
-    lines.push(`${CONTINUE}결정 힌트  ${pad(hint.id, 20)}/${hint.source}/${hint.flags ?? ""}`);
+    lines.push(`${CONTINUE}hint      ${pad(hint.id, 20)}/${hint.source}/${hint.flags ?? ""}`);
   }
   return lines;
 }
@@ -625,56 +625,56 @@ async function cmdShow(): Promise<void> {
     },
     [
       row(
-        "파일",
-        `${extractionRulesOverlayPath()}${loaded.present ? "" : "  (없음)"}`,
+        "File",
+        `${extractionRulesOverlayPath()}${loaded.present ? "" : "  (absent)"}`,
       ),
-      row("상태", statusLine(loaded)),
-      row("정책", `${pad(policy.extraction, 30)}(검증기 ${policy.verifier} — 오버레이가 바꾸지 않습니다)`),
+      row("Status", statusLine(loaded)),
+      row("Policy", `${pad(policy.extraction, 30)}(verifier ${policy.verifier} — the overlay does not change it)`),
       row(
-        "실효 정책",
-        `${pad(effective, 30)}(${loaded.hash ? "보고용 식별자입니다" : "오버레이 없음"})`,
+        "Effective",
+        `${pad(effective, 30)}(${loaded.hash ? "a reporting identifier" : "no overlay"})`,
       ),
       row(
-        "스케줄 키",
-        `${pad(policy.scheduling, 30)}(오버레이가 바꾸지 않습니다 — 규칙 변경이 전량 재추출을 일으키지 않습니다)`,
+        "Sched key",
+        `${pad(policy.scheduling, 30)}(the overlay does not change it — a rules edit never triggers a full re-extraction)`,
       ),
-      row("강제 지점", `${EXTRACTION_RULE_ENFORCEMENT_POINTS.join(" · ")} — 저장 직전 차단 집합으로`),
+      row("Enforced", `${EXTRACTION_RULE_ENFORCEMENT_POINTS.join(" · ")} — as a block set at the storage boundary`),
       row(
-        "적용 시점",
-        "추출 작업을 시작(claim)할 때의 규칙이 프롬프트에 실리고,",
+        "Effective",
+        "The rules in force when a job is claimed ride in its prompt,",
       ),
-      `${CONTINUE}금지 패턴은 저장 직전에 그 시점의 파일을 다시 읽어 적용됩니다.`,
-      `${CONTINUE}→ 제한 강화는 저장 시점에 즉시, 제한 완화는 다음 작업부터 반영됩니다.`,
+      `${CONTINUE}and never_extract patterns are re-read from the file at the storage boundary.`,
+      `${CONTINUE}→ a tightened restriction applies at once; a relaxed one from the next job on.`,
       ...ruleSummaryLines(loaded.global),
       ...(quarantined.length > 0
         ? [
             row(
-              "격리",
-              `${quarantined.map((entry) => entry.pattern_id).join(" · ")} — ${MATCH_WALL_MS}ms 상한을 넘겨 적용되지 않습니다`,
+              "Quarantined",
+              `${quarantined.map((entry) => entry.pattern_id).join(" · ")} — over the ${MATCH_WALL_MS}ms budget, so they are not applied`,
             ),
-            `${CONTINUE}해제: 정규식을 고치면 자동으로 풀립니다, 또는 memex gate quarantine clear <pattern-id>`,
+            `${CONTINUE}Release: fixing the regex clears it automatically, or memex gate quarantine clear <pattern-id>`,
           ]
         : []),
       row(
-        "경고",
+        "Warnings",
         warnings.length === 0 && errors.length === 0
-          ? "없음"
-          : `오류 ${errors.length}개 · 경고 ${warnings.length}개`,
+          ? "none"
+          : `${errors.length} error(s) · ${warnings.length} warning(s)`,
       ),
       ...issueLines(loaded.issues),
       ...heldLines(report),
       row(
-        "드리프트",
+        "Drift",
         report.drift === null
           ? report.exists
-            ? "읽을 수 없었습니다 (extraction_targets 없음)"
-            : `데이터베이스가 없습니다 (${report.dbPath})`
+            ? "could not be read (no extraction_targets)"
+            : `there is no database (${report.dbPath})`
           : report.drift.targets === 0
-            ? `완료된 모든 추출이 ${loaded.hash ?? "오버레이 없음"} 기준입니다`
-            : `다른 규칙으로 추출된 세션 ${report.drift.sessions}개 (대상 ${report.drift.targets}개) — memex extract rules reextract --dry-run`,
+            ? `every completed extraction is on ${loaded.hash ?? "no overlay"}`
+            : `${report.drift.sessions} session(s) extracted under different rules (${report.drift.targets} target(s)) — memex extract rules reextract --dry-run`,
       ),
-      row("실행", "추출 자체는 여전히 memex backfill extract 로 돌립니다."),
-      row("공유", "이 규칙은 아직 기기 간에 공유되지 않습니다 (0.7.1 예정)."),
+      row("Run", "Extraction itself still runs from memex backfill extract."),
+      row("Sharing", "These rules are not shared between devices yet (planned for 0.7.1)."),
     ],
   );
 }
@@ -689,8 +689,8 @@ async function cmdValidate(): Promise<void> {
   const target = file ?? liveFile;
   if (!fs.existsSync(target)) {
     emit({ file: target, present: false, issues: [] }, [
-      row("파일", target),
-      row("결과", "없음 — 추출은 내장 정책만 따릅니다. 검증할 것이 없습니다."),
+      row("File", target),
+      row("Result", "absent — extraction follows the built-in policy only. There is nothing to validate."),
     ]);
     return;
   }
@@ -711,12 +711,12 @@ async function cmdValidate(): Promise<void> {
   const errors = issues.filter((issue) => issue.severity === "error");
   const warnings = issues.filter((issue) => issue.severity === "warning");
   const lines = [
-    row("파일", `${target} (${candidate.bytes} bytes / 상한 ${EXTRACTION_RULES_LIMITS.fileBytes})`),
+    row("File", `${target} (${candidate.bytes} bytes / limit ${EXTRACTION_RULES_LIMITS.fileBytes})`),
     row(
-      "결과",
+      "Result",
       errors.length === 0
-        ? `유효 · 경고 ${warnings.length}개`
-        : `오류 ${errors.length}개 · 경고 ${warnings.length}개`,
+        ? `valid · ${warnings.length} warning(s)`
+        : `${errors.length} error(s) · ${warnings.length} warning(s)`,
     ),
     ...issueLines(issues),
   ];
@@ -726,7 +726,7 @@ async function cmdValidate(): Promise<void> {
     } else {
       console.error(lines.join("\n"));
       console.error(
-        "오류가 하나라도 있으면 이 오버레이는 적용되지 않고, 추출은 보류(hold)됩니다 — 재시도 횟수는 쓰지 않습니다.",
+        "A single error leaves this overlay unapplied and extraction held — no retry is spent.",
       );
     }
     process.exit(1);
@@ -853,7 +853,7 @@ async function simulate(input: SimulationInput): Promise<SimulationReport> {
   if (!fs.existsSync(dbPath)) {
     return {
       available: false,
-      reason: `데이터베이스가 없습니다 (${dbPath}) — 저장된 기억과 대화를 읽을 수 없습니다.`,
+      reason: `there is no database (${dbPath}) — stored memories and conversations cannot be read.`,
       facts: EMPTY_SCAN,
       incidents: EMPTY_SCAN,
       exchanges: EMPTY_SCAN,
@@ -868,7 +868,7 @@ async function simulate(input: SimulationInput): Promise<SimulationReport> {
   } catch (error) {
     return {
       available: false,
-      reason: `데이터베이스를 열 수 없습니다: ${error instanceof Error ? error.message : String(error)}`,
+      reason: `could not open the database: ${error instanceof Error ? error.message : String(error)}`,
       facts: EMPTY_SCAN,
       incidents: EMPTY_SCAN,
       exchanges: EMPTY_SCAN,
@@ -939,7 +939,7 @@ async function simulate(input: SimulationInput): Promise<SimulationReport> {
 
   if (input.exchangeId && exchangeRows.length === 0) {
     db.close();
-    fail("EXCHANGE_UNKNOWN", [`교환 ${input.exchangeId}를 찾을 수 없습니다 (memex search).`]);
+    fail("EXCHANGE_UNKNOWN", [`no exchange ${input.exchangeId} (memex search).`]);
   }
 
   const matcher = oneShotMatcher();
@@ -955,15 +955,15 @@ async function simulate(input: SimulationInput): Promise<SimulationReport> {
 }
 
 function simulationLines(report: SimulationReport, rules: ResolvedExtractionRules): string[] {
-  const lines: string[] = ["영향 시뮬레이션 (모델 호출 0회, 저장된 기억과 대화만 읽습니다):"];
+  const lines: string[] = ["Impact simulation (0 model calls; reads only stored memories and conversations):"];
   if (rules.neverExtract.length === 0) {
-    lines.push("  금지 패턴이 없어 결정적으로 검사할 항목이 없습니다.");
+    lines.push("  No never_extract patterns, so there is nothing to check deterministically.");
   } else if (!report.available) {
     lines.push(`  ${report.reason}`);
   } else {
     const section = (title: string, scan: ScanResult, noun: string) => {
       lines.push(
-        `  ${title} ${scan.scanned}건 중 ${scan.blocked.length}건이 never_extract_patterns에 매치합니다${
+        `  ${title}: ${scan.blocked.length} of ${scan.scanned} match never_extract_patterns${
           noun ? ` — ${noun}` : ""
         }`,
       );
@@ -973,36 +973,36 @@ function simulationLines(report: SimulationReport, rules: ResolvedExtractionRule
         );
       }
     };
-    section("활성 기억", report.facts, "이 규칙이 먼저 있었다면 만들어지지 않았을 기억입니다");
-    section("사건 기록", report.incidents, "");
-    section("최근 대화", report.exchanges, "이 형태가 대화에 나타납니다");
+    section("Active memories", report.facts, "these would not have been created had the rules come first");
+    section("Incident records", report.incidents, "");
+    section("Recent exchanges", report.exchanges, "this shape appears in the conversation");
     lines.push(
-      "  이미 저장된 기억·사건 기록은 이 명령이 바꾸지 않습니다. 지우려면: memex facts deactivate --id <uuid>",
+      "  This command changes no memory or incident record already stored. To remove one: memex facts deactivate --id <uuid>",
     );
     if (report.matcher.failed !== null) {
       lines.push(
-        `  matcher 중단 — ${report.matcher.failed}` +
+        `  matcher stopped — ${report.matcher.failed}` +
           (report.matcher.quarantined.length > 0
-            ? ` (격리: ${report.matcher.quarantined.join(" · ")})`
+            ? ` (quarantined: ${report.matcher.quarantined.join(" · ")})`
             : ""),
       );
-      lines.push("  운영에서는 이 상황에서 아무것도 저장하지 않고 추출을 보류(hold)합니다.");
+      lines.push("  In production this stores nothing and holds extraction.");
     } else {
-      lines.push(`  matcher 실행 ${report.matcher.elapsedMs.toFixed(1)}ms / 상한 ${MATCH_WALL_MS}ms 당 요청`);
+      lines.push(`  matcher ran ${report.matcher.elapsedMs.toFixed(1)}ms / budget ${MATCH_WALL_MS}ms per request`);
     }
   }
   lines.push(
-    "  exclude_topics / always_treat_as_decision / preferred_language 는 로컬로 검증할 수 없습니다 —",
+    "  exclude_topics / always_treat_as_decision / preferred_language cannot be checked locally —",
   );
-  lines.push("  프롬프트에만 전달되며 결과는 모델 평가로만 확인됩니다 (memex extract eval).");
+  lines.push("  they only travel in the prompt, and the result shows up only in a model evaluation (memex extract eval).");
   if (report.advisoryOnly.excludeTopics.length > 0) {
-    lines.push(`    주제 제외 (model-only)  ${report.advisoryOnly.excludeTopics.join("; ")}`);
+    lines.push(`    excluded topics (model-only)  ${report.advisoryOnly.excludeTopics.join("; ")}`);
   }
   if (report.advisoryOnly.decisionHints.length > 0) {
-    lines.push(`    결정 힌트 (model-only)  ${report.advisoryOnly.decisionHints.join(" · ")}`);
+    lines.push(`    decision hints (model-only)  ${report.advisoryOnly.decisionHints.join(" · ")}`);
   }
   if (report.advisoryOnly.preferredLanguage !== null) {
-    lines.push(`    선호 언어 (model-only)  ${report.advisoryOnly.preferredLanguage}`);
+    lines.push(`    preferred language (model-only)  ${report.advisoryOnly.preferredLanguage}`);
   }
   return lines;
 }
@@ -1022,7 +1022,7 @@ async function cmdTest(): Promise<void> {
     if (!validation.ok || !validation.doc) {
       fail(
         "OVERLAY_INVALID",
-        ["거부 — 후보 파일이 유효하지 않습니다.", ...issueLines(validation.issues)],
+        ["Refused — the candidate file is not valid.", ...issueLines(validation.issues)],
         { issues: validation.issues },
       );
     }
@@ -1054,14 +1054,14 @@ async function cmdTest(): Promise<void> {
       ...report,
     },
     [
-      row("규칙", `${source}  (${rules.hash ?? "없음"}${project ? ` · project=${project}` : ""})`),
-      row("모델", "0회 — 이 명령은 모델도 임베딩도 호출하지 않습니다"),
-      row("강제 지점", `${EXTRACTION_RULE_ENFORCEMENT_POINTS.join(" · ")} — 저장 직전 차단 집합으로`),
+      row("Rules", `${source}  (${rules.hash ?? "none"}${project ? ` · project=${project}` : ""})`),
+      row("Model", "0 calls — this command calls no model and no embedding"),
+      row("Enforced", `${EXTRACTION_RULE_ENFORCEMENT_POINTS.join(" · ")} — as a block set at the storage boundary`),
       "",
       ...simulationLines(report, rules),
       "",
-      "이 명령은 아무것도 기록하지 않습니다: 오버레이·데이터베이스·감사 로그 모두 변경 없음.",
-      `(단, 금지 패턴이 ${MATCH_WALL_MS}ms 상한을 넘기면 실제 운영과 동일하게 격리됩니다 — 그 사실만 기록합니다.)`,
+      "This command records nothing: overlay, database and audit log are all unchanged.",
+      `(One exception: a never_extract pattern that exceeds the ${MATCH_WALL_MS}ms budget is quarantined exactly as in production — only that fact is recorded.)`,
     ],
   );
 }
@@ -1084,7 +1084,7 @@ async function cmdSet(): Promise<void> {
     fail(
       "OVERLAY_INVALID",
       [
-        "거부 — 아무것도 저장하지 않았습니다.",
+        "Refused — nothing was saved.",
         ...issueLines(validation.issues),
         ...(hasRegexIssue(errors) ? SLOW_PATTERN_NOTE : []),
       ],
@@ -1127,29 +1127,29 @@ async function cmdSet(): Promise<void> {
         ...report,
       },
       [
-        "시험 실행 — 아무것도 저장하지 않았습니다.",
+        "Dry run — nothing was saved.",
         row(
-          "검증",
-          `문법 ok · 프로브 ok (상한 ${PROBE_WALL_MS}ms) · 항목 ${itemCount} · 경고 ${validation.issues.length}`,
+          "Checked",
+          `syntax ok · probe ok (budget ${PROBE_WALL_MS}ms) · items ${itemCount} · warnings ${validation.issues.length}`,
         ),
         ...issueLines(validation.issues),
-        row("해시", `${resolved.hash}   (현재: ${loadExtractionRules().hash ?? "없음"}, revision ${revision})`),
+        row("Hash", `${resolved.hash}   (current: ${loadExtractionRules().hash ?? "none"}, revision ${revision})`),
         "",
         ...(clause === ""
-          ? ["제약 절 미리보기 — 비어 있습니다 (규칙이 없으면 프롬프트는 바이트 동일합니다)."]
+          ? ["Constraint clause preview — empty (with no rules the prompt is byte-identical)."]
           : [
-              `제약 절 미리보기 — 추출 시스템 프롬프트 뒤에 붙습니다 (${clause.length}자):`,
+              `Constraint clause preview — appended to the extraction system prompt (${clause.length} chars):`,
               ...clause.split("\n").map((line) => `  ${line}`),
             ]),
         "",
-        row("검증기 프롬프트", `변경 없음 (${policy.verifier}, 바이트 동일)`),
-        row("강제 지점", `${EXTRACTION_RULE_ENFORCEMENT_POINTS.join(" · ")} — 저장 직전 차단 집합으로`),
-        `${CONTINUE}(금지된 후보는 "탈락"이며 작업 실패가 아닙니다: 재시도 횟수를 쓰지 않습니다)`,
+        row("Verifier", `unchanged (${policy.verifier}, byte-identical)`),
+        row("Enforced", `${EXTRACTION_RULE_ENFORCEMENT_POINTS.join(" · ")} — as a block set at the storage boundary`),
+        `${CONTINUE}(a blocked candidate is DROPPED, not a job failure: no retry is spent)`,
         "",
         ...simulationLines(report, resolved),
         "",
-        row("적용", rerunCommand(revision)),
-        row("권장", `적용 전 모델 평가: memex extract eval --rules ${file} --out ./rules-eval.json`),
+        row("Apply", rerunCommand(revision)),
+        row("Suggested", `evaluate before applying: memex extract eval --rules ${file} --out ./rules-eval.json`),
       ],
     );
     return;
@@ -1160,9 +1160,9 @@ async function cmdSet(): Promise<void> {
   // silently. `--dry-run` above printed the exact command with it filled in.
   if (present && expectRevision() === undefined) {
     fail("EXPECTED_REVISION_REQUIRED", [
-      "거부 — 아무것도 저장하지 않았습니다.",
-      `  EXPECTED_REVISION_REQUIRED  이미 규칙 파일이 있습니다 (revision ${revision}). 전체 문서를 덮어쓰려면 --expect-revision ${revision} 를 함께 주세요.`,
-      `  (먼저 확인하려면: memex extract rules set ${file} --dry-run)`,
+      "Refused — nothing was saved.",
+      `  EXPECTED_REVISION_REQUIRED  a rules file already exists (revision ${revision}). Pass --expect-revision ${revision} to replace the whole document.`,
+      `  (To see it first: memex extract rules set ${file} --dry-run)`,
     ]);
   }
 
@@ -1183,8 +1183,8 @@ async function cmdSet(): Promise<void> {
   writeReceipt(
     "rules.set",
     [
-      row("적용", `revision ${snapshot.revision} → ${result.revision} · ${snapshot.hash ?? "없음"} → ${result.hash ?? "없음"}`),
-      row("검증", `문법 ok · 프로브 ok (상한 ${PROBE_WALL_MS}ms) · 항목 ${itemCount}`),
+      row("Applied", `revision ${snapshot.revision} → ${result.revision} · ${snapshot.hash ?? "none"} → ${result.hash ?? "none"}`),
+      row("Checked", `syntax ok · probe ok (budget ${PROBE_WALL_MS}ms) · items ${itemCount}`),
     ],
     snapshot,
     result,
@@ -1225,11 +1225,11 @@ function emitWriteDryRun(
       ...payload,
     },
     [
-      "시험 실행 — 아무것도 저장하지 않았습니다.",
+      "Dry run — nothing was saved.",
       ...headline,
-      row("해시", `${loadExtractionRules().hash ?? "없음"} → ${resolved.hash ?? "없음"}  (revision ${revision} → ${revision + 1})`),
-      row("보류", "설정 대기(hold) 중인 추출 작업은 그대로 둡니다 — 해제는 실제 적용 때만 일어납니다."),
-      row("적용", rerunCommand(revision, extraFlags)),
+      row("Hash", `${loadExtractionRules().hash ?? "none"} → ${resolved.hash ?? "none"}  (revision ${revision} → ${revision + 1})`),
+      row("Held", "Extraction jobs on hold stay there — they are only released by a real apply."),
+      row("Apply", rerunCommand(revision, extraFlags)),
     ],
   );
 }
@@ -1242,8 +1242,8 @@ async function cmdReset(): Promise<void> {
       emptyExtractionRulesDoc() as unknown as Record<string, unknown>,
       [
         row(
-          "초기화 예정",
-          `규칙을 비웁니다 — 금지 패턴 ${current.global.neverExtract.length}개 · 제외 주제 ${current.global.excludeTopics.length}개가 사라집니다. 이미 추출된 기억은 바뀌지 않습니다.`,
+          "Would reset",
+          `clears the rules — ${current.global.neverExtract.length} never_extract pattern(s) and ${current.global.excludeTopics.length} excluded topic(s) go away. Memories already extracted do not change.`,
         ),
       ],
       {},
@@ -1253,9 +1253,9 @@ async function cmdReset(): Promise<void> {
   }
   if (!bools.has("--yes")) {
     fail("CONFIRMATION_REQUIRED", [
-      "거부 — 아무것도 저장하지 않았습니다.",
-      "  CONFIRMATION_REQUIRED  규칙 오버레이 전체를 비웁니다. 확인하려면 --yes 를 함께 주세요.",
-      "  (되돌릴 수 있습니다: memex extract rules rollback <revision>)",
+      "Refused — nothing was saved.",
+      "  CONFIRMATION_REQUIRED  this clears the whole rules overlay. Pass --yes to confirm.",
+      "  (It is reversible: memex extract rules rollback <revision>)",
     ]);
   }
   const snapshot = beforeState();
@@ -1274,7 +1274,7 @@ async function cmdReset(): Promise<void> {
   handle.close();
   writeReceipt(
     "rules.reset",
-    [row("초기화", "규칙을 비웠습니다 — 추출은 내장 정책만 따릅니다. 이미 추출된 기억은 바뀌지 않습니다.")],
+    [row("Reset", "the rules are empty — extraction follows the built-in policy only. Memories already extracted do not change.")],
     snapshot,
     result,
   );
@@ -1291,8 +1291,8 @@ async function cmdRollback(): Promise<void> {
     const kept = readOverlaySnapshot("extraction-rules", revision);
     if (kept === null) {
       fail("SNAPSHOT_NOT_FOUND", [
-        "시험 실행 — 되돌릴 수 없습니다. 아무것도 저장하지 않았습니다.",
-        `  SNAPSHOT_NOT_FOUND  revision ${revision}의 스냅숏이 없습니다 (보관 중: ${listOverlaySnapshots("extraction-rules").join(", ") || "없음"})`,
+        "Dry run — cannot roll back. Nothing was saved.",
+        `  SNAPSHOT_NOT_FOUND  no snapshot for revision ${revision} (kept: ${listOverlaySnapshots("extraction-rules").join(", ") || "none"})`,
       ]);
     }
     const validation = await validateExtractionRules(kept, { probe: false, forWrite: true });
@@ -1300,7 +1300,7 @@ async function cmdRollback(): Promise<void> {
       fail(
         "OVERLAY_INVALID",
         [
-          "시험 실행 — 거부되었습니다. 아무것도 저장하지 않았습니다.",
+          "Dry run — refused. Nothing was saved.",
           ...issueLines(validation.issues),
         ],
         { dryRun: true, issues: validation.issues },
@@ -1309,7 +1309,7 @@ async function cmdRollback(): Promise<void> {
     emitWriteDryRun(
       "rules.rollback",
       validation.doc as unknown as Record<string, unknown>,
-      [row("되돌릴 예정", `revision ${revision}의 스냅숏을 revision ${currentExtractionRulesRevision() + 1}로 다시 적용합니다.`)],
+      [row("Would roll back", `the revision ${revision} snapshot, re-applied as revision ${currentExtractionRulesRevision() + 1}.`)],
       { fromSnapshot: revision, issues: validation.issues },
     );
     return;
@@ -1330,7 +1330,7 @@ async function cmdRollback(): Promise<void> {
   handle.close();
   writeReceipt(
     "rules.rollback",
-    [row("되돌림", `revision ${revision}의 스냅숏을 revision ${result.revision}으로 다시 적용했습니다.`)],
+    [row("Rolled back", `the revision ${revision} snapshot is re-applied as revision ${result.revision}.`)],
     snapshot,
     result,
     { fromSnapshot: revision },
@@ -1344,9 +1344,9 @@ function cmdHistory(): void {
   emit(
     { count: entries.length, snapshots, history: entries },
     entries.length === 0
-      ? ["변경 이력이 없습니다."]
+      ? ["No change history."]
       : [
-          row("이력", `${entries.length}개 · 되돌릴 수 있는 revision: ${snapshots.join(", ") || "없음"}`),
+          row("History", `${entries.length} entries · revisions you can roll back to: ${snapshots.join(", ") || "none"}`),
           ...entries.map(
             (entry) =>
               `  ${pad(shortTime(entry.ts), 18)}${pad(`rev ${entry.from_revision} → ${entry.to_revision}`, 18)}${pad(entry.action, 18)}${pad(entry.surface, 9)}${Object.entries(
@@ -1390,15 +1390,15 @@ async function cmdReextract(): Promise<void> {
   if (apply && dry) usageError("reextract takes either --dry-run or --apply, not both");
   if (!apply && !dry) {
     fail("CONFIRMATION_REQUIRED", [
-      "거부 — 아무것도 바꾸지 않았습니다.",
-      "  CONFIRMATION_REQUIRED  reextract 는 --dry-run 또는 --apply 중 하나를 명시해야 합니다.",
-      "  (먼저 확인하려면: memex extract rules reextract --dry-run)",
+      "Refused — nothing was changed.",
+      "  CONFIRMATION_REQUIRED  reextract needs either --dry-run or --apply.",
+      "  (To see it first: memex extract rules reextract --dry-run)",
     ]);
   }
   if (apply && !bools.has("--yes")) {
     fail("CONFIRMATION_REQUIRED", [
-      "거부 — 아무것도 바꾸지 않았습니다.",
-      "  CONFIRMATION_REQUIRED  --apply 는 모델 호출을 새로 발생시킵니다. 확인하려면 --yes 를 함께 주세요.",
+      "Refused — nothing was changed.",
+      "  CONFIRMATION_REQUIRED  --apply spends new model calls. Pass --yes to confirm.",
     ]);
   }
   // `--scope project <id>` is the design document's spelling of `--project <id>`.
@@ -1413,7 +1413,7 @@ async function cmdReextract(): Promise<void> {
   const hash = loadExtractionRules().hash;
   const dbPath = getDbPath();
   if (!fs.existsSync(dbPath)) {
-    fail("DB_UNAVAILABLE", [`데이터베이스가 없습니다 (${dbPath}) — 재추출할 대상을 읽을 수 없습니다.`]);
+    fail("DB_UNAVAILABLE", [`there is no database (${dbPath}) — the targets to re-extract cannot be read.`]);
   }
   const { openReadDb, openWriteDb } = await import("./db.js");
   const db = apply ? openWriteDb(dbPath) : openReadDb(dbPath);
@@ -1453,7 +1453,7 @@ async function cmdReextract(): Promise<void> {
       }));
     } catch (error) {
       fail("DB_UNAVAILABLE", [
-        `추출 대상을 읽을 수 없습니다: ${error instanceof Error ? error.message : String(error)}`,
+        `could not read the extraction targets: ${error instanceof Error ? error.message : String(error)}`,
       ]);
     }
 
@@ -1462,12 +1462,12 @@ async function cmdReextract(): Promise<void> {
     const sample = rows.slice(0, sampleLimit);
     const sampleLines = sample.map(
       (candidate) =>
-        `  ${pad(candidate.targetId.slice(0, 12), 14)}${pad(candidate.rulesHash ?? "없음", 20)}${pad(
-          `${candidate.itemCount}턴`,
+        `  ${pad(candidate.targetId.slice(0, 12), 14)}${pad(candidate.rulesHash ?? "none", 20)}${pad(
+          `${candidate.itemCount} turns`,
           8,
         )}${pad(shortTime(candidate.updatedAt), 18)}${candidate.sessionId}`,
     );
-    const scopeText = `${project === null ? "전체 프로젝트" : `project=${project}`}${session === null ? "" : ` · session=${session}`}`;
+    const scopeText = `${project === null ? "all projects" : `project=${project}`}${session === null ? "" : ` · session=${session}`}`;
 
     if (dry) {
       emit(
@@ -1481,20 +1481,20 @@ async function cmdReextract(): Promise<void> {
           sample,
         },
         [
-          "시험 실행 — 아무것도 바꾸지 않았습니다.",
-          row("현재 해시", hash ?? "없음 (오버레이 없음)"),
-          row("범위", scopeText),
+          "Dry run — nothing was changed.",
+          row("Hash", hash ?? "none (no overlay)"),
+          row("Scope", scopeText),
           row(
-            "대상",
-            `다른 규칙으로 추출된 완료 대상 ${rows.length}개 · 세션 ${sessions.size}개 · 교환 ${items}개`,
+            "Targets",
+            `${rows.length} completed target(s) extracted under different rules · ${sessions.size} session(s) · ${items} exchange(s)`,
           ),
           ...sampleLines,
-          ...(rows.length > sample.length ? [`  … 외 ${rows.length - sample.length}개 (--limit 로 더 보기)`] : []),
+          ...(rows.length > sample.length ? [`  … and ${rows.length - sample.length} more (--limit shows more)`] : []),
           "",
-          row("예상 비용", `재추출은 교환 ${items}개만큼의 모델 호출을 새로 발생시킵니다.`),
-          `${CONTINUE}예산은 memex model-work 로 확인하세요. 이미 저장된 기억은 이 명령이 지우지 않습니다.`,
-          row("스케줄 키", "policy_version 은 건드리지 않습니다 — 선택한 범위만 다시 대기로 돌립니다."),
-          row("적용", `memex extract rules reextract --apply --yes${project === null ? "" : ` --project ${project}`}${session === null ? "" : ` --session ${session}`}`),
+          row("Cost", `re-extraction spends new model calls for ${items} exchange(s).`),
+          `${CONTINUE}Check the budget with memex model-work. This command deletes no memory already stored.`,
+          row("Sched key", "policy_version is untouched — only the chosen scope goes back to the queue."),
+          row("Apply", `memex extract rules reextract --apply --yes${project === null ? "" : ` --project ${project}`}${session === null ? "" : ` --session ${session}`}`),
         ],
       );
       return;
@@ -1546,19 +1546,19 @@ async function cmdReextract(): Promise<void> {
         changed,
       },
       [
-        row("재대기", `완료 대상 ${requeued.length}개 / 후보 ${rows.length}개 · 세션 ${sessions.size}개 · 교환 ${items}개`),
+        row("Requeued", `${requeued.length} completed target(s) / ${rows.length} candidate(s) · ${sessions.size} session(s) · ${items} exchange(s)`),
         ...(requeued.length < rows.length
-          ? [`${CONTINUE}${rows.length - requeued.length}개는 그사이 상태가 바뀌어 건드리지 않았습니다.`]
+          ? [`${CONTINUE}${rows.length - requeued.length} changed state in the meantime and were left alone.`]
           : []),
         row(
-          "되돌린 행",
+          "Rewound",
           Object.entries(changed)
             .map(([table, count]) => `${table} ${count}`)
-            .join(" · ") || "없음",
+            .join(" · ") || "none",
         ),
-        row("스케줄 키", "policy_version 은 건드리지 않았습니다 — 전량 재추출은 일어나지 않습니다."),
-        row("실행", "재추출은 자동으로 시작되지 않습니다: memex backfill extract"),
-        row("감사", "logs/ui-audit.jsonl action=rules.reextract"),
+        row("Sched key", "policy_version was untouched — no full re-extraction happens."),
+        row("Run", "Re-extraction does not start by itself: memex backfill extract"),
+        row("Audit", "logs/ui-audit.jsonl action=rules.reextract"),
       ],
     );
   } finally {
@@ -1582,8 +1582,8 @@ async function cmdEval(): Promise<void> {
   const script = new URL("../scripts/fact-extraction-eval.mjs", import.meta.url);
   if (!fs.existsSync(script)) {
     fail("EVAL_UNAVAILABLE", [
-      `평가 하네스를 찾을 수 없습니다 (${script.pathname}).`,
-      "소스 체크아웃에서 실행하거나 npm run build 후 다시 시도하세요.",
+      `the evaluation harness was not found (${script.pathname}).`,
+      "Run it from a source checkout, or run npm run build and try again.",
     ]);
   }
   const forwarded = argv.slice(1);

@@ -225,11 +225,11 @@ test('--help prints the verb list, exits 0 and writes nothing (#36)', (t) => {
 test('show reports the policy identifiers, the scheduling key and the caveats', (t) => {
   const fixture = isolated(t);
   const result = ok(fixture, ['rules', 'show']);
-  assert.match(result.stdout, /상태 +없음 — 추출은 내장 정책만 따릅니다/);
-  assert.match(result.stdout, /스케줄 키 +continuity-fact-v1 +\(오버레이가 바꾸지 않습니다/);
-  assert.match(result.stdout, /강제 지점 +fact_insert · incident · remediation · chronicle/);
-  assert.match(result.stdout, /추출 자체는 여전히 memex backfill extract 로 돌립니다/);
-  assert.match(result.stdout, /기기 간에 공유되지 않습니다 \(0\.7\.1 예정\)/);
+  assert.match(result.stdout, /Status +absent — extraction follows the built-in policy only/);
+  assert.match(result.stdout, /Sched key +continuity-fact-v1 +\(the overlay does not change it/);
+  assert.match(result.stdout, /Enforced +fact_insert · incident · remediation · chronicle/);
+  assert.match(result.stdout, /Extraction itself still runs from memex backfill extract/);
+  assert.match(result.stdout, /not shared between devices yet \(planned for 0\.7\.1\)/);
   assert.ok(!fs.existsSync(fixture.overlayDir), 'a read must not create the overlay directory');
 
   const payload = asJson(ok(fixture, ['rules', 'show', '--json']));
@@ -250,7 +250,7 @@ test('show reports the policy identifiers, the scheduling key and the caveats', 
 test('validate names the path and severity of every issue and exits 1 on errors', (t) => {
   const fixture = isolated(t);
   const absent = ok(fixture, ['rules', 'validate']);
-  assert.match(absent.stdout, /없음 — 추출은 내장 정책만 따릅니다/);
+  assert.match(absent.stdout, /absent — extraction follows the built-in policy only/);
 
   const broken = candidate(fixture, 'broken.json', {
     preferred_language: 'jp',
@@ -293,9 +293,9 @@ test('set refuses an invalid document and writes nothing', (t) => {
   });
   const result = run(fixture, ['rules', 'set', bad]);
   assert.equal(result.status, 1);
-  assert.match(both(result), /거부 — 아무것도 저장하지 않았습니다\./);
+  assert.match(both(result), /Refused — nothing was saved\./);
   assert.match(both(result), /error +REGEX_QUANTIFIER_BUDGET/);
-  assert.match(both(result), /문법 검사만으로는 이런 패턴을 전부 걸러낼 수 없습니다/);
+  assert.match(both(result), /a syntax check alone cannot catch every pattern like this/);
   assert.ok(!fs.existsSync(fixture.rulesFile), 'a refused write may not create the overlay');
 
   const payload = asJson(run(fixture, ['rules', 'set', bad, '--json']));
@@ -315,14 +315,14 @@ test('set --dry-run previews the clause and the re-run command, writing nothing'
   const fixture = isolated(t);
   const file = candidate(fixture, 'rules.json', SECRET_RULES);
   const dry = ok(fixture, ['rules', 'set', file, '--dry-run']);
-  assert.match(dry.stdout, /시험 실행 — 아무것도 저장하지 않았습니다\./);
-  assert.match(dry.stdout, /해시 +rules:[0-9a-f]{8} {3}\(현재: 없음, revision 0\)/);
+  assert.match(dry.stdout, /Dry run — nothing was saved\./);
+  assert.match(dry.stdout, /Hash +rules:[0-9a-f]{8} {3}\(current: none, revision 0\)/);
   assert.match(dry.stdout, /## User rule overlay \(local, operator-authored\)/);
   assert.match(dry.stdout, /- Never extract facts about: 사내 인사 평가; 급여/);
-  assert.match(dry.stdout, /변경 없음 \(authoritative-entailment-v3, 바이트 동일\)/);
-  assert.match(dry.stdout, /주제 제외 \(model-only\)/);
-  assert.match(dry.stdout, /선호 언어 \(model-only\) +ko/);
-  assert.match(dry.stdout, /적용 +memex extract rules set .*--expect-revision 0/);
+  assert.match(dry.stdout, /unchanged \(authoritative-entailment-v3, byte-identical\)/);
+  assert.match(dry.stdout, /excluded topics \(model-only\)/);
+  assert.match(dry.stdout, /preferred language \(model-only\) +ko/);
+  assert.match(dry.stdout, /Apply +memex extract rules set .*--expect-revision 0/);
   assert.ok(!fs.existsSync(fixture.rulesFile), '--dry-run must not create the overlay');
 
   const payload = asJson(ok(fixture, ['rules', 'set', file, '--dry-run', '--json']));
@@ -336,8 +336,8 @@ test('set --dry-run previews the clause and the re-run command, writing nothing'
 
   // The command the dry run printed is the one that applies.
   const applied = ok(fixture, ['rules', 'set', file, '--expect-revision', '0']);
-  assert.match(applied.stdout, /적용 +revision 0 → 1 · 없음 → rules:[0-9a-f]{8}/);
-  assert.match(applied.stdout, /재개 +설정 대기\(hold\) 중이던 추출 작업 0건/);
+  assert.match(applied.stdout, /Applied +revision 0 → 1 · none → rules:[0-9a-f]{8}/);
+  assert.match(applied.stdout, /Resumed +0 extraction job\(s\) on hold/);
   assert.match(applied.stdout, /action=rules\.set/);
 
   const doc = readRules(fixture);
@@ -368,7 +368,7 @@ test('set needs --expect-revision once a file exists, and a stale one changes no
 
   const stale = run(fixture, ['rules', 'set', file, '--expect-revision', '7']);
   assert.equal(stale.status, 1);
-  assert.match(both(stale), /OVERLAY_STALE +현재 revision 1 \(기대 7\)/);
+  assert.match(both(stale), /OVERLAY_STALE +current revision 1 \(expected 7\)/);
   assert.ok(fs.readFileSync(fixture.rulesFile).equals(before), 'a stale write must change nothing');
 
   const staleJson = asJson(run(fixture, ['rules', 'set', file, '--expect-revision', '7', '--json']));
@@ -421,7 +421,7 @@ test('reset needs --yes, rollback restores a snapshot, and history lists both', 
   );
   assert.ok(history.history.every((entry) => entry.overlay === 'extraction-rules'));
   assert.deepEqual(history.snapshots, [1, 2, 3, 4]);
-  assert.match(ok(fixture, ['rules', 'history']).stdout, /이력 +4개/);
+  assert.match(ok(fixture, ['rules', 'history']).stdout, /History +4 entries/);
 });
 
 /**
@@ -471,7 +471,7 @@ test('rules reset and rollback honour --dry-run, changing nothing', async (t) =>
   await unchanged('rules reset --dry-run');
 
   const text = ok(fixture, ['rules', 'reset', '--yes', '--dry-run']);
-  assert.match(text.stdout, /시험 실행 — 아무것도 저장하지 않았습니다\./);
+  assert.match(text.stdout, /Dry run — nothing was saved\./);
   await unchanged('rules reset --yes --dry-run');
 
   const rolled = asJson(ok(fixture, ['rules', 'rollback', '1', '--dry-run', '--json']));
@@ -498,12 +498,12 @@ test('test previews the deterministic never_extract block and labels the rest mo
   const before = fs.readFileSync(fixture.rulesFile);
 
   const result = ok(fixture, ['rules', 'test', '--recent', '10']);
-  assert.match(result.stdout, /모델 +0회 — 이 명령은 모델도 임베딩도 호출하지 않습니다/);
-  assert.match(result.stdout, /활성 기억 2건 중 1건이 never_extract_patterns에 매치합니다/);
+  assert.match(result.stdout, /Model +0 calls — this command calls no model and no embedding/);
+  assert.match(result.stdout, /Active memories: 1 of 2 match never_extract_patterns/);
   assert.match(result.stdout, /fact-sec .*user\.secret/);
-  assert.match(result.stdout, /최근 대화 2건 중 1건이 never_extract_patterns에 매치합니다/);
-  assert.match(result.stdout, /로컬로 검증할 수 없습니다/);
-  assert.match(result.stdout, /이 명령은 아무것도 기록하지 않습니다/);
+  assert.match(result.stdout, /Recent exchanges: 1 of 2 match never_extract_patterns/);
+  assert.match(result.stdout, /cannot be checked locally/);
+  assert.match(result.stdout, /This command records nothing/);
   assert.ok(fs.readFileSync(fixture.rulesFile).equals(before), 'test must not touch the overlay');
 
   const payload = asJson(ok(fixture, ['rules', 'test', '--recent', '10', '--json']));
@@ -523,7 +523,7 @@ test('test previews the deterministic never_extract block and labels the rest mo
   assert.equal(single.exchanges.blocked.length, 0);
   const unknown = run(fixture, ['rules', 'test', '--exchange', 'no-such-exchange']);
   assert.equal(unknown.status, 1);
-  assert.match(both(unknown), /EXCHANGE_UNKNOWN|찾을 수 없습니다/);
+  assert.match(both(unknown), /EXCHANGE_UNKNOWN|no exchange /);
 
   // A candidate file that has NOT been applied can be previewed too.
   const candidateOnly = candidate(fixture, 'other.json', { never_extract_patterns: [] });
@@ -541,20 +541,20 @@ test('reextract lists stale targets, then re-queues them without touching the sc
   // With a database present, `show` answers the two questions that matter when
   // extraction looks stuck: is anything held, and is anything stale?
   const shown = ok(fixture, ['rules', 'show']);
-  assert.match(shown.stdout, /보류 +없음 — 규칙 때문에 멈춘 추출 작업이 없습니다/);
-  assert.match(shown.stdout, /드리프트 +다른 규칙으로 추출된 세션 1개 \(대상 1개\)/);
+  assert.match(shown.stdout, /Held +none — no extraction job is stopped by the rules/);
+  assert.match(shown.stdout, /Drift +1 session\(s\) extracted under different rules \(1 target\(s\)\)/);
   assert.deepEqual(asJson(ok(fixture, ['rules', 'show', '--json'])).drift, { targets: 1, sessions: 1 });
 
   const undecided = run(fixture, ['rules', 'reextract']);
   assert.equal(undecided.status, 1);
   assert.match(both(undecided), /CONFIRMATION_REQUIRED/);
-  assert.match(both(undecided), /--dry-run 또는 --apply/);
+  assert.match(both(undecided), /needs either --dry-run or --apply/);
 
   const dry = ok(fixture, ['rules', 'reextract', '--dry-run']);
-  assert.match(dry.stdout, /시험 실행 — 아무것도 바꾸지 않았습니다\./);
-  assert.match(dry.stdout, /대상 +다른 규칙으로 추출된 완료 대상 1개 · 세션 1개 · 교환 2개/);
+  assert.match(dry.stdout, /Dry run — nothing was changed\./);
+  assert.match(dry.stdout, /Targets +1 completed target\(s\) extracted under different rules · 1 session\(s\) · 2 exchange\(s\)/);
   assert.match(dry.stdout, /target-1 +rules:deadbeef/);
-  assert.match(dry.stdout, /policy_version 은 건드리지 않습니다/);
+  assert.match(dry.stdout, /policy_version is untouched/);
   assert.equal(
     (await readDb(fixture, 'SELECT state FROM extraction_targets WHERE target_id = ?', ['target-1'])).state,
     'completed',
