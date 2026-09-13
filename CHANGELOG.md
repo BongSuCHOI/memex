@@ -24,8 +24,13 @@ README rebuilt around the 0.7.0 workspace, plus two small fixes.
   the model into a temporary root; `memex backfill all` now names the cause when
   a stage fails (worker exit code, signal, output tail) instead of only
   "embeddings backfill failed". (#114)
-- `memex gate …` and `memex extract …` speak English like the rest of the CLI;
-  `--json` payloads are unchanged. (#115)
+- `memex gate …` and `memex extract …` speak English like the rest of the CLI.
+  The `--json` KEY structure is unchanged — no field was added, removed or
+  renamed — but the human-readable string VALUES changed language with the rest:
+  `error.message` is the first display line (`fail()` in `src/gate-cli.ts` and
+  `src/extract-cli.ts`), and the impact simulation's `reason` is the same string
+  the terminal prints. A consumer matching on `error.code` is unaffected; one
+  matching on Korean message text is not. (#115)
 
 ### Upgrade
 

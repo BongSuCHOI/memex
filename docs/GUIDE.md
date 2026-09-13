@@ -1330,8 +1330,11 @@ memex doctor    →  llm-model: warn  held — the provider rejected the request
 하고, `memex gate show`도 그 사실을 한 줄로 알립니다.
 
 **0.7.3부터 두 명령의 출력은 영어입니다**(#115). 표 라벨·거절 메시지·트랜스크립트가 나머지
-CLI(`memex models`·`sync`·`status`·`doctor`)와 같은 영어이고, `--json` 페이로드의 모양은 그대로입니다.
-문서는 한국어를 유지합니다.
+CLI(`memex models`·`sync`·`status`·`doctor`)와 같은 영어입니다. `--json`의 **키 구조**는 그대로이고
+필드가 추가·삭제·개명되지 않았지만, 사람이 읽는 **문자열 값**은 함께 영어가 되었습니다 —
+`error.message`는 화면 첫 줄을 그대로 담고(두 CLI의 `fail()`), 영향 시뮬레이션의 `reason`도 터미널과
+같은 문자열입니다. `error.code`로 분기하는 소비자는 영향이 없고, 한국어 메시지 본문을 매칭하던
+소비자는 영향을 받습니다. 문서는 한국어를 유지합니다.
 
 두 오버레이는 **실패 방향이 반대**입니다. 같은 파일 형식인데 결과가 정반대이므로 혼동하지 마십시오.
 
