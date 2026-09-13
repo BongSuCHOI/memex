@@ -111,7 +111,10 @@ function createServer(options={}){
     // #121 — 사용자 정의 fact 종류의 라벨은 DB가 아니라 오버레이 파일에서 온다. DB가 없어도
     // 실리고, 읽을 수 없으면 빈 목록이다(core.customFactKinds()는 던지지 않는다).
     const customFactKinds=await core.customFactKinds();
-    return {uiVersion:VERSION,csrfToken:token,environment:core.environment(),db:{available:!!store,error},capabilities:store?.capabilities()||{},projects,factTotals,customFactKinds,commands:COMMANDS,revision,serverStartedAt:startedAt};
+    // 해시는 `/api/v2/fact-kinds`가 돌려주는 것과 같은 값이다 — 부팅 직후의 첫 재조회가
+    // "달라진 게 없다"를 알아볼 수 있어야 한다(0.7.6 후속 검토 P2 #5).
+    const customFactKindsHash=hash(JSON.stringify(customFactKinds));
+    return {uiVersion:VERSION,csrfToken:token,environment:core.environment(),db:{available:!!store,error},capabilities:store?.capabilities()||{},projects,factTotals,customFactKinds,customFactKindsHash,commands:COMMANDS,revision,serverStartedAt:startedAt};
   }
   const startedAt=new Date().toISOString();
   function guard(req,write){
@@ -203,6 +206,18 @@ function createServer(options={}){
         }
         if(write)notify();
         json(res,200,result);return;
+      }
+      /* 0.7.6 후속 검토 P2 #5 — 종류 레지스트리만 돌려주는 가벼운 조회.
+       *
+       * SSE `change`는 오버레이 변경만이 아니라 DB·로그 변경에도 뜬다. 그 때마다 화면이
+       * `/api/v2/bootstrap`을 다시 읽으면 `store.projects()`의 전체 exchanges 그룹 집계와 세션
+       * DISTINCT, facts 집계가 동기 SQLite로 매번 돌아간다 — 종류 라벨 하나 확인하자고. 이
+       * 경로는 오버레이 **파일 하나**만 읽고, `hash`로 "달라지지 않았다"를 응답 자체가 말한다.
+       * 클라이언트는 그 해시가 같으면 목록을 꽂지도 다시 그리지도 않는다. */
+      if(p==='/api/v2/fact-kinds'){
+        if(req.method!=='GET')throw new HttpError(405,{code:'METHOD_NOT_ALLOWED',key:'error.method.getOnly',message:'Only GET is allowed.'});
+        const kinds=await core.customFactKinds();
+        json(res,200,{customFactKinds:kinds,hash:hash(JSON.stringify(kinds))});return;
       }
       if(p==='/api/v2/environment'){if(req.method!=='GET')throw new HttpError(405,{code:'METHOD_NOT_ALLOWED',key:'error.method.getOnly',message:'Only GET is allowed.'});json(res,200,core.environment());return;}
       if(p==='/api/v2/diagnostics'){

@@ -3,7 +3,7 @@ const {ko}=require('./helpers/locale.cjs');
 require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 /** Page modules render to strings, so the browser HTML is checked without a DOM. */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
-const {name,badge,eventRow,syncOrigin,syncOriginTag,setCustomFactKinds,syncCustomFactKinds,customFactKinds}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
+const {name,badge,eventRow,syncOrigin,syncOriginTag,setCustomFactKinds,setCustomFactKindsHash,syncCustomFactKinds,scheduleCustomFactKindsSync,FACT_KINDS_SYNC_DEBOUNCE_MS,customFactKinds}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
 const details=require('../public/details.mjs');
 const activityPage=require('../public/pages/activity.mjs');const conversationsPage=require('../public/pages/conversations.mjs');
 const facts=require('../public/pages/facts.mjs');const taxonomyPage=require('../public/pages/taxonomy.mjs');const settingsPage=require('../public/pages/settings.mjs');
@@ -490,8 +490,53 @@ test('app.mjs는 저장·초기화(invalidate)와 SSE 변경에서 종류 레지
  assert(/invalidate\(\)\{[^}]*refreshFactKinds\(\)/.test(APP),'ctx.invalidate()가 종류를 재조회하지 않음');
  assert(/addEventListener\('change',\(\)=>\{[^}]*refreshFactKinds\(\)/.test(APP),'SSE change가 종류를 재조회하지 않음');
  assert(/async function refreshFactKinds\(\)/.test(APP),'refreshFactKinds가 없음');
- assert(/syncCustomFactKinds\(async\(\)=>\{const boot=await request\('bootstrap'\)/.test(APP),
-  '재조회가 부트스트랩 엔드포인트를 다시 읽지 않음');
+ // 0.7.6 후속 검토 P2 #5 — 재조회는 **부트스트랩이 아니라** 종류만 싣는 경로를 읽는다.
+ assert(/scheduleCustomFactKindsSync\(\(\)=>request\('fact-kinds'\)\)/.test(APP),
+  '재조회가 종류 전용 엔드포인트를 쓰지 않음');
+ const refreshBody=APP.slice(APP.indexOf('async function refreshFactKinds'),APP.indexOf('async function boot('));
+ assert(refreshBody&&!refreshBody.includes("request('bootstrap')"),'재조회가 아직 부트스트랩 전체를 다시 읽음');
+ assert(/setCustomFactKindsHash\(bootstrap\.customFactKindsHash\)/.test(APP),
+  '부팅이 서버 지문을 기억하지 않음 — 첫 change에서 불필요한 재렌더가 난다');
+});
+
+/**
+ * 0.7.6 후속 검토 P2 #5 — 모든 변경 이벤트가 전체 집계를 다시 돌렸다.
+ *
+ * SSE `change`는 오버레이 변경만이 아니라 DB·로그 변경에도 뜨고, 요청 병합이 없어 탭 수 ×
+ * 변경 빈도만큼 조회가 나갔다. 연속 알림은 하나로 합쳐지고, 서버 지문이 그대로면 목록을 꽂지도
+ * 다시 그리지도 않아야 한다.
+ */
+test('연속된 변경 알림은 한 번의 조회로 합쳐진다',async()=>{
+ try{
+  setCustomFactKinds([]);setCustomFactKindsHash(null);
+  let calls=0;
+  const load=async()=>{calls++;return {customFactKinds:[{id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}],hash:'h1'};};
+  const results=await Promise.all([1,2,3,4,5].map(()=>scheduleCustomFactKindsSync(load,1)));
+  assert.equal(calls,1,'변경 5건에 조회가 '+calls+'번 나갔다');
+  assert.deepEqual(results,[true,true,true,true,true],'합쳐진 호출이 결과를 받지 못했다(누수)');
+  assert.equal(name('runbook'),'운영 절차','합쳐진 조회가 목록을 꽂지 않았다');
+ }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
+});
+
+test('서버 지문이 그대로면 목록을 꽂지도 다시 그리지도 않는다',async()=>{
+ try{
+  setCustomFactKinds([]);setCustomFactKindsHash(null);
+  const payload={customFactKinds:[{id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}],hash:'h1'};
+  assert.equal(await scheduleCustomFactKindsSync(async()=>payload,1),true,'첫 조회가 적용되지 않았다');
+  // 같은 지문 = 오버레이가 그대로다. 목록을 건드리면 화면이 통째로 다시 그려진다.
+  let applied=false;
+  assert.equal(await scheduleCustomFactKindsSync(async()=>{applied=true;return {customFactKinds:[],hash:'h1'};},1),false,
+   '지문이 같은데 재렌더를 요구했다');
+  assert(applied,'로더는 불렸어야 한다 — 건너뛰는 것은 적용이지 조회가 아니다');
+  assert.equal(name('runbook'),'운영 절차','지문이 같은데 목록을 갈아 끼웠다');
+  // 지문이 달라지면 그때 적용한다.
+  assert.equal(await scheduleCustomFactKindsSync(async()=>({customFactKinds:[],hash:'h2'}),1),true,'지문이 달라졌는데 적용하지 않았다');
+  assert.equal(name('runbook'),'runbook');
+ }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
+});
+
+test('종류 재조회 디바운스 기본값은 250ms다',()=>{
+ assert.equal(FACT_KINDS_SYNC_DEBOUNCE_MS,250);
 });
 
 test('정의되지 않은 종류로 저장된 기억은 코어 원문 그대로 보이고 칩도 만들지 않는다',async()=>{

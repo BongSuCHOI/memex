@@ -6,6 +6,26 @@ const scope='scope=project&project='+encodeURIComponent(PROJECT);
 async function get(route){const r=await fetch(base+route);return {status:r.status,headers:r.headers,data:r.headers.get('content-type')?.includes('json')?await r.json():await r.text()};}
 for(const endpoint of ['bootstrap','health','overview','projects','scopes','facts','sessions','exchanges','taxonomy','graph','chronicle','jobs','attempts','recalls','log-files','environment','diagnostics','operations','pipeline'])test('GET /api/v2/'+endpoint,async()=>{const r=await get('/api/v2/'+endpoint+'?'+scope);assert.equal(r.status,200,JSON.stringify(r.data));});
 for(const [endpoint,id]of [['fact',uid(1)],['exchange','exchange-0'],['session','session-0'],['job','job-0'],['event','event-0'],['attempt','attempt-0']])test('detail endpoint /'+endpoint,async()=>assert.equal((await get('/api/v2/'+endpoint+'?'+scope+'&id='+id)).status,200));
+/**
+ * 0.7.6 후속 검토 P2 #5 — 종류 재조회가 전체 부트스트랩을 다시 읽었다.
+ *
+ * SSE `change`는 DB·로그 변경에도 뜨므로 그 경로는 오버레이 파일 하나만 읽어야 하고, 응답이
+ * 스스로 "달라지지 않았다"를 말할 수 있어야 한다. 지문은 부트스트랩이 싣는 것과 같은 값이다.
+ */
+test('GET /api/v2/fact-kinds는 종류와 지문만 싣고 부트스트랩과 같은 지문을 쓴다',async()=>{
+ const light=await get('/api/v2/fact-kinds');
+ assert.equal(light.status,200);
+ assert.deepEqual(Object.keys(light.data).sort(),['customFactKinds','hash']);
+ assert(Array.isArray(light.data.customFactKinds));
+ assert.match(light.data.hash,/^[0-9a-f]{64}$/);
+ const boot=await get('/api/v2/bootstrap');
+ assert.equal(boot.data.customFactKindsHash,light.data.hash,'부트스트랩과 지문이 다르면 부팅 직후 한 번은 무조건 다시 그린다');
+ assert.deepEqual(light.data.customFactKinds,boot.data.customFactKinds);
+ // 같은 파일을 두 번 읽으면 같은 지문 — 클라이언트가 이것으로 재렌더를 건너뛴다.
+ assert.equal((await get('/api/v2/fact-kinds')).data.hash,light.data.hash);
+ assert.equal((await fetch(base+'/api/v2/fact-kinds',{method:'POST',headers:{'Content-Type':'application/json','X-Memex-CSRF':app.token},body:'{}'})).status,405);
+});
+
 test('all seven pages and static modules have proper MIME and CSP',async()=>{for(const route of ['/','/facts','/conversations','/taxonomy','/graph','/activity','/settings','/pipeline','/assets/app.mjs']){const r=await get(route);assert.equal(r.status,200);assert.match(r.headers.get('content-security-policy'),/frame-ancestors 'none'/);assert(r.headers.get('content-type').includes(route.endsWith('mjs')?'javascript':'html'));}});
 test('foreign Host and Origin are rejected',async()=>{const raw=headers=>new Promise((resolve,reject)=>{http.get(base+'/api/v2/bootstrap',{headers},r=>{r.resume();resolve(r.statusCode);}).on('error',reject);});assert.equal(await raw({Host:'attacker.invalid'}),403);assert.equal(await raw({Origin:'https://evil.invalid'}),403);assert.equal(await raw({'Sec-Fetch-Site':'cross-site'}),403);});
 test('writes require a real token and JSON',async()=>{const url=base+'/api/v2/facts/mutate?'+scope;const body=JSON.stringify({id:uid(1),action:'deactivate'});assert.equal((await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body})).status,403);assert.equal((await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Memex-CSRF':app.token},body})).status,403);assert.equal((await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain','X-Memex-CSRF':app.token},body})).status,415);});

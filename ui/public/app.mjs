@@ -1,5 +1,5 @@
 import {request,setToken} from './api.mjs';
-import {esc,icon,btn,linkBtn,banner,errorCard,skeleton,empty,options,basename,short,number,copy,download,name,factText,setPreferTranslatedFacts,docsNoticeTag,setCustomFactKinds,syncCustomFactKinds} from './ui.mjs';
+import {esc,icon,btn,linkBtn,banner,errorCard,skeleton,empty,options,basename,short,number,copy,download,name,factText,setPreferTranslatedFacts,docsNoticeTag,setCustomFactKinds,setCustomFactKindsHash,scheduleCustomFactKindsSync} from './ui.mjs';
 import {renderDetail,commandModal} from './details.mjs';
 import {helpFor,docUrl,GLOSSARY,CONTROLS} from './help.mjs';
 import * as overview from './pages/overview.mjs';import * as facts from './pages/facts.mjs';import * as conversations from './pages/conversations.mjs';import * as taxonomy from './pages/taxonomy.mjs';import * as graph from './pages/graph.mjs';import * as activity from './pages/activity.mjs';import * as settings from './pages/settings.mjs';
@@ -136,14 +136,26 @@ function connectEvents(){eventSource?.close();eventSource=new EventSource('/api/
  * 부팅 때 한 번만 꽂으면 오버레이 저장·초기화 뒤에도 삭제된 종류의 칩이 남고 새 종류는 id로
  * 뜬다 — `ctx.invalidate()`(저장·초기화가 부르는 것)와 SSE `change`가 여기로 들어온다.
  * 목록이 실제로 달라졌을 때만 다시 그린다. 실패는 조용히 무시한다(직전 라벨을 유지한다).
+ *
+ * 값이 싸야 한다 (0.7.6 후속 검토 P2 #5). 예전에는 여기서 `bootstrap`을 통째로 다시 읽었고,
+ * 그 응답은 전체 exchanges 그룹 집계·세션 DISTINCT·facts 집계를 동기 SQLite로 매번 돌린다.
+ * SSE `change`는 오버레이 변경만이 아니라 DB·로그 변경에도 뜨므로 그 비용이 탭 수 × 변경
+ * 빈도만큼 반복됐다. 세 가지를 바꾼다:
+ *   · 조회 대상이 종류만 싣는 `/api/v2/fact-kinds`다 — 오버레이 파일 하나만 읽는다;
+ *   · 연속된 변경은 **후행 디바운스**로 합친다 — 백필 한 번에 이벤트가 몰아쳐도 조회는 한 번;
+ *   · 서버가 함께 주는 `hash`가 직전과 같으면 **꽂지도 다시 그리지도 않는다**.
  */
 async function refreshFactKinds(){
- if(await syncCustomFactKinds(async()=>{const boot=await request('bootstrap');return boot.customFactKinds;})){
+ if(await scheduleCustomFactKindsSync(()=>request('fact-kinds'))){
   lastPageKey='';lastDrawerKey='';await render(true);
  }
 }
 async function boot(refresh=false){try{bootstrap=await request('bootstrap');setToken(bootstrap.csrfToken);
  // #121 — 사용자 정의 fact 종류의 라벨은 사전이 아니라 오버레이가 갖는다. 첫 render() 앞에
  // 꽂아야 배지·종류 칩이 첫 그림부터 id가 아닌 이름으로 뜬다.
- setCustomFactKinds(bootstrap.customFactKinds);if(refresh){lastPageKey='';lastDrawerKey='';}connectEvents();await render(true);}catch(e){main.innerHTML=errorCard(e)+`<p class="caption mt">${esc(t('shell.boot.serverHint'))}</p>`;main.querySelector('[data-action="refresh"]')?.addEventListener('click',()=>boot(true));}}
+ setCustomFactKinds(bootstrap.customFactKinds);
+ // 부트스트랩이 실어 온 해시가 곧 `/api/v2/fact-kinds`가 돌려줄 값이다. 여기서 기억해 두면
+ // 부팅 직후의 첫 SSE `change`가 아무것도 다시 그리지 않는다.
+ setCustomFactKindsHash(bootstrap.customFactKindsHash);
+ if(refresh){lastPageKey='';lastDrawerKey='';}connectEvents();await render(true);}catch(e){main.innerHTML=errorCard(e)+`<p class="caption mt">${esc(t('shell.boot.serverHint'))}</p>`;main.querySelector('[data-action="refresh"]')?.addEventListener('click',()=>boot(true));}}
 canonicalize();boot();
