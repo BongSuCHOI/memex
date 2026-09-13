@@ -415,6 +415,47 @@ test('오버레이 초기화 뒤 재조회하면 종류 칩과 배지 라벨이 
 });
 
 /**
+ * 0.7.6 후속 검토 P2 #4 — id 하나가 정의 하나가 아니다.
+ *
+ * 두 프로젝트가 `runbook`을 서로 다른 라벨·설명으로 정의할 수 있는데, 레지스트리가 id로만
+ * 합치면 오버레이 파일에서 먼저 나온 정의가 두 프로젝트의 기억에 모두 붙는다. 전체 보기에서는
+ * 두 프로젝트의 기억이 한 화면에 섞이므로 이 실패가 그대로 보인다.
+ */
+const KINDS_BY_PROJECT=[
+ {id:'runbook',global:false,projects:['/work/alpha'],label_en:'Alpha runbook',label_ko:'알파 운영 절차',description:'알파의 복구 절차입니다.'},
+ {id:'runbook',global:false,projects:['/work/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'베타의 복구 절차입니다.'}];
+
+test('전체 보기에서 같은 종류 id를 가진 기억은 각자 자기 프로젝트의 라벨로 표시된다',async()=>{
+ setCustomFactKinds(KINDS_BY_PROJECT);
+ try{
+  const {html}=await renderFacts('',{facts:factsPage([
+   row({id:'11111111-1111-4111-8111-11111111aaaa',category:'runbook',scope_project:'/work/alpha'}),
+   row({id:'11111111-1111-4111-8111-11111111bbbb',category:'runbook',scope_project:'/work/beta'})])});
+  assert(html.includes('<span class="tag outline" title="알파의 복구 절차입니다.">알파 운영 절차</span>'),'alpha 기억이 자기 프로젝트 라벨을 쓰지 않음');
+  assert(html.includes('<span class="tag outline" title="베타의 복구 절차입니다.">베타 운영 절차</span>'),'beta 기억이 alpha의 라벨로 표시됨');
+  // 칩은 저장된 값 하나당 하나다 — 같은 필터를 두 번 그리지 않는다.
+  assert.equal(html.split('data-param-value="runbook"').length-1,1,'같은 id로 칩을 두 개 그림');
+  // 파일 순서를 뒤집어도 각 기억의 의미는 그대로여야 한다.
+  setCustomFactKinds([KINDS_BY_PROJECT[1],KINDS_BY_PROJECT[0]]);
+  const flipped=await renderFacts('',{facts:factsPage([row({category:'runbook',scope_project:'/work/beta'})])});
+  assert(flipped.html.includes('>베타 운영 절차</span>'),'오버레이 키 순서가 저장된 값의 의미를 바꿨다');
+ }finally{setCustomFactKinds([]);}
+});
+
+test('프로젝트 정의가 없으면 전역 정의가 대체값이고, 그것도 없으면 코어 원문이다',()=>{
+ setCustomFactKinds([
+  {id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'공용 운영 절차입니다.'},
+  {id:'runbook',global:false,projects:['/work/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'베타의 복구 절차입니다.'}]);
+ try{
+  assert.equal(name('runbook','/work/beta'),'베타 운영 절차','프로젝트 정의가 이기지 않았다');
+  assert.equal(name('runbook','/work/gamma'),'운영 절차','override가 없는 프로젝트가 전역 정의로 떨어지지 않았다');
+  assert.equal(name('runbook',null),'운영 절차','글로벌 기억이 전역 정의를 쓰지 않았다');
+  setCustomFactKinds([KINDS_BY_PROJECT[0]]);
+  assert.equal(name('runbook','/work/gamma'),'runbook','대체할 전역 정의가 없는데 남의 라벨을 빌려 썼다');
+ }finally{setCustomFactKinds([]);}
+});
+
+/**
  * 0.7.6 후속 검토 P2 #3 — 늦게 도착한 재조회 응답이 삭제된 종류를 되살렸다.
  *
  * SSE `change`와 `invalidate()`가 겹치면 재조회가 동시에 두 개 뜨고, 응답 순서는 보장되지

@@ -152,7 +152,9 @@ export const helpFor=key=>BY_KEY.get(key)||null;
  */
 // #121 — 사전에 없으면 사용자 정의 fact 종류의 `description`을 쓴다. 사전이 언제나 먼저이고
 // (내장 배지 키가 이긴다) 그 외에는 여전히 null이다 — 없는 배지에 설명을 지어내지 않는다.
-export const badgeHelp=value=>{const key=`badge.${value}.help`;if(hasKey(key))return t(key);
- return customFactKind(value)?.description||null;};
+// `project`는 기억 행의 `scope_project`다 — 0.7.6 후속 검토 P2 #4에서 같은 id의 정의가
+// 프로젝트마다 다를 수 있음이 확인됐고, 설명도 라벨과 같은 정의에서 와야 한다.
+export const badgeHelp=(value,project)=>{const key=`badge.${value}.help`;if(hasKey(key))return t(key);
+ return customFactKind(value,project)?.description||null;};
 /** 모든 source 앵커. 테스트가 문서에 실제로 있는지 검사한다. */
 export const SOURCES=[...new Set([...ALL.map(([,v])=>v.source),...GLOSSARY.map(g=>g.source)])];

@@ -630,7 +630,11 @@ class Core {
         // 라벨이 붙는 대상은 저장된 `facts.category` 값이고 그 값은 범위가 없다 — 같은 행을
         // 전체 범위에서도 읽는다. 과하게 담으면 현재 범위에서 아무것도 안 잡히는 칩 하나가
         // 남고, 덜 담으면 화면에 id가 뜬다. 후자가 이 함수가 막으려는 실패다.
-        // (id가 겹치면 전역이 이긴다 — `resolveExtractionRules`와 같은 규칙.)
+        //
+        // 0.7.6 후속 검토 P2 #4 — 합집합의 키는 id가 아니라 **(프로젝트, 정의)**다. 두 프로젝트가
+        // 같은 id를 다르게 정의할 수 있고, id로 합치면 파일 순서가 이긴 라벨이 남의 기억에
+        // 붙는다. 항목은 `global`(전역 정의 = 대체값)과 `projects[]`를 함께 싣고, 화면은
+        // 기억의 `scope_project`로 정의를 고른다.
         if(typeof rules.customFactKindRegistry!=='function')
           return rules.resolveExtractionRules(null,loaded).customFactKinds.map(kind=>({...kind}));
         return rules.customFactKindRegistry(loaded).map(kind=>({...kind}));
