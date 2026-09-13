@@ -67,7 +67,9 @@ import {
   type ModelWorkContext,
 } from "./model-budget.js";
 import {
+  acceptedCustomFactKindIds,
   buildBlockSet,
+  CUSTOM_FACT_KIND_ID,
   composeEffectivePolicyVersion,
   composeExtractionSystemPrompt,
   extractionMatcherAvailable,
@@ -826,6 +828,8 @@ const FACT_CATEGORIES = new Set<FactCategory>([
   "knowledge",
   "constraint",
 ]);
+/** #121 — "no custom kinds", shared so the default parameter allocates nothing. */
+const EMPTY_FACT_KIND_SET: ReadonlySet<string> = new Set<string>();
 const FACT_SCOPES = new Set<FactScopeType>(["global", "project"]);
 const GROUNDING_TYPES = new Set<FactGroundingType>([
   "explicit",
@@ -1265,7 +1269,15 @@ export type FactExtractionCandidateRejectionReason =
   | "not_durable"
   | "grounding_rule"
   | "confidence"
-  | "semantic_verifier";
+  | "semantic_verifier"
+  /**
+   * #121 — the category is a well-formed kind id that the CURRENT rules do not
+   * define. Its own reason rather than `invalid_schema`, because it is not a
+   * malformed candidate: the operator deleted the kind, or never defined it.
+   * The candidate is dropped with an audit line and extraction continues —
+   * this is never a failure and never consumes an attempt.
+   */
+  | "unknown_fact_kind";
 
 /** Optional, in-memory extraction telemetry. Production callers do not pass
  * this object; the evaluation harness uses it without adding durable schema. */
@@ -1281,6 +1293,7 @@ export interface FactExtractionObservability {
   rejected_grounding_rule: number;
   rejected_confidence: number;
   rejected_semantic_verifier: number;
+  rejected_unknown_fact_kind: number;
   grounding_explicit: number;
   grounding_verified: number;
   grounding_inferred: number;
@@ -1300,6 +1313,7 @@ export function createFactExtractionObservability(): FactExtractionObservability
     rejected_grounding_rule: 0,
     rejected_confidence: 0,
     rejected_semantic_verifier: 0,
+    rejected_unknown_fact_kind: 0,
     grounding_explicit: 0,
     grounding_verified: 0,
     grounding_inferred: 0,
@@ -1436,6 +1450,12 @@ function validateExtractedFactCandidateDetailed(
   candidate: unknown,
   exchanges: ExtractionValidationExchange[],
   referentCandidates: LongRangeReferentCandidate[] = [],
+  /**
+   * #121 — the custom kind ids the current rules define (claim snapshot ∪ the
+   * latest valid file). Empty by default, so every caller that does not know
+   * about the overlay keeps exactly the five built-in categories.
+   */
+  customFactKinds: ReadonlySet<string> = EMPTY_FACT_KIND_SET,
 ): CandidateValidationResult {
   const reject = (
     reason: FactExtractionCandidateRejectionReason,
@@ -1456,11 +1476,15 @@ function validateExtractedFactCandidateDetailed(
   if (factKr !== undefined && typeof factKr !== "string") {
     return reject("invalid_schema");
   }
-  if (
-    typeof category !== "string" ||
-    !FACT_CATEGORIES.has(category as FactCategory)
-  ) {
-    return reject("invalid_schema");
+  if (typeof category !== "string") return reject("invalid_schema");
+  if (!FACT_CATEGORIES.has(category as FactCategory)) {
+    // #121 — a custom kind is accepted only while the rules still define it.
+    // A well-formed id the rules do NOT define is its own drop reason: the
+    // operator removed the kind (or the model invented one), and neither is a
+    // malformed candidate. Anything that is not even a valid id stays
+    // `invalid_schema`, which is what it has always been.
+    if (!CUSTOM_FACT_KIND_ID.test(category)) return reject("invalid_schema");
+    if (!customFactKinds.has(category)) return reject("unknown_fact_kind");
   }
   if (
     typeof scopeType !== "string" ||
@@ -1654,6 +1678,11 @@ function validateExtractedFactCandidateDetailed(
   }
 
   const classifierNotes: string[] = [];
+  // #121 — a custom kind has no Chronicle slot prefix, so `normalizeSubjectKey`
+  // returns null for it and the fact simply carries no `subject_key`. That is
+  // the intended outcome, not a gap: inventing a prefix would let two custom
+  // kinds collide in the slot space the built-in five already own. The prompt
+  // clause tells the model to omit it, and the note below records any proposal.
   const subjectKey = normalizeSubjectKey(candidate.subject_key, category as string);
   if (candidate.subject_key !== undefined && candidate.subject_key !== null && !subjectKey) {
     classifierNotes.push(`unresolved subject_key proposal: ${String(candidate.subject_key).slice(0, 80)}`);
@@ -2187,6 +2216,33 @@ function recordCandidateObservation(
   }
 }
 
+/**
+ * #121 — the `rules.kind-dropped` audit line.
+ *
+ * Awaited rather than floating for the same reason `rules.blocked` is: a
+ * one-shot extraction worker can exit before a detached promise resolves, and
+ * then the only record that a candidate was dropped would be missing exactly
+ * when someone asks why a memory did not appear. Best-effort — a log that cannot
+ * be written must never turn a completed extraction into a failure.
+ */
+async function auditDroppedFactKinds(
+  dropped: ReadonlyMap<string, number>,
+  rules: ResolvedExtractionRules | null,
+): Promise<void> {
+  if (dropped.size === 0) return;
+  try {
+    const { appendUiAuditLine } = await import("./ontology-admin.js");
+    appendUiAuditLine("rules.kind-dropped", {
+      to_hash: rules?.hash ?? null,
+      project: rules?.projectId ?? null,
+      kinds: [...dropped.keys()].sort().join(","),
+      dropped: [...dropped.values()].reduce((sum, count) => sum + count, 0),
+    });
+  } catch {
+    /* the audit line must never be able to fail an extraction that succeeded */
+  }
+}
+
 /** Extract facts, optionally renewing a claim and processing rows after a watermark. */
 export async function extractFactsFromExchanges(
   db: Database.Database,
@@ -2301,6 +2357,13 @@ export async function extractFactsFromExchanges(
     EXTRACTION_SYSTEM_PROMPT,
     options?.extractionRules,
   );
+  // Issue #121 — the custom fact kinds this run may accept, resolved ONCE from
+  // `claim snapshot ∪ latest valid rules` so that every window of one claim
+  // judges categories by the same list. A candidate carrying an id that is not
+  // in it is dropped and counted here; the audit line below is the only record,
+  // and it carries ids and counts, never candidate text.
+  const acceptedFactKinds = acceptedCustomFactKindIds(options?.extractionRules);
+  const droppedFactKinds = new Map<string, number>();
 
   const allFacts: ExtractedFact[] = [];
   const factIndexByKey = new Map<string, number>();
@@ -2357,8 +2420,13 @@ export async function extractFactsFromExchanges(
             candidate,
             window,
             referentCandidates,
+            acceptedFactKinds,
           );
           if (!validation.accepted) {
+            if (validation.reason === "unknown_fact_kind" && isRecord(candidate)) {
+              const kind = String(candidate.category ?? "");
+              droppedFactKinds.set(kind, (droppedFactKinds.get(kind) ?? 0) + 1);
+            }
             recordCandidateObservation(options?.observability, validation);
             continue;
           }
@@ -2495,6 +2563,12 @@ export async function extractFactsFromExchanges(
       }
     }
   }
+
+  // Issue #121 — one audit line per run for the candidates an undefined fact
+  // kind dropped. Written BEFORE the failure throws below, because a dropped
+  // candidate is a thing that happened whether or not the rest of the run
+  // survived, and ids/counts only: the dropped fact's text is never logged.
+  await auditDroppedFactKinds(droppedFactKinds, options?.extractionRules ?? null);
 
   // 공급자 장애가 하나라도 있었으면 이 세션을 완료로 기록하면 안 된다. 호출자
   // (extractAndSaveFacts)가 extraction_log 기록을 건너뛰도록 throw 로 표면화한다.
