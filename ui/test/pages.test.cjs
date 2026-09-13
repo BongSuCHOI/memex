@@ -612,6 +612,43 @@ test('디바운스된 재조회도 세대를 지킨다 — 먼저 시작해 늦�
  }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
 });
 
+/**
+ * 0.7.8 후속 검토 P2 #2 — 예약과 발화 사이의 250ms가 새는 창이었다.
+ *
+ * 세대를 타이머 **발화** 때 떼면 예약만 된 재조회는 이미 나간 조회의 적용 권한을 빼앗지 못한다.
+ * 그래서 초기화 알림이 예약돼 있는데도 그 전에 출발한 옛 목록이 도착해 칩과 서버 지문을 되살리고,
+ * 예약된 조회까지 실패하면 삭제된 종류가 최종 상태로 남았다. 여기서는 그 순서를 그대로 만든다.
+ */
+test('재조회 예약만으로도 이미 나간 옛 조회는 적용 권한을 잃는다',async()=>{
+ const RUNBOOK=[{id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}];
+ try{
+  // 초기화가 이미 적용된 상태: 목록은 비었고 서버 지문은 hB다.
+  setCustomFactKinds([]);setCustomFactKindsHash('hB');
+  let releaseOld;
+  const oldPayload=new Promise(resolve=>{releaseOld=()=>resolve({customFactKinds:RUNBOOK,hash:'hA'});});
+  // A: 타이머가 발화해 조회가 이미 나갔다. 응답은 아직 오지 않았다.
+  const older=scheduleCustomFactKindsSync(()=>oldPayload,1);
+  await new Promise(resolve=>setTimeout(resolve,10));
+  // B: 새 알림이 재조회를 **예약**한다. 아직 발화하지 않았다 — 그래도 A는 이 순간 적용 권한을
+  //    잃어야 한다. 조회가 실패할 수도 있으므로, B의 성공이 A를 덮어 준다는 보장은 없다.
+  const newer=scheduleCustomFactKindsSync(async()=>{throw new Error('서버 연결 실패');},60);
+  // A의 응답이 B의 대기 안에 도착한다.
+  releaseOld();
+  assert.equal(await older,false,'예약만 된 재조회가 낡은 응답을 막지 못했다');
+  assert.deepEqual(customFactKinds(),[],'대기 중 도착한 낡은 응답이 삭제된 종류를 되살렸다');
+  assert.equal(name('runbook'),'runbook','삭제된 종류의 라벨이 되살아났다');
+  // B는 발화해서 실패한다 — 그래도 레지스트리는 A 이전 그대로여야 한다.
+  assert.equal(await newer,false,'실패한 조회가 재렌더를 요구했다');
+  assert.deepEqual(customFactKinds(),[],'B가 실패하자 낡은 목록이 최종 상태로 남았다');
+  // 서버 지문도 낡은 응답이 덮지 않았다: hB가 그대로라 같은 지문의 다음 알림은 적용을 건너뛴다.
+  let applied=false;
+  assert.equal(await scheduleCustomFactKindsSync(async()=>{applied=true;return {customFactKinds:RUNBOOK,hash:'hB'};},1),false,
+   '낡은 응답이 서버 지문을 hA로 덮었다');
+  assert(applied,'로더는 불렸어야 한다');
+  assert.deepEqual(customFactKinds(),[],'지문이 같은데 목록을 갈아 끼웠다');
+ }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
+});
+
 test('종류 재조회 디바운스 기본값은 250ms다',()=>{
  assert.equal(FACT_KINDS_SYNC_DEBOUNCE_MS,250);
 });
