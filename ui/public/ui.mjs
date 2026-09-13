@@ -1,7 +1,7 @@
 import {badgeHelp,helpFor,docsNotice} from './help.mjs';
 import {customFactKindLabel,customFactKind} from './fact-kinds.mjs';
 import {t,tHtml,tn,intlTag,localeTag,hasKey} from './i18n/index.mjs';
-export {setCustomFactKinds,setCustomFactKindsHash,syncCustomFactKinds,scheduleCustomFactKindsSync,FACT_KINDS_SYNC_DEBOUNCE_MS,customFactKinds,customFactKind,customFactKindLabel} from './fact-kinds.mjs';
+export {setCustomFactKinds,setCustomFactKindsHash,syncCustomFactKinds,scheduleCustomFactKindsSync,FACT_KINDS_SYNC_DEBOUNCE_MS,customFactKinds,customFactKind,customFactKindLabel,customFactKindDefLabel} from './fact-kinds.mjs';
 export const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={
  grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',

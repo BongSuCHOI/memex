@@ -480,6 +480,33 @@ test('전역 정의가 있는 id는 프로젝트 override가 아니라 전역 �
  }finally{setCustomFactKinds([]);}
 });
 
+/**
+ * 0.7.7 후속 검토 P2 #3 — 칩은 정의를 이미 들고 있는데 id로 다시 조회했다.
+ *
+ * 조회 키는 `(project, id)`이고 칩에는 프로젝트가 없다. 그래서 프로젝트 override에만 있는 종류는
+ * 라벨이 있는데도 전역 정의 없음으로 떨어져 원시 id로 떴다. 칩은 범위와 무관하게 id마다 하나이므로
+ * 프로젝트 범위와 전체 보기 둘 다에서 같은 실패였다.
+ */
+test('프로젝트 override에만 있는 종류도 칩에 그 정의의 라벨로 뜬다',async()=>{
+ setCustomFactKinds([{id:'runbook',global:false,projects:['/work/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'베타의 복구 절차입니다.'}]);
+ try{
+  for(const scope of [{scope:'all'},{scope:'project',project:'/work/beta'}]){
+   const {html}=await facts.render(ctx('',{taxonomy:TAXONOMY,facts:factsPage([row({category:'runbook',scope_project:'/work/beta'})])},{scope}));
+   assert(html.includes('data-param-value="runbook">베타 운영 절차</button>'),
+    scope.scope+' 범위: 칩 라벨이 오버레이 라벨이 아님');
+   assert(!/data-param-value="runbook">runbook</.test(html),scope.scope+' 범위: 칩이 원시 id로 떴다');
+  }
+ }finally{setCustomFactKinds([]);}
+});
+
+/**
+ * 0.7.6 후속 검토 P2 #3 — 늦게 도착한 재조회 응답이 삭제된 종류를 되살렸다.
+ *
+ * SSE `change`와 `invalidate()`가 겹치면 재조회가 동시에 두 개 뜨고, 응답 순서는 보장되지
+ * 않는다. 세대를 검사하지 않으면 "초기화 뒤의 빈 목록"이 먼저 도착해 칩을 지운 다음 그 전에
+ * 시작한 옛 목록이 나중에 도착해 지운 칩을 되돌린다. 여기서는 Promise 완료 순서를 직접
+ * 제어해 그 순서를 재현한다.
+ */
 test('나중에 시작한 재조회가 이긴다 — 늦게 도착한 옛 응답은 레지스트리를 되살리지 않는다',async()=>{
  const RUNBOOK=[{id:'runbook',label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}];
  try{
