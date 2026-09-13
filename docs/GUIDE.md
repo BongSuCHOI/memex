@@ -1356,6 +1356,9 @@ memex gate patterns disable <id|regex>        # 'patterns remove'는 같은 뜻�
 memex gate patterns enable <id>
 memex gate words list
 memex gate words add|remove <ack|continue|filler> <word>
+memex gate config show
+memex gate config set <key> <value>
+memex gate config reset [<key>]                # 키를 생략하면 덮어쓴 임계값 전부
 memex gate test "<prompt>" [--session <id>] [--compare-builtin]
 memex gate replay [--limit <n>] [--project <path>]
 memex gate validate [--file <path>]
@@ -1370,15 +1373,51 @@ memex gate rollback --to <revision>
 단어 사전은 `ack`·`continue`·`filler` 3개입니다. 모든 서브커맨드가 `--json`을 받고,
 `--limit`의 기본값은 `20`, `--flags`의 기본값은 `i`입니다.
 
-오버레이가 할 수 있는 일은 **어떤 intent가 발동하는가**를 바꾸는 것뿐입니다. 패턴에 우선순위가
-없고 allow/deny도 없으며, 게이트 **임계값**이나 embedding·bundle 경로에는 손댈 수 없습니다
-(임계값 조정은 0.7.1입니다). 한 intent의 모든 분기를 끄면 그 intent는 발동하지 않습니다.
+오버레이가 할 수 있는 일은 **어떤 intent가 발동하는가**와 **게이트 임계값 8개**를 바꾸는 것입니다.
+패턴에 우선순위가 없고 allow/deny도 없으며, embedding·bundle 경로에는 손댈 수 없습니다.
+한 intent의 모든 분기를 끄면 그 intent는 발동하지 않습니다.
 
-**읽기 전용 동사**: `show`, `patterns list`, `words list`, `test`, `replay`, `validate`, `history`,
-`quarantine list`. `test`와 `replay`는 **모델도 embedding도 호출하지 않고** inject 로그·recall
+#### 게이트 임계값 (`memex gate config`, #120)
+
+내장 게이트가 프롬프트를 판정할 때 쓰는 숫자 8개입니다. **전부 선택 사항**이라 덮어쓰지 않은
+임계값은 내장값 그대로이고, `recall-gate.json`의 `config` 블록이 없으면 0.7.0과 바이트 단위로
+같은 문서입니다.
+
+| 키 | 종류 | 범위 | 내장값 | 뜻 |
+| --- | --- | --- | --- | --- |
+| `ackMaxTokens` | 정수 | 0–32 | `4` | 이 길이 이하면 응답·이어가기로 보고 회수를 건너뜁니다 |
+| `safetyRefreshInterval` | 정수 | 1–100 | `6` | 회수 없이 이만큼 실질 프롬프트가 지나면 안전 갱신을 강제합니다 |
+| `driftJaccard` | 실수 | 0–1 | `0.12` | 주제 지문과의 Jaccard가 이 값 미만이면 주제 이탈입니다 |
+| `driftMinTokens` | 정수 | 1–100 | `5` | 이탈 판정에 필요한 최소 프롬프트 길이입니다 |
+| `coverageMinTokens` | 정수 | 1–100 | `8` | 이 길이부터 "상주 커버리지 없음"을 검사합니다 |
+| `coherentMargin` | 실수 | 0–1 | `0.08` | ambiguous 경로에서 `cos − baseline`이 이 마진을 넘으면 같은 주제입니다 |
+| `substantiveMinTokens` | 정수 | 1–100 | `5` | 다른 신호가 없어도 이 길이부터 실질 프롬프트입니다 |
+| `lexicalCoherentJaccard` | 실수 | 0–1 | `0.35` | 지문과 이만큼 겹치면 embedding 없이 어휘 연속으로 봅니다 |
+
+```bash
+memex gate config show                              # 8개를 내장값·덮어쓴 값·범위와 함께
+memex gate config set safetyRefreshInterval 10      # 회수 간격을 넓힌다
+memex gate config set coherentMargin 0.05 --dry-run # 검증만, 아무것도 쓰지 않는다
+memex gate config reset coherentMargin              # 이 하나만 내장값으로
+memex gate config reset                             # 덮어쓴 임계값 전부 내장값으로
+```
+
+범위를 벗어나거나 이름이 틀린 값은 `config.<key>` path를 단 오류로 거절되고 파일은 그대로입니다.
+정수 자리에 소수를 넣는 것도 오류입니다. **알 수 없는 임계값 이름은 경고가 아니라 오류**입니다 —
+최상위 필드와 반대인데, 임계값은 되돌아갈 구조가 없는 맨 숫자라 "모르면 무시"가 사용자가 적지
+않은 게이트를 적용해 버리기 때문입니다. 오버레이가 아예 읽히지 않으면 임계값도 전부 내장값으로
+돌아갑니다(패턴과 같은 fail-safe 방향).
+
+임계값은 숫자라 worker에서 돌지 않고 격리되지도 않습니다. 다만 **무엇을 회수하는지를 바꾸므로**
+오버레이 해시에 들어가고, `gate config set|reset` 하나하나가 자기 revision과 rollback 스냅숏을
+남깁니다. `memex gate test`는 판정에 쓴 임계값 8개를 전부 출력하고 덮어쓴 것을 표시합니다.
+
+**읽기 전용 동사**: `show`, `patterns list`, `words list`, `config show`, `test`, `replay`,
+`validate`, `history`, `quarantine list`. `test`와 `replay`는 **모델도 embedding도 호출하지 않고** inject 로그·recall
 영수증·세션 상태를 **쓰지 않습니다**.
 
-**쓰기 동사**(`patterns add|disable|enable`, `words add|remove`, `reset`, `rollback`)는 오버레이
+**쓰기 동사**(`patterns add|disable|enable`, `words add|remove`, `config set|reset`, `reset`,
+`rollback`)는 오버레이
 쓰기 lock을 잡고 `revision`을 올리며 rollback 스냅숏을 남기고 `logs/ui-audit.jsonl`과
 `overlays/history.jsonl`에 메타데이터 1줄을 적습니다(규칙 본문은 남기지 않습니다). `--dry-run`은
 검증만 하고 **아무것도 쓰지 않으며** 현재 revision을 박은 재실행 명령을 출력합니다.
@@ -1539,3 +1578,7 @@ id·개수·해시만 남깁니다 — 저장을 거부한 코드가 그 본문�
 작업은 그냥 `pending`으로 보입니다(무해). 컬럼 3개(`memory_jobs.hold_reason`,
 `extraction_targets.rules_hash`, `recall_events.gate_overlay_hash`)는 nullable 추가이므로 기존 행은
 `NULL`입니다.
+
+**0.7.0 코어로 내려가면** `config` 블록만 조용히 무시됩니다(알 수 없는 최상위 필드는 경고 1줄이고
+나머지 규칙은 그대로 적용됩니다). 임계값은 내장값으로 돌아가지만 **패턴과 어휘는 계속 적용되므로**
+`memex gate show`의 해시가 0.7.x에서 본 값과 달라집니다 — 임계값이 해시에 들어가기 때문입니다.

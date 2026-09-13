@@ -322,13 +322,14 @@ describe("an applied overlay", () => {
   });
 });
 
-describe("gate thresholds are untouched (0.7.1)", () => {
-  it("an overlay `config` block is ignored, with a warning, and changes no verdict", async () => {
-    // Thresholds are explicitly OUT of scope for 0.7.0 — the forward-compatibility
-    // rule is that 0.7.0 must ignore a `config` block a 0.7.1 install wrote rather
-    // than apply half of it. This is the boundary test for that.
+describe("gate thresholds travel with the overlay (#120)", () => {
+  it("an overlay `config` block reaches the gate and moves the overlay hash", async () => {
+    // #120 reversed the 0.7.0 boundary: a `config` block is APPLIED, not ignored.
+    // What stays true is the fail-safe direction — an overlay with no `config` is
+    // byte-identical to 0.7.0, thresholds included.
     await warm();
-    writeOverlay({ patterns: { add: [{ id: "user.x", intent: "memory", source: "배포", flags: "i" }] } });
+    const patterns = { add: [{ id: "user.x", intent: "memory", source: "배포", flags: "i" }] };
+    writeOverlay({ patterns });
     const withoutConfig = await computeInjectContext(
       "configure the release log rotation archive",
       cwd,
@@ -337,13 +338,16 @@ describe("gate thresholds are untouched (0.7.1)", () => {
       { matcher: fakeMatcher({}) },
     );
     const baselineLabel = lastLine().gate;
+    const gate = await import("../src/recall-gate-overlay.js");
+    const baselineHash = gate.loadRecallGateOverlay().hash;
+    expect(gate.loadRecallGateOverlay().config).toEqual({});
 
-    writeOverlay({
-      patterns: { add: [{ id: "user.x", intent: "memory", source: "배포", flags: "i" }] },
-      config: { substantiveMinTokens: 99, driftJaccard: 0.99 },
-    });
-    const { loadRecallGateOverlay } = await import("../src/recall-gate-overlay.js");
-    expect(loadRecallGateOverlay().issues.map((issue) => issue.code)).toContain("OVERLAY_UNKNOWN_FIELD");
+    writeOverlay({ patterns, config: { substantiveMinTokens: 99, driftJaccard: 0.99 } });
+    // No warning any more: `config` is a known field, and its values are applied.
+    expect(gate.loadRecallGateOverlay().issues.map((issue) => issue.code)).not.toContain("OVERLAY_UNKNOWN_FIELD");
+    expect(gate.loadRecallGateOverlay().config).toEqual({ substantiveMinTokens: 99, driftJaccard: 0.99 });
+    // Thresholds ARE rules, so the fingerprint the receipt carries moves with them.
+    expect(gate.loadRecallGateOverlay().hash).not.toBe(baselineHash);
     const withConfig = await computeInjectContext(
       "configure the release log rotation archive",
       cwd,
@@ -351,11 +355,24 @@ describe("gate thresholds are untouched (0.7.1)", () => {
       SESSION,
       { matcher: fakeMatcher({}) },
     );
-    // Same rules plus an ignored block: same verdict, same label shape, and the
-    // hash is unchanged because `config` is not part of the rule set.
-    expect(lastLine().gate).toBe(baselineLabel);
+    // The label still names a gate verdict and carries the (new) overlay hash.
+    expect(lastLine().gate).toMatch(/@gate:[0-9a-f]{8}/);
+    expect(baselineLabel).toMatch(/@gate:[0-9a-f]{8}/);
     expect(typeof withoutConfig).toBe("string");
     expect(typeof withConfig).toBe("string");
+  });
+
+  it("an out-of-range threshold falls back to the BUILT-IN numbers, not half of them", async () => {
+    await warm();
+    writeOverlay({
+      patterns: { add: [{ id: "user.x", intent: "memory", source: "배포", flags: "i" }] },
+      config: { substantiveMinTokens: 5, driftJaccard: 9 },
+    });
+    const gate = await import("../src/recall-gate-overlay.js");
+    const loaded = gate.loadRecallGateOverlay();
+    expect(loaded.issues.some((issue) => issue.code === "CONFIG_VALUE_INVALID")).toBe(true);
+    expect(loaded.config).toEqual({});
+    expect(loaded.patterns).toHaveLength(0);
   });
 
   it("options.gateConfig reaches the gate unchanged alongside the overlay's hits", async () => {

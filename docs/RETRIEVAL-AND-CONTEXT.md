@@ -435,8 +435,12 @@ production model(multilingual-e5-small) spot check는 `rfc-deviations.md` D-027�
 `memex doctor`의 `injection-yield`는 최근 로그에서 fact 0개 주입이 연속되면 `warn`으로 보고합니다.
 
 0.7.0부터 회수 게이트 위에 **사용자 오버레이**를 얹을 수 있습니다(#29). 자기 정규식과 단어를
-내장 규칙에 더하거나 내장 규칙을 id로 끄는 것까지이고, 게이트 **임계값**은 여전히 위의 환경 변수만
-정합니다(임계값 오버레이는 0.7.1). 사용자 패턴은 별도 worker thread에서 프롬프트당 50 ms 예산으로
+내장 규칙에 더하거나 내장 규칙을 id로 끕니다. 0.7.x부터는 `recall-gate.json`의 `config` 블록이
+`RecallGateConfig`의 **임계값 8개**도 덮어씁니다(#120) — 덮어쓰지 않은 임계값은
+`DEFAULT_RECALL_GATE_CONFIG` 그대로이고, 오버레이가 읽히지 않으면 전부 내장값으로 돌아갑니다.
+임계값은 오버레이 해시에 들어가므로 영수증이 "어떤 숫자로 판정했는가"를 구분합니다. 위의
+`MEMEX_INJECT_BASELINE_MARGIN`은 **주입 관련성 게이트**의 마진이라 이 8개와 다른 값입니다.
+사용자 패턴은 별도 worker thread에서 프롬프트당 50 ms 예산으로
 실행되고 초과하면 격리되어 적용이 멈추며, 판정 라벨에 `@gate:<sha8>`·`+overlay_timeout`·
 `+overlay_unavailable`이, 영수증에는 `recall_events.gate_overlay_hash`가 남습니다. 파일이 없으면
 라벨까지 0.6.9와 동일합니다. 운영은 [운영 가이드
