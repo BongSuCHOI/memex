@@ -1922,11 +1922,14 @@ export function validateExtractedFactCandidate(
   candidate: unknown,
   exchanges: ExtractionValidationExchange[],
   referentCandidates: LongRangeReferentCandidate[] = [],
+  /** #121 — see `validateExtractedFactCandidateDetailed`. Empty = built-ins only. */
+  customFactKinds?: ReadonlySet<string>,
 ): ExtractedFact | null {
   const result = validateExtractedFactCandidateDetailed(
     candidate,
     exchanges,
     referentCandidates,
+    customFactKinds,
   );
   return result.accepted ? result.fact : null;
 }

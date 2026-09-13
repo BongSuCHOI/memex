@@ -1,0 +1,302 @@
+/**
+ * `custom_fact_kinds` — the operator's own fact categories (#121).
+ *
+ * The feature is small; what makes it dangerous is that the id is not a display
+ * string. It is written into `facts.category`, so it outlives the overlay entry
+ * that defined it, travels through search filters and exports, and is read back
+ * by screens that have no idea a rules file exists. Three properties follow, and
+ * they are what this file pins:
+ *
+ *  1. **Ids can never collide with the built-in five.** A kind called `decision`
+ *     would retroactively change the meaning of every fact already stored under
+ *     that value, and nothing in the system could tell the two apart afterwards.
+ *  2. **A bad kind list fails the whole overlay, never a row.** Dropping one
+ *     malformed entry would apply a NARROWER kind list than the operator wrote,
+ *     and candidates carrying the missing id would then be dropped silently.
+ *  3. **Acceptance is `claim snapshot ∪ latest`, like `never_extract` (G2).**
+ *     Deleting a kind while a claim is in flight must not start dropping that
+ *     claim's candidates — the model call is already spent, and the drop would
+ *     lose the fact rather than relabel it. Removal lands on the NEXT claim.
+ *
+ * The prompt assertions matter for a different reason: a kind is the one rule
+ * item that ADDS a value rather than removing one, so the clause has to keep
+ * saying that it cannot widen eligibility.
+ */
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import {
+  BUILTIN_FACT_KINDS,
+  CUSTOM_FACT_KIND_ID,
+  EXTRACTION_RULES_LIMITS,
+  acceptedCustomFactKindIds,
+  composeExtractionSystemPrompt,
+  emptyExtractionRulesDoc,
+  extractionRulesChecks,
+  extractionRulesDocHash,
+  isEmptyExtractionRules,
+  loadExtractionRules,
+  renderCustomFactKindLines,
+  renderExtractionConstraintClause,
+  resetExtractionRulesCache,
+  resolveExtractionRules,
+  unionCustomFactKinds,
+  validateExtractionRulesDoc,
+  type CustomFactKind,
+  type ExtractionRulesDoc,
+} from "../src/extraction-rules.js";
+import { pinOverlayEnv, restoreOverlayEnv, writeRules } from "./extraction-rules-fixture.js";
+
+let root: string;
+
+const RUNBOOK: CustomFactKind = {
+  id: "runbook",
+  label_en: "Runbook step",
+  label_ko: "운영 절차",
+  description: "A step an operator must follow when this system misbehaves.",
+  extraction_hint: "the human describes a repeatable recovery action",
+};
+const POSTMORTEM: CustomFactKind = {
+  id: "postmortem",
+  label_en: "Postmortem finding",
+  label_ko: "사후 분석 결과",
+  description: "A conclusion drawn after an incident was resolved.",
+};
+
+function doc(kinds: unknown, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schema: "memex.extraction-rules-overlay",
+    version: 1,
+    revision: 1,
+    custom_fact_kinds: kinds,
+    ...extra,
+  };
+}
+
+/** The codes of every error-severity issue, so assertions read as intent. */
+function errorCodes(issues: Array<{ severity?: string; code: string }>): string[] {
+  return issues.filter((issue) => issue.severity === "error").map((issue) => issue.code);
+}
+
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-custom-kinds-"));
+  pinOverlayEnv(root);
+  resetExtractionRulesCache();
+});
+
+afterEach(() => {
+  resetExtractionRulesCache();
+  restoreOverlayEnv();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe("custom_fact_kinds — schema", () => {
+  it("accepts a well-formed list and fills the applied document", () => {
+    const result = validateExtractionRulesDoc(doc([RUNBOOK, POSTMORTEM]));
+    expect(result.ok).toBe(true);
+    expect(result.doc?.custom_fact_kinds).toEqual([RUNBOOK, POSTMORTEM]);
+    // `emptyExtractionRulesDoc` has to carry the key, or a reset would leave the
+    // field absent and the next merge would think the operator never set it.
+    expect(emptyExtractionRulesDoc().custom_fact_kinds).toEqual([]);
+  });
+
+  it("refuses an id that collides with a built-in category", () => {
+    for (const builtin of BUILTIN_FACT_KINDS) {
+      const result = validateExtractionRulesDoc(doc([{ ...RUNBOOK, id: builtin }]));
+      expect(result.ok).toBe(false);
+      expect(errorCodes(result.issues)).toContain("KIND_ID_RESERVED");
+      expect(result.doc).toBeNull();
+    }
+  });
+
+  it("refuses an id that is not lowercase snake_case of 2-24 characters", () => {
+    for (const id of ["R", "Runbook", "run-book", "run book", "1runbook", "a".repeat(25), ""]) {
+      expect(CUSTOM_FACT_KIND_ID.test(id)).toBe(false);
+      const result = validateExtractionRulesDoc(doc([{ ...RUNBOOK, id }]));
+      expect(errorCodes(result.issues)).toContain("KIND_ID_INVALID");
+    }
+    for (const id of ["ab", "run_book", "r2d2", "a".repeat(24)]) {
+      expect(CUSTOM_FACT_KIND_ID.test(id)).toBe(true);
+      expect(validateExtractionRulesDoc(doc([{ ...RUNBOOK, id }])).ok).toBe(true);
+    }
+  });
+
+  it("caps the list at 8 and reports the count", () => {
+    const limit = EXTRACTION_RULES_LIMITS.counts.customFactKinds;
+    expect(limit).toBe(8);
+    const many = Array.from({ length: limit + 1 }, (_unused, index) => ({
+      ...RUNBOOK,
+      id: `kind_${index}`,
+    }));
+    const result = validateExtractionRulesDoc(doc(many));
+    expect(result.ok).toBe(false);
+    const issue = result.issues.find((entry) => entry.code === "KIND_COUNT_EXCEEDED");
+    expect(issue?.params).toMatchObject({ count: limit + 1, limit });
+  });
+
+  it("requires both labels and a description, and refuses a duplicate id", () => {
+    const cases: Array<[unknown, string]> = [
+      [{ ...RUNBOOK, label_ko: "" }, "KIND_LABEL_INVALID"],
+      [{ ...RUNBOOK, label_en: undefined }, "KIND_LABEL_INVALID"],
+      [{ ...RUNBOOK, label_en: "a".repeat(41) }, "KIND_LABEL_INVALID"],
+      [{ ...RUNBOOK, description: undefined }, "KIND_DESCRIPTION_INVALID"],
+      [{ ...RUNBOOK, description: "line\nbreak" }, "KIND_DESCRIPTION_INVALID"],
+      [{ ...RUNBOOK, extraction_hint: "a".repeat(201) }, "KIND_HINT_INVALID"],
+      ["not an object", "OVERLAY_NOT_OBJECT"],
+    ];
+    for (const [entry, code] of cases) {
+      expect(errorCodes(validateExtractionRulesDoc(doc([entry])).issues)).toContain(code);
+    }
+    expect(errorCodes(validateExtractionRulesDoc(doc([RUNBOOK, RUNBOOK])).issues)).toContain(
+      "KIND_DUPLICATE_ID",
+    );
+    expect(errorCodes(validateExtractionRulesDoc(doc({ id: "runbook" })).issues)).toContain(
+      "OVERLAY_NOT_OBJECT",
+    );
+  });
+
+  it("points at the offending row with an Issue path the Web UI can render", () => {
+    const result = validateExtractionRulesDoc(doc([RUNBOOK, { ...POSTMORTEM, id: "decision" }]));
+    const issue = result.issues.find((entry) => entry.code === "KIND_ID_RESERVED");
+    expect(issue?.path).toBe("custom_fact_kinds[1].id");
+    expect(issue?.row).toBe(1);
+    expect(issue?.field).toBe("id");
+  });
+
+  it("moves the rules hash when a label or hint changes", () => {
+    const base = validateExtractionRulesDoc(doc([RUNBOOK])).doc as ExtractionRulesDoc;
+    const relabelled = validateExtractionRulesDoc(
+      doc([{ ...RUNBOOK, label_ko: "운영 런북" }]),
+    ).doc as ExtractionRulesDoc;
+    const rehinted = validateExtractionRulesDoc(
+      doc([{ ...RUNBOOK, extraction_hint: "something else entirely" }]),
+    ).doc as ExtractionRulesDoc;
+    expect(extractionRulesDocHash(base)).not.toBe(extractionRulesDocHash(relabelled));
+    expect(extractionRulesDocHash(base)).not.toBe(extractionRulesDocHash(rehinted));
+    // Re-saving the same rules must NOT move it, or the drift report cries wolf.
+    expect(extractionRulesDocHash(base)).toBe(
+      extractionRulesDocHash(validateExtractionRulesDoc(doc([RUNBOOK], { revision: 9 })).doc!),
+    );
+  });
+
+  it("is no longer an unknown field, and genuinely unknown fields still warn", () => {
+    const result = validateExtractionRulesDoc(doc([RUNBOOK], { invented_field: 1 }));
+    expect(result.ok).toBe(true);
+    const unknown = result.issues.filter((issue) => issue.code === "OVERLAY_UNKNOWN_FIELD");
+    expect(unknown.map((issue) => issue.path)).toEqual(["invented_field"]);
+  });
+});
+
+describe("custom_fact_kinds — resolution", () => {
+  it("unions a project override onto the global list, global winning a collision", () => {
+    writeRules(
+      root,
+      doc([RUNBOOK], {
+        project_overrides: {
+          "/p": {
+            custom_fact_kinds: [{ ...RUNBOOK, label_en: "Override wins?" }, POSTMORTEM],
+          },
+        },
+      }),
+    );
+    const loaded = loadExtractionRules();
+    expect(loaded.issues.filter((issue) => issue.severity === "error")).toEqual([]);
+    const resolved = resolveExtractionRules("/p", loaded);
+    expect(resolved.customFactKinds.map((kind) => kind.id)).toEqual(["runbook", "postmortem"]);
+    // A project may ADD a kind; it may not relabel a global one, or the same
+    // stored `facts.category` value would carry two different badge texts.
+    expect(resolved.customFactKinds[0].label_en).toBe(RUNBOOK.label_en);
+    expect(resolveExtractionRules(null, loaded).customFactKinds.map((k) => k.id)).toEqual(["runbook"]);
+  });
+
+  it("counts as a non-empty rule set on its own", () => {
+    writeRules(root, doc([RUNBOOK]));
+    const rules = resolveExtractionRules(null, loadExtractionRules());
+    expect(isEmptyExtractionRules(rules)).toBe(false);
+    // …and doctor counts it, so `applied: … N rule(s)` is not silently short.
+    const check = extractionRulesChecks().find((entry) => entry.name === "extraction-rules-overlay");
+    expect(check?.status).toBe("ok");
+    expect(check?.detail).toContain("1 rule(s)");
+  });
+
+  it("unionCustomFactKinds keeps the first definition of an id", () => {
+    const merged = unionCustomFactKinds([RUNBOOK], [{ ...RUNBOOK, label_en: "later" }, POSTMORTEM]);
+    expect(merged.map((kind) => kind.id)).toEqual(["runbook", "postmortem"]);
+    expect(merged[0].label_en).toBe(RUNBOOK.label_en);
+  });
+});
+
+describe("custom_fact_kinds — prompt clause", () => {
+  it("lists the kinds after the built-ins, with their hints, and never widens eligibility", () => {
+    writeRules(root, doc([RUNBOOK, POSTMORTEM]));
+    const rules = resolveExtractionRules(null, loadExtractionRules());
+    const clause = renderExtractionConstraintClause(rules);
+
+    expect(clause).toContain("decision, preference, pattern, knowledge, constraint");
+    expect(clause).toContain('category="runbook" (Runbook step)');
+    expect(clause).toContain(RUNBOOK.description);
+    expect(clause).toContain(`Use when: ${RUNBOOK.extraction_hint}`);
+    // A kind with no hint renders without a dangling "Use when:".
+    expect(clause).toContain('category="postmortem" (Postmortem finding)');
+    expect(clause).not.toContain("Use when: undefined");
+    // The built-in list comes first in the rendered block, and the promise that
+    // the clause can only suppress survives the one item that adds a value.
+    expect(clause.indexOf("built-in")).toBeLessThan(clause.indexOf('category="runbook"'));
+    expect(clause).toContain("never make a candidate eligible that the gates above reject");
+    // The five built-ins stay in the base prompt; this block never repeats them
+    // as a replacement list.
+    expect(clause).toContain("they do not replace");
+  });
+
+  it("renders nothing when no kind is defined, and composes onto the base prompt", () => {
+    writeRules(root, doc([]));
+    const empty = resolveExtractionRules(null, loadExtractionRules());
+    expect(renderCustomFactKindLines(empty)).toEqual([]);
+    expect(composeExtractionSystemPrompt("BASE", empty)).toBe("BASE");
+
+    resetExtractionRulesCache();
+    writeRules(root, doc([RUNBOOK]));
+    const rules = resolveExtractionRules(null, loadExtractionRules());
+    const composed = composeExtractionSystemPrompt("BASE", rules);
+    expect(composed.startsWith("BASE\n\n")).toBe(true);
+    expect(composed).toContain('category="runbook"');
+    // Deterministic: the same rules must produce a byte-identical prompt, or a
+    // no-op re-save changes what every window was asked.
+    expect(composeExtractionSystemPrompt("BASE", rules)).toBe(composed);
+  });
+});
+
+describe("custom_fact_kinds — accepted set is claim snapshot ∪ latest (G2)", () => {
+  it("keeps a kind deleted mid-run, and picks up one added mid-run", () => {
+    writeRules(root, doc([RUNBOOK]));
+    const snapshot = resolveExtractionRules(null, loadExtractionRules());
+    expect([...acceptedCustomFactKindIds(snapshot)]).toEqual(["runbook"]);
+
+    // The operator deletes `runbook` and adds `postmortem` while the claim runs.
+    resetExtractionRulesCache();
+    writeRules(root, doc([POSTMORTEM], { revision: 2 }));
+    const accepted = acceptedCustomFactKindIds(snapshot);
+    // Deletion applies from the NEXT claim: this run's candidates are not dropped.
+    expect(accepted.has("runbook")).toBe(true);
+    // Addition is safe immediately — it can only relabel, never admit.
+    expect(accepted.has("postmortem")).toBe(true);
+
+    // A new claim reads the file fresh and the deleted kind is gone.
+    resetExtractionRulesCache();
+    const next = resolveExtractionRules(null, loadExtractionRules());
+    expect([...acceptedCustomFactKindIds(next)]).toEqual(["postmortem"]);
+  });
+
+  it("falls back to the snapshot alone when the file cannot be read", () => {
+    writeRules(root, doc([RUNBOOK]));
+    const snapshot = resolveExtractionRules(null, loadExtractionRules());
+    resetExtractionRulesCache();
+    fs.writeFileSync(path.join(root, "overlays", "extraction-rules.json"), "{ broken");
+    // A broken file holds extraction anyway (pre-claim gate); it must not also
+    // make an in-flight claim start dropping candidates it was told to keep.
+    expect([...acceptedCustomFactKindIds(snapshot)]).toEqual(["runbook"]);
+    expect([...acceptedCustomFactKindIds(null)]).toEqual([]);
+  });
+});

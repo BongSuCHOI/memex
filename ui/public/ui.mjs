@@ -1,6 +1,6 @@
 import {badgeHelp,helpFor,docsNotice} from './help.mjs';
 import {customFactKindLabel,customFactKind} from './fact-kinds.mjs';
-import {t,tHtml,tn,intlTag,localeTag} from './i18n/index.mjs';
+import {t,tHtml,tn,intlTag,localeTag,hasKey} from './i18n/index.mjs';
 export {setCustomFactKinds,customFactKinds,customFactKind,customFactKindLabel} from './fact-kinds.mjs';
 export const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={
@@ -41,12 +41,14 @@ export const icon=(name,cls='')=>`<svg class="icon ${esc(cls)}" viewBox="0 0 24 
  */
 export const name=v=>{
  if(v===null||v===undefined||v==='')return t('common.unknown');
- const key=`badge.${v}.label`;const out=t(key);
- if(out!==key)return out;
- // #121 — 사용자 정의 fact 종류는 사전이 아니라 오버레이가 라벨을 갖는다. **사전 조회 뒤에**
- // 본다: 내장 배지 키가 항상 이기므로 사전 1:1 계약(ui/test/help.test.cjs)이 런타임 종류
- // 때문에 흔들리지 않는다.
- return customFactKindLabel(v,localeTag())??String(v);
+ const key=`badge.${v}.label`;
+ // #121 — 사용자 정의 fact 종류는 사전이 아니라 오버레이가 라벨을 갖는다. **사전이 먼저다**:
+ // 내장 배지 키가 항상 이기므로 사전 1:1 계약(ui/test/help.test.cjs)이 런타임 종류 때문에
+ // 흔들리지 않는다. `hasKey`로 먼저 거르는 이유는 "없는 키" 경고 때문이다 — 운영자가 정의한
+ // 종류는 애초에 사전에 있을 수 없으므로, 그 경고를 남기면 진짜로 빠진 코어 enum 키가 묻힌다.
+ if(!hasKey(key)){const custom=customFactKindLabel(v,localeTag());if(custom)return custom;}
+ const out=t(key);
+ return out===key?String(v):out;
 };
 // 계층은 src/fact-management.ts factTierOf()와 같은 순서로 읽는다: scope_type이 먼저, 그다음 promotion_state.
 export function tierOf(f){if(!f)return null;if(f.scope_type==='global')return 'global';const state=f.promotion_state||'legacy-project';return state==='workstream'||state==='workspace'?state:'project';}

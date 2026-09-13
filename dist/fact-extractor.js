@@ -1507,8 +1507,10 @@ export function validateExtractedObservationCandidate(candidate, exchanges) {
         source_evidence_ids: [...sourceEvidenceIds],
     };
 }
-export function validateExtractedFactCandidate(candidate, exchanges, referentCandidates = []) {
-    const result = validateExtractedFactCandidateDetailed(candidate, exchanges, referentCandidates);
+export function validateExtractedFactCandidate(candidate, exchanges, referentCandidates = [], 
+/** #121 — see `validateExtractedFactCandidateDetailed`. Empty = built-ins only. */
+customFactKinds) {
+    const result = validateExtractedFactCandidateDetailed(candidate, exchanges, referentCandidates, customFactKinds);
     return result.accepted ? result.fact : null;
 }
 function authoritativeEvidenceText(evidence, exchanges) {

@@ -192,7 +192,9 @@ export interface ExtractFactsOptions {
  * never qualifies. Any invalid declaration rejects the whole candidate.
  */
 export declare function validateExtractedObservationCandidate(candidate: unknown, exchanges: ExtractionValidationExchange[]): ExtractedObservation | null;
-export declare function validateExtractedFactCandidate(candidate: unknown, exchanges: ExtractionValidationExchange[], referentCandidates?: LongRangeReferentCandidate[]): ExtractedFact | null;
+export declare function validateExtractedFactCandidate(candidate: unknown, exchanges: ExtractionValidationExchange[], referentCandidates?: LongRangeReferentCandidate[], 
+/** #121 — see `validateExtractedFactCandidateDetailed`. Empty = built-ins only. */
+customFactKinds?: ReadonlySet<string>): ExtractedFact | null;
 export declare function buildFactEntailmentVerifierPrompt(candidates: ExtractedFact[], exchanges: ExtractionValidationExchange[], referentCandidates?: LongRangeReferentCandidate[]): string;
 /**
  * Validate verifier-reported semantic usage and make it the canonical local
