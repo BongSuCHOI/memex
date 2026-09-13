@@ -17,11 +17,15 @@ export function tierBanner(page,ctx){
  * 오버레이의 `label_en`/`label_ko`에서 로케일로 고르고(`badge.custom.<id>`는 존재하지 않는 키다),
  * 값은 그대로 `facts.category` 필터로 나간다 — 그래서 칩이 곧 저장된 값이다.
  */
-const kinds=()=>[['',t('pages.facts.kind.all')],['decision',t('pages.facts.kind.decision')],['preference',t('pages.facts.kind.preference')],['constraint',t('pages.facts.kind.constraint')],['pattern',t('pages.facts.kind.pattern')],['knowledge',t('pages.facts.kind.knowledge')],
+const kinds=project=>[['',t('pages.facts.kind.all')],['decision',t('pages.facts.kind.decision')],['preference',t('pages.facts.kind.preference')],['constraint',t('pages.facts.kind.constraint')],['pattern',t('pages.facts.kind.pattern')],['knowledge',t('pages.facts.kind.knowledge')],
  // 0.7.7 후속 검토 P2 #3 — 라벨은 **이 정의에서** 고른다. id로 다시 조회하면 조회 키가
  // `(project, id)`인데 칩에는 프로젝트가 없어서 전역 정의만 찾고, 프로젝트 전용 종류는 라벨이
- // 있는데도 원시 id로 떴다. 칩은 id마다 하나이므로 프로젝트 범위에서도 전체 보기에서도 같은 줄이다.
- ...customFactKinds().map(kind=>[kind.id,customFactKindDefLabel(kind,localeTag())||kind.id])];
+ // 있는데도 원시 id로 떴다.
+ // 0.7.8 후속 검토 P2 #3 — 그 정의를 **보고 있는 범위**로 고른다. 칩은 id마다 하나지만 어느 정의가
+ // 그 id의 뜻인지는 범위마다 다르고, 같은 줄의 기억 배지는 이미 `scope_project`로 그 답을 쓴다.
+ // 범위를 넘기지 않으면 파일 순서가 이긴 남의 프로젝트 라벨이 칩에 떠서 한 화면이 저장된 값 하나를
+ // 두 이름으로 부른다.
+ ...customFactKinds(project).map(kind=>[kind.id,customFactKindDefLabel(kind,localeTag())||kind.id])];
 export async function render(ctx){
   const query=Object.fromEntries(ctx.p);const [page,tax]=await Promise.all([ctx.api('facts',{...query,limit:50}),ctx.api('taxonomy')]);
   const category=ctx.p.get('category')||'',state=ctx.p.get('state')||'active',taxonomy=ctx.p.get('taxonomy')||'',sort=ctx.p.get('sort')||'updated',q=ctx.p.get('q')||'';const selected=new Set();
@@ -40,7 +44,7 @@ export async function render(ctx){
   <select name="sort" aria-label="${esc(t('pages.facts.a11y.sort'))}">${options([['updated',t('pages.facts.sort.updated')],['created',t('pages.facts.sort.created')],['sources',t('pages.facts.sort.sources')]],sort)}</select>
   <input type="hidden" name="category" value="${esc(category)}">
   ${btn(t('pages.shared.action.search'),'search','type="submit"')}${btn(ctx.prefs.preferTranslatedFacts?t('pages.facts.action.preferTranslated'):t('pages.facts.action.preferOriginal'),'layers','type="button" data-action="toggle-fact-translation"','ghost')}</form>
-  <div class="spread mb"><div class="filters" style="margin:0">${kinds().map(([v,label])=>`<button class="filter-chip ${category===v?'active':''}" data-param-key="category" data-param-value="${v}">${esc(label)}</button>`).join('')}</div><span class="muted" style="font-size:11px">${esc(tn('pages.facts.count',page.total,{n:number(page.total)}))}</span></div>
+  <div class="spread mb"><div class="filters" style="margin:0">${kinds(ctx.scope?.scope==='project'?ctx.scope.project:'').map(([v,label])=>`<button class="filter-chip ${category===v?'active':''}" data-param-key="category" data-param-value="${v}">${esc(label)}</button>`).join('')}</div><span class="muted" style="font-size:11px">${esc(tn('pages.facts.count',page.total,{n:number(page.total)}))}</span></div>
   ${tierBanner(page,ctx)}
   ${taxonomy?banner(tHtml('pages.facts.taxonomy.filterBanner',{htmlClear:`<button class="text-link" data-param-key="taxonomy" data-param-value="">${esc(t('pages.facts.taxonomy.clearFilter'))}</button>`})):''}
   <div class="selection-bar hidden" id="selection-bar"><span id="selection-count">${esc(selectionLabel(0))}</span>${btn(t('pages.facts.action.exportSelected'),'download','data-action="export-selected"','small')}${btn(t('pages.facts.action.clearSelection'),null,'data-action="clear-selection"','small ghost')}</div>
