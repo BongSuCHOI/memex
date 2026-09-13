@@ -686,6 +686,25 @@ const SHOWCASE_ALT_FACTS = [
   ["editor", "constraint", "모바일 편집기는 첨부 업로드를 25MB로 제한한다.", "The mobile editor caps attachment uploads at 25MB."],
   ["navigation", "preference", "모바일 첫 화면은 검색이 아니라 최근 노트를 보여준다.", "The mobile home screen shows recent notes rather than search."],
 ];
+// #122: the tier column only says something when more than one rung is present, and
+// the rows have to land on the FIRST screen of a 1440x900 capture. `index` keys into
+// SHOWCASE_FACTS; `updatedIndex` only moves the row's clock, never its content.
+const SHOWCASE_TIERS = {
+  6: { state: "workspace", updatedIndex: 0.4 },
+  7: { state: "workstream", branch: "feature/offline-sync", updatedIndex: 0.6 },
+};
+// #122: the overlay and model screens in the docs capture. The pattern is one the demo
+// project would plausibly add, and the test prompt below is written to match it, so the
+// explanation table shows a rule firing rather than an empty result.
+const SHOWCASE_OVERLAY_PATTERN = sc("오프라인\\s*동기화", "offline\\s*sync");
+const SHOWCASE_OVERLAY_NOTE = sc(
+  "동기화 충돌 질문은 항상 회수한다",
+  "Always recall sync-conflict questions",
+);
+const SHOWCASE_OVERLAY_PROMPT = sc(
+  "오프라인 동기화 충돌은 어떻게 처리하기로 했지?",
+  "How did we decide to handle offline sync conflicts?",
+);
 // [session title, opening user turn]
 const SHOWCASE_SESSIONS = [
   [sc("로컬 우선 저장 구조를 어떻게 잡을까?", "How should local-first storage be laid out?"), sc("노트 본문과 첨부를 어디에 두는지 정리하고 싶어.", "I want to settle where note bodies and attachments live.")],
@@ -1053,6 +1072,67 @@ function seedShowcase(initDatabase, dbPath) {
   // to show, plus a smaller alternate project and a few global preferences.
   const mainSessions = sessions.filter((s) => s.project === SHOWCASE_PROJECT);
   const altSessions = sessions.filter((s) => s.project === SHOWCASE_PROJECT_ALT);
+
+  // #31/#122: two jobs parked on a model configuration the provider refused. The queue
+  // HOLDS them instead of spending attempts on a call that already failed, so the jobs
+  // table has a hold badge (and a "next" link) and 관리 › 모델 has the same hold as a
+  // card. They are the newest rows in the table, so the badge is on the first screen.
+  const heldJobs = [mainSessions[1], mainSessions[2]].map((session, i) => {
+    const jobId = "job-held-" + session.sessionId;
+    run(
+      "INSERT INTO memory_jobs (job_id, kind, partition_key, target_id, from_cursor, through_cursor, policy_version, priority, state, available_at, attempts, max_attempts, idempotency_key, created_at, updated_at, hold_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      [
+        jobId,
+        "fact_extract",
+        "session:" + session.sessionId,
+        "target-" + session.sessionId,
+        0,
+        session.exchanges.length,
+        "facts-v4",
+        100,
+        "pending",
+        at(18 + i),
+        0,
+        5,
+        "demo-held-job-" + session.sessionId,
+        at(26 + i * 3),
+        at(18 + i),
+        "model_config_rejected",
+      ],
+    );
+    return jobId;
+  });
+
+  // #31/#122: the one-call model test, as the ledger records it. `models.json` holds the
+  // selection; this row is what the "last test" line on 관리 › 모델 reads back. No
+  // provider call is involved — the row is the durable record of one that already ran.
+  run(
+    "INSERT INTO model_work_budgets (budget_id, parent_wave_id, state, max_attempts, reserved_attempts, max_input_chars, max_output_chars, deadline_at, created_at, updated_at, automatic) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    ["budget-model-probe", "wave-model-probe", "completed", 1, 1, 4000, 2000, at(38), at(42), at(40), 0],
+  );
+  run(
+    "INSERT INTO model_work_attempts (attempt_id, budget_id, attempt_no, stage, job_id, target_id, state, started_at, finished_at, duration_ms, input_chars, output_chars, token_usage_json, token_usage_status, error_class, error_message, model, reasoning_effort) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    [
+      "attempt-model-probe",
+      "budget-model-probe",
+      1,
+      "model_probe",
+      null,
+      null,
+      "completed",
+      at(42),
+      at(40),
+      1840,
+      24,
+      11,
+      JSON.stringify({ input_tokens: 9, output_tokens: 4 }),
+      "observed",
+      null,
+      null,
+      "gpt-6-astra",
+      "high",
+    ],
+  );
   const factIds = [];
   let seq = 0;
   const addFact = (index, entry, options) => {
@@ -1065,10 +1145,13 @@ function seedShowcase(initDatabase, dbPath) {
     const session = options.session;
     const source = session.exchanges[index % session.exchanges.length];
     const context = session.exchanges[(index + 1) % session.exchanges.length];
-    const updatedAt = at(60 * index + 25);
+    // #122: a tiered row is floated up the list so the badge is on the first screen.
+    const tier = options.global ? null : SHOWCASE_TIERS[index] || null;
+    const clock = options.updatedIndex ?? tier?.updatedIndex ?? index;
+    const updatedAt = at(60 * clock + 25);
     const inactive = index === 17;
     run(
-      "INSERT INTO facts (id, fact, fact_kr, category, scope_type, scope_project, project_id, workspace_id, workstream_id, promotion_state, subject_key, is_active, ontology_category_id, source_exchange_ids, consolidated_count, created_at, updated_at, semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at, embedding_version, needs_consolidation) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO facts (id, fact, fact_kr, category, scope_type, scope_project, project_id, workspace_id, workstream_id, promotion_state, tier_reason, subject_key, is_active, ontology_category_id, source_exchange_ids, consolidated_count, created_at, updated_at, semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at, embedding_version, needs_consolidation) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       [
         id,
         primary,
@@ -1077,9 +1160,10 @@ function seedShowcase(initDatabase, dbPath) {
         options.global ? "global" : "project",
         options.global ? null : session.project,
         options.global ? null : session.projectId,
-        null,
-        null,
-        options.global ? "legacy-project" : index === 4 ? "decision" : "legacy-project",
+        tier?.state === "workspace" ? "workspace-" + session.projectId : null,
+        tier?.state === "workstream" ? session.workstreamId : null,
+        tier ? tier.state : options.global ? "legacy-project" : index === 4 ? "decision" : "legacy-project",
+        tier?.branch ? "branch:" + tier.branch : null,
         "atlas." + category + "." + (index + 1),
         inactive ? 0 : 1,
         index === 11 ? null : category,
@@ -1166,6 +1250,9 @@ function seedShowcase(initDatabase, dbPath) {
     addFact(SHOWCASE_FACTS.length + SHOWCASE_ALT_FACTS.length + i, entry, {
       session: mainSessions[i % mainSessions.length],
       global: true,
+      // #122: one global preference on the first screen, so the "everywhere" rung of
+      // the tier column is visible next to the project and branch rungs.
+      updatedIndex: [0.2, 12.4, 21.4][i],
     }),
   );
 
@@ -1217,12 +1304,18 @@ function seedShowcase(initDatabase, dbPath) {
     facts: factIds,
     evidenceFactId: factIds[0].id,
     jobId: "job-" + mainSessions[0].sessionId,
+    heldJobId: heldJobs[0],
     graphLabel: factIds[0].text,
   };
 }
 
-/** Capture one framed surface. `after` runs between the probe and the shot. */
-async function showcaseShot(cdp, url, body, file, after) {
+/**
+ * Capture one framed surface. `after` runs between the probe and the shot.
+ * `height` widens the frame for a screen whose subject (a settings card plus the
+ * result it produced) is taller than the 900px the other shots share — the
+ * alternative is a shot that has to scroll away half of what it documents.
+ */
+async function showcaseShot(cdp, url, body, file, after, height = 900, width = 1440) {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await cdp.send("Target.attachToTarget", {
     targetId,
@@ -1234,7 +1327,7 @@ async function showcaseShot(cdp, url, body, file, after) {
     await cdp.send("Log.enable", {}, sessionId).catch(() => {});
     await cdp.send(
       "Emulation.setDeviceMetricsOverride",
-      { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false },
+      { width, height, deviceScaleFactor: 1, mobile: false },
       sessionId,
     );
     const loaded = cdp.wait("Page.loadEventFired", sessionId);
@@ -1266,11 +1359,71 @@ async function showcaseShot(cdp, url, body, file, after) {
   }
 }
 
+/**
+ * #122: the model screen answers "what did this Codex installation offer, and what did
+ * you pick". Both halves are fixtures inside this pass's own temp tree — a temp
+ * CODEX_HOME for the catalog and a `models.json` in the showcase data root for the
+ * selection — so the shot never reads the developer's ~/.codex and never writes a real
+ * data root. The catalog matches the gate's, which is also the shipped default model.
+ */
+function seedShowcaseModels(temp, home) {
+  const codexHome = path.join(temp, "codex");
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(codexHome, "models_cache.json"),
+    JSON.stringify({
+      fetched_at: new Date(Date.parse(new Date().toISOString().slice(0, 10) + "T09:00:00.000Z")).toISOString(),
+      etag: "web-ui-showcase",
+      client_version: "0.153.4",
+      models: [
+        {
+          slug: "gpt-6-astra",
+          display_name: "GPT-6-Astra",
+          description: "demo catalog entry",
+          default_reasoning_level: "low",
+          supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }],
+          visibility: "list",
+          supported_in_api: true,
+          priority: 1,
+        },
+        {
+          slug: "gpt-5.6-luna",
+          display_name: "GPT-5.6-Luna",
+          description: "demo catalog entry",
+          default_reasoning_level: null,
+          supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }],
+          visibility: "list",
+          supported_in_api: true,
+          priority: 2,
+        },
+      ],
+    }),
+  );
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(
+    path.join(home, "models.json"),
+    JSON.stringify(
+      // On-disk shape is snake_case — the same document writeModelSettings() produces.
+      {
+        version: 1,
+        updated_at: new Date(Date.parse(new Date().toISOString().slice(0, 10) + "T11:20:00.000Z")).toISOString(),
+        llm: { model: "gpt-6-astra", reasoning: "high" },
+      },
+      null,
+      2,
+    ),
+  );
+  return codexHome;
+}
+
 async function captureShowcase() {
-  const temp = fs.mkdtempSync("/tmp/memex-web-ui-shots-");
+  // The data root is on screen (the model tab names models.json by path), so the
+  // directory is called what it is: a demo, not a test scratch dir.
+  const temp = fs.mkdtempSync("/tmp/memex-demo-");
   const xdg = path.join(temp, "xdg");
   const home = path.join(xdg, "memex");
   const dbPath = path.join(home, "conversation-index", "db.sqlite");
+  const previousCodexHome = process.env.CODEX_HOME;
   let server;
   let browser;
   let shotCdp;
@@ -1281,6 +1434,9 @@ async function captureShowcase() {
     fs.mkdirSync(path.join(SCREENSHOTS, LANG), { recursive: true });
     const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));
     const seeded = seedShowcase(initDatabase, dbPath);
+    // startServer() spreads process.env into the child, so the catalog the model screen
+    // reads is this temp one. Restored in the finally below.
+    process.env.CODEX_HOME = seedShowcaseModels(temp, home);
     const port = await freePort();
     server = startServer(port, home, xdg);
     await server.ready;
@@ -1329,7 +1485,7 @@ async function captureShowcase() {
         base +
           "/facts" +
           scope +
-          "&panel=fact&item=" +
+          "&tiers=all&panel=fact&item=" +
           encodeURIComponent(seeded.evidenceFactId) +
           "&panelTab=evidence",
         `${settled}
@@ -1341,6 +1497,23 @@ async function captureShowcase() {
          await sleep(350);
          return {tab:text('#detail .tab.active'),hasDirectEvidence:body.textContent.includes(L.evidenceHeading)};`,
         "facts-detail.png",
+      ),
+    );
+
+    // #122: the same list WITHOUT the drawer. At 1440px the fact drawer covers the tier
+    // column, so the rung badges — everywhere / this project / this checkout / this
+    // branch — need a frame of their own.
+    results.push(
+      await showcaseShot(
+        shotCdp,
+        base + "/facts" + scope + "&tiers=all",
+        `${settled}
+         await until('rows',()=>document.querySelectorAll('#main .data-table tbody tr').length>5);
+         const tiers=()=>[...new Set([...document.querySelectorAll('#main .data-table [data-tier]')].map(el=>el.dataset.tier))];
+         await until('more than one rung',()=>tiers().length>2||null);
+         await sleep(350);
+         return {tiers:tiers(),rows:document.querySelectorAll('#main .data-table tbody tr').length,drawerClosed:!document.querySelector('#detail')?.open};`,
+        "facts-table.png",
       ),
     );
 
@@ -1422,6 +1595,100 @@ async function captureShowcase() {
       ),
     );
 
+    // #31/#122: the same table with nothing selected, so the hold badge and the "next"
+    // link it carries are the subject. A held job is not a failure and not a queue that
+    // is merely slow: it is work parked on a configuration a person has to fix.
+    results.push(
+      await showcaseShot(
+        shotCdp,
+        base + "/activity" + scope + "&tab=jobs",
+        `${settled}
+         await until('job rows',()=>document.querySelectorAll('#main .data-table tbody tr').length>3);
+         const held=await until('hold badge',()=>document.querySelector('#main .data-table .tag.amber'));
+         await sleep(350);
+         return {hold:held.textContent.trim(),
+                 heldRows:[...document.querySelectorAll('#main .data-table tbody tr')].filter(r=>r.querySelector('.tag.amber')).length,
+                 tableWidth:Math.round(document.querySelector('#main .data-table').getBoundingClientRect().width),
+                 nextAction:Boolean(document.querySelector('#main .data-table a[href*="tab=models"]'))};`,
+        "activity-held.png",
+        null,
+        900,
+        // The jobs table carries a full "what to do next" column; at 1440 the sentence
+        // that explains the hold is cut off at the frame edge, which reads as a broken
+        // screenshot rather than as the scrollable table it is.
+        1760,
+      ),
+    );
+
+    // #29/#30/#122: 관리 › 오버레이, gate sub-view. One user pattern is added through the
+    // real form (so the row, its origin and its note are the server's answer, not a
+    // mock), then the prompt that pattern matches is run through the tester so the
+    // explanation table — decision, triggers, overlay hash, matcher time — is on screen.
+    // Both the table and the explanation have to be in one frame, hence the taller crop.
+    results.push(
+      await showcaseShot(
+        shotCdp,
+        base + "/settings?scope=all&lang=" + LANG + "&tab=overlays&overlay=gate",
+        `${settled}
+         await until('pattern table',()=>document.querySelector('#gate-patterns .data-table'));
+         const add=document.querySelector('#gate-add-form');
+         add.querySelector('[name="source"]').value=${JSON.stringify(SHOWCASE_OVERLAY_PATTERN)};
+         add.querySelector('[name="note"]').value=${JSON.stringify(SHOWCASE_OVERLAY_NOTE)};
+         add.requestSubmit();
+         const row=await until('user pattern row',()=>[...document.querySelectorAll('#gate-patterns .data-table tbody tr')]
+           .find(r=>r.textContent.includes(${JSON.stringify(SHOWCASE_OVERLAY_NOTE)})),60000);
+         document.querySelector('#toast')?.classList.remove('show');
+         const test=await until('test form',()=>document.querySelector('#gate-test-form textarea[name="prompt"]'));
+         test.value=${JSON.stringify(SHOWCASE_OVERLAY_PROMPT)};
+         document.querySelector('#gate-test-form').requestSubmit();
+         const result=await until('explanation',()=>{
+           const el=document.querySelector('#gate-test-result');
+           return el&&el.querySelector('.kv,table')?el:null;
+         },60000);
+         document.querySelector('#toast')?.classList.remove('show');
+         // Frame the explanation against its own bottom edge rather than a guessed
+         // offset: the row count in the intent table decides how tall it is.
+         const bottom=document.querySelector('#gate-test').getBoundingClientRect().bottom+scrollY;
+         scrollTo(0,Math.max(0,Math.round(bottom-innerHeight+24)));
+         await sleep(400);
+         return {patterns:document.querySelectorAll('#gate-patterns .data-table tbody tr').length,
+                 userRow:row.textContent.replace(/\\s+/g,' ').trim().slice(0,120),
+                 explanation:result.textContent.replace(/\\s+/g,' ').trim().slice(0,200),
+                 scrolled:Math.round(scrollY),
+                 pageHeight:document.documentElement.scrollHeight};`,
+        "settings-overlays.png",
+        null,
+        1300,
+      ),
+    );
+
+    // #31/#122: 관리 › 모델. The catalog comes from the temp CODEX_HOME, the selection from
+    // the temp models.json, the last test from the attempt ledger and the hold card from
+    // the two parked jobs. The one-call test button is NOT clicked here either — a
+    // documentation pass must not make a provider call any more than a gate may.
+    results.push(
+      await showcaseShot(
+        shotCdp,
+        base + "/settings?scope=all&lang=" + LANG + "&tab=models",
+        `${settled}
+         await until('model form',()=>document.querySelector('#model-llm form#model-llm-form'));
+         await until('catalog',()=>document.querySelectorAll('#model-llm select[name="model"] option').length>1||null);
+         await until('held card',()=>document.querySelector('#model-held-jobs .data-table tbody tr'));
+         await sleep(350);
+         return {selected:document.querySelector('#model-llm select[name="model"]').value,
+                 reasoning:document.querySelector('#model-llm select[name="reasoning"]').value,
+                 models:[...document.querySelectorAll('#model-llm select[name="model"] option')].map(o=>o.value),
+                 lastTest:[...document.querySelectorAll('#model-llm .kv dd')].map(n=>n.textContent.replace(/\\s+/g,' ').trim()).find(v=>/\\dms|\\d ms/.test(v))||'',
+                 heldRows:document.querySelectorAll('#model-held-jobs .data-table tbody tr').length,
+                 pageHeight:document.documentElement.scrollHeight};`,
+        "settings-models.png",
+        null,
+        1420,
+      ),
+    );
+
+    // The theme toggle writes localStorage, which the shot profile shares across tabs,
+    // so the dark frame is taken LAST — every shot above is the default light theme.
     results.push(
       await showcaseShot(
         shotCdp,
@@ -1440,6 +1707,8 @@ async function captureShowcase() {
     shotCdp?.close();
     await stop(browser?.child);
     await stop(server?.child);
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
     fs.rmSync(temp, { recursive: true, force: true });
   }
 }
