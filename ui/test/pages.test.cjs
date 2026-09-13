@@ -612,6 +612,78 @@ test('디바운스된 재조회도 세대를 지킨다 — 먼저 시작해 늦�
  }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
 });
 
+/**
+ * 0.7.8 후속 검토 P2 #2 — 예약과 발화 사이의 250ms가 새는 창이었다.
+ *
+ * 세대를 타이머 **발화** 때 떼면 예약만 된 재조회는 이미 나간 조회의 적용 권한을 빼앗지 못한다.
+ * 그래서 초기화 알림이 예약돼 있는데도 그 전에 출발한 옛 목록이 도착해 칩과 서버 지문을 되살리고,
+ * 예약된 조회까지 실패하면 삭제된 종류가 최종 상태로 남았다. 여기서는 그 순서를 그대로 만든다.
+ */
+test('재조회 예약만으로도 이미 나간 옛 조회는 적용 권한을 잃는다',async()=>{
+ const RUNBOOK=[{id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'운영 절차입니다.'}];
+ try{
+  // 초기화가 이미 적용된 상태: 목록은 비었고 서버 지문은 hB다.
+  setCustomFactKinds([]);setCustomFactKindsHash('hB');
+  let releaseOld;
+  const oldPayload=new Promise(resolve=>{releaseOld=()=>resolve({customFactKinds:RUNBOOK,hash:'hA'});});
+  // A: 타이머가 발화해 조회가 이미 나갔다. 응답은 아직 오지 않았다.
+  const older=scheduleCustomFactKindsSync(()=>oldPayload,1);
+  await new Promise(resolve=>setTimeout(resolve,10));
+  // B: 새 알림이 재조회를 **예약**한다. 아직 발화하지 않았다 — 그래도 A는 이 순간 적용 권한을
+  //    잃어야 한다. 조회가 실패할 수도 있으므로, B의 성공이 A를 덮어 준다는 보장은 없다.
+  const newer=scheduleCustomFactKindsSync(async()=>{throw new Error('서버 연결 실패');},60);
+  // A의 응답이 B의 대기 안에 도착한다.
+  releaseOld();
+  assert.equal(await older,false,'예약만 된 재조회가 낡은 응답을 막지 못했다');
+  assert.deepEqual(customFactKinds(),[],'대기 중 도착한 낡은 응답이 삭제된 종류를 되살렸다');
+  assert.equal(name('runbook'),'runbook','삭제된 종류의 라벨이 되살아났다');
+  // B는 발화해서 실패한다 — 그래도 레지스트리는 A 이전 그대로여야 한다.
+  assert.equal(await newer,false,'실패한 조회가 재렌더를 요구했다');
+  assert.deepEqual(customFactKinds(),[],'B가 실패하자 낡은 목록이 최종 상태로 남았다');
+  // 서버 지문도 낡은 응답이 덮지 않았다: hB가 그대로라 같은 지문의 다음 알림은 적용을 건너뛴다.
+  let applied=false;
+  assert.equal(await scheduleCustomFactKindsSync(async()=>{applied=true;return {customFactKinds:RUNBOOK,hash:'hB'};},1),false,
+   '낡은 응답이 서버 지문을 hA로 덮었다');
+  assert(applied,'로더는 불렸어야 한다');
+  assert.deepEqual(customFactKinds(),[],'지문이 같은데 목록을 갈아 끼웠다');
+ }finally{setCustomFactKinds([]);setCustomFactKindsHash(null);}
+});
+
+/**
+ * 0.7.8 후속 검토 P2 #3 — 칩과 배지가 같은 값을 두 이름으로 불렀다.
+ *
+ * 라벨을 정의 자체에서 고르게 한 0.7.7 수정은 원시 id 노출만 막았다. 칩 목록은 범위를 받지 않아
+ * id별 **첫** 정의를 남겼고, 기억 배지는 `(project, id)`로 조회한다. 전역 정의 없이 두 프로젝트가
+ * 같은 id를 다르게 정의하면 `/beta` 화면에서 칩은 alpha, 배지는 beta가 된다 — 저장된 값 하나의
+ * 뜻이 같은 화면에서 갈린다. override 순서를 바꿔도 답은 같아야 한다.
+ */
+test('프로젝트 범위의 칩은 그 프로젝트의 정의를 쓴다 — 남의 프로젝트 라벨을 빌려 오지 않는다',async()=>{
+ try{
+  for(const order of [KINDS_BY_PROJECT,[KINDS_BY_PROJECT[1],KINDS_BY_PROJECT[0]]]){
+   setCustomFactKinds(order);
+   const {html}=await facts.render(ctx('',{taxonomy:TAXONOMY,facts:factsPage([row({category:'runbook',scope_project:'/work/beta'})])},{scope:{scope:'project',project:'/work/beta'}}));
+   assert(html.includes('data-param-value="runbook">베타 운영 절차</button>'),'칩이 beta의 정의를 쓰지 않음');
+   assert(!html.includes('알파 운영 절차'),'beta 범위에 alpha의 라벨이 떴다');
+   // 칩과 배지는 **같은 정의**를 말해야 한다.
+   assert(html.includes('<span class="tag outline" title="베타의 복구 절차입니다.">베타 운영 절차</span>'),'배지가 칩과 다른 정의를 씀');
+   assert.equal(html.split('data-param-value="runbook"').length-1,1,'같은 id로 칩을 두 개 그림');
+  }
+  // 전역 정의가 있으면 추출기와 같이 그것이 이긴다 — 프로젝트 범위에서도.
+  setCustomFactKinds([
+   {id:'runbook',global:true,projects:[],label_en:'Runbook step',label_ko:'운영 절차',description:'공용 운영 절차입니다.'},
+   KINDS_BY_PROJECT[1]]);
+  const shadowed=await facts.render(ctx('',{taxonomy:TAXONOMY,facts:factsPage([row({category:'runbook',scope_project:'/work/beta'})])},{scope:{scope:'project',project:'/work/beta'}}));
+  assert(shadowed.html.includes('data-param-value="runbook">운영 절차</button>'),'전역 정의가 있는데 칩이 override 라벨을 씀');
+  // 다른 프로젝트만 아는 id는 이 범위에서 아무것도 고르지 못하므로 칩이 되지 않는다.
+  setCustomFactKinds([KINDS_BY_PROJECT[0]]);
+  const foreign=await facts.render(ctx('',{taxonomy:TAXONOMY,facts:factsPage([row()])},{scope:{scope:'project',project:'/work/beta'}}));
+  assert(!foreign.html.includes('data-param-value="runbook"'),'남의 프로젝트 종류가 이 범위의 칩으로 떴다');
+  // 전체 보기에서는 모든 프로젝트의 기억이 섞이므로 id마다 칩을 그린다.
+  const all=await facts.render(ctx('',{taxonomy:TAXONOMY,facts:factsPage([row({category:'runbook',scope_project:'/work/alpha'})])},{scope:{scope:'all'}}));
+  assert(all.html.includes('data-param-value="runbook">알파 운영 절차</button>'),'전체 보기에서 칩이 사라졌다');
+ }finally{setCustomFactKinds([]);}
+});
+
 test('종류 재조회 디바운스 기본값은 250ms다',()=>{
  assert.equal(FACT_KINDS_SYNC_DEBOUNCE_MS,250);
 });

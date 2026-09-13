@@ -376,8 +376,9 @@ export declare function unionCustomFactKinds(snapshot: readonly CustomFactKind[]
  * review P2 #2). `resolveFromDoc()` resolves that collision global-first for
  * every project, so a project row would let the screen name a definition the
  * extraction prompt never carried. `KIND_ID_SHADOWS_GLOBAL` refuses a DIFFERING
- * override at the door; here such a project simply joins the global row's
- * `projects`, exactly as an override that repeats the definition verbatim does.
+ * override at the WRITE door and warns about one already on disk; either way such
+ * a project simply joins the global row's `projects` here, exactly as an override
+ * that repeats the definition verbatim does.
  */
 export type CustomFactKindRegistryEntry = CustomFactKind & {
     /** True for the file's global definition — the fallback when no override matches. */

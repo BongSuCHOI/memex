@@ -39,13 +39,16 @@ import {
   emptyExtractionRulesDoc,
   extractionRulesChecks,
   extractionRulesDocHash,
+  extractionRulesPreClaimBlock,
   isEmptyExtractionRules,
   loadExtractionRules,
   renderCustomFactKindLines,
   renderExtractionConstraintClause,
   resetExtractionRulesCache,
   resolveExtractionRules,
+  setExtractionRules,
   unionCustomFactKinds,
+  validateExtractionRules,
   validateExtractionRulesDoc,
   type CustomFactKind,
   type ExtractionRulesDoc,
@@ -386,6 +389,9 @@ describe("custom_fact_kinds — resolution", () => {
     const shadow = { ...RUNBOOK, label_ko: "베타 운영 절차", description: "Beta's own recovery step." };
     const result = validateExtractionRulesDoc(
       doc([RUNBOOK], { project_overrides: { "/work/beta": { custom_fact_kinds: [POSTMORTEM, shadow] } } }),
+      // A WRITE-time refusal (post-0.7.8 review P2 #1). On load the same document
+      // keeps resolving global-first with a warning — see the load test below.
+      { forWrite: true },
     );
     expect(errorCodes(result.issues)).toContain("KIND_ID_SHADOWS_GLOBAL");
     const issue = result.issues.find((entry) => entry.code === "KIND_ID_SHADOWS_GLOBAL");
@@ -401,6 +407,7 @@ describe("custom_fact_kinds — resolution", () => {
       errorCodes(
         validateExtractionRulesDoc(
           doc([RUNBOOK], { project_overrides: { "/work/beta": { custom_fact_kinds: [{ ...RUNBOOK }] } } }),
+          { forWrite: true },
         ).issues,
       ),
     ).not.toContain("KIND_ID_SHADOWS_GLOBAL");
@@ -413,9 +420,82 @@ describe("custom_fact_kinds — resolution", () => {
               "/work/beta": { custom_fact_kinds: [{ ...RUNBOOK, label_ko: "베타" }] },
             },
           }),
+          { forWrite: true },
         ).issues,
       ),
     ).not.toContain("KIND_ID_SHADOWS_GLOBAL");
+  });
+
+  /**
+   * Post-0.7.8 review P2 #1 — the refusal is about what may be WRITTEN, and it
+   * escaped onto the load path.
+   *
+   * `readValidate()` runs the same validator, so a file that 0.7.7 resolved
+   * global-first became `doc:null` the moment this build read it — and a null
+   * document is `extraction_rules_invalid` at the pre-claim gate. ONE project's
+   * override therefore HELD extraction for every project on the machine, on
+   * upgrade, with nothing the operator did. The collision has a defined answer
+   * (global wins) and 0.7.7 gave it, so load must keep giving it: a `warning` that
+   * `validate` and doctor show, and a refusal only when the file is saved again.
+   */
+  it("keeps a pre-0.7.8 shadowing file resolving global-first on load, and refuses it only on write", async () => {
+    const shadow = { ...RUNBOOK, label_ko: "베타 운영 절차", description: "Beta's own recovery step." };
+    const legacy = doc([RUNBOOK], {
+      project_overrides: {
+        "/work/beta": { custom_fact_kinds: [shadow] },
+        "/work/alpha": { exclude_topics: ["salary"] },
+      },
+    });
+    writeRules(root, legacy);
+
+    // 1) The load applies. Nothing is held, so /alpha — which never mentioned the
+    //    kind — extracts exactly as it did in 0.7.7.
+    const loaded = loadExtractionRules();
+    expect(loaded.doc).not.toBeNull();
+    expect(errorCodes(loaded.issues)).toEqual([]);
+    expect(extractionRulesPreClaimBlock(loaded)).toBeNull();
+    expect(resolveExtractionRules("/work/alpha", loaded).excludeTopics).toEqual(["salary"]);
+
+    // 2) …and the warning names the row, so the operator can find it.
+    const warning = loaded.issues.find((issue) => issue.code === "KIND_ID_SHADOWS_GLOBAL");
+    expect(warning?.severity).toBe("warning");
+    expect(warning?.path).toBe("project_overrides./work/beta.custom_fact_kinds[0].id");
+    expect(warning?.params).toMatchObject({ id: "runbook", project: "/work/beta" });
+
+    // 3) /beta resolves the GLOBAL definition — the 0.7.7 answer, unchanged.
+    expect(
+      resolveExtractionRules("/work/beta", loaded).customFactKinds.map((kind) => [
+        kind.id,
+        kind.label_ko,
+      ]),
+    ).toEqual([["runbook", RUNBOOK.label_ko]]);
+
+    // 4) doctor reports it as a warning, not as a hold.
+    const check = extractionRulesChecks().find((entry) => entry.name === "extraction-rules-overlay");
+    expect(check?.status).toBe("warn");
+    expect(check?.detail).toContain("KIND_ID_SHADOWS_GLOBAL");
+
+    // 5) `extract rules validate` (forWrite:false) says the same thing: valid,
+    //    with the warning.
+    const asValidate = await validateExtractionRules(legacy, { probe: false, forWrite: false });
+    expect(asValidate.ok).toBe(true);
+    expect(asValidate.doc).not.toBeNull();
+    expect(asValidate.issues.filter((i) => i.code === "KIND_ID_SHADOWS_GLOBAL")).toHaveLength(1);
+
+    // 6) `extract rules set` of that same document is REFUSED — the operator is
+    //    made to choose at the one moment they are editing the file.
+    const asWrite = await validateExtractionRules(legacy, { probe: false, forWrite: true });
+    expect(asWrite.ok).toBe(false);
+    expect(asWrite.doc).toBeNull();
+    expect(errorCodes(asWrite.issues)).toContain("KIND_ID_SHADOWS_GLOBAL");
+    const refusal = (await setExtractionRules(legacy, { surface: "cli" }).catch(
+      (err: unknown) => err,
+    )) as Error & { issues?: Array<{ severity?: string; code: string }> };
+    expect(refusal.name).toBe("OverlayInvalidError");
+    expect(errorCodes(refusal.issues ?? [])).toContain("KIND_ID_SHADOWS_GLOBAL");
+    // The refused write changed nothing: the file on disk still loads.
+    resetExtractionRulesCache();
+    expect(loadExtractionRules().doc).not.toBeNull();
   });
 
   /**

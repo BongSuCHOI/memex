@@ -32959,7 +32959,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.8"
+    version: "0.7.9"
   },
   {
     capabilities: {

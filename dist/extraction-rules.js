@@ -688,18 +688,30 @@ export function validateExtractionRulesDoc(raw, opts = {}) {
     // an override never reaches the extractor: the operator's label would be
     // written down and silently never used, and the Web UI — which has to agree
     // with the extractor about what a stored `facts.category` value MEANS — would
-    // have two honest answers and no way to choose. Refusing here leaves ONE rule
+    // have two honest answers and no way to choose. Refusing leaves ONE rule
     // ("the global definition wins") instead of two that disagree. Repeating the
     // global definition VERBATIM stays legal: it says nothing new, and that is how
     // an override declares "this project uses that kind too".
+    //
+    // A WRITE-time refusal only (post-0.7.8 review P2 #1). This is the one rule in
+    // this validator that is about what an operator may SAY, not about whether the
+    // document can be applied: the collision HAS a defined answer, and 0.7.7 gave
+    // it — global wins, in the extractor and on screen alike. Erroring on LOAD too
+    // made an upgrade turn such a file into `doc:null`, which is
+    // `extraction_rules_invalid` at the pre-claim gate — one project's override
+    // silently HELD extraction for every project on the machine. So on load it is
+    // a `warning`: the file keeps resolving exactly as it did, doctor says so, and
+    // the next write is where the operator is made to choose.
     const globalKindShapes = new Map((global.custom_fact_kinds ?? []).map((kind) => [kind.id, factKindShape(kind)]));
     if (globalKindShapes.size > 0) {
+        const forWrite = opts.forWrite === true;
         for (const [project, rules] of Object.entries(overrides)) {
             (rules.custom_fact_kinds ?? []).forEach((kind, index) => {
                 const globalShape = globalKindShapes.get(kind.id);
                 if (globalShape === undefined || globalShape === factKindShape(kind))
                     return;
-                emit("error", "KIND_ID_SHADOWS_GLOBAL", `"${kind.id}" is already defined globally; a project override may repeat that definition but not change it`, {
+                emit(forWrite ? "error" : "warning", "KIND_ID_SHADOWS_GLOBAL", `"${kind.id}" is already defined globally; a project override may repeat that definition but not change it` +
+                    (forWrite ? "" : " — the global definition is the one in effect, here and in the extractor"), {
                     path: `project_overrides.${project}.custom_fact_kinds[${index}].id`,
                     row: index,
                     field: "id",
@@ -709,7 +721,6 @@ export function validateExtractionRulesDoc(raw, opts = {}) {
         }
     }
     const ok = !issues.some((issue) => issue.severity === "error");
-    void opts.forWrite; // every rule here matters equally on load and on write
     return {
         ok,
         issues,
