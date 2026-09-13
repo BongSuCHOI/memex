@@ -1130,6 +1130,19 @@ const RULES_DOC = {
   always_treat_as_decision_patterns: [{id: 'user.aa11bb22', source: '(final decision)', flags: 'i'}],
   project_overrides: {'project-atlas': {preferred_language: 'en'}},
 };
+/** #120 — 코어 카탈로그가 주는 임계값 8개. 화면은 범위를 복제하지 않고 이 값을 그린다. */
+const GATE_CONFIG_FIELDS = [
+  {key: 'ackMaxTokens', kind: 'integer', min: 0, max: 32, default: 4},
+  {key: 'safetyRefreshInterval', kind: 'integer', min: 1, max: 100, default: 6},
+  {key: 'driftJaccard', kind: 'fraction', min: 0, max: 1, default: 0.12},
+  {key: 'driftMinTokens', kind: 'integer', min: 1, max: 100, default: 5},
+  {key: 'coverageMinTokens', kind: 'integer', min: 1, max: 100, default: 8},
+  {key: 'coherentMargin', kind: 'fraction', min: 0, max: 1, default: 0.08},
+  {key: 'substantiveMinTokens', kind: 'integer', min: 1, max: 100, default: 5},
+  {key: 'lexicalCoherentJaccard', kind: 'fraction', min: 0, max: 1, default: 0.35},
+];
+const GATE_CONFIG_EFFECTIVE = Object.fromEntries(
+  GATE_CONFIG_FIELDS.map(f => [f.key, f.key === 'safetyRefreshInterval' ? 10 : f.default]));
 const OVERLAY_STATUS = (gate = {}, rules = {}, extra = {}) => ({
   available: true, shared: false, disabledByEnv: false,
   limits: {fileBytes: 32768, patternSource: 200, quantifiers: 8, noteChars: 200, matchWallMs: 50, probeWallMs: 300,
@@ -1142,6 +1155,7 @@ const OVERLAY_STATUS = (gate = {}, rules = {}, extra = {}) => ({
     user: {patterns: [USER_PATTERN], disabled: ['ack.en.1'],
       words: {add: {ack: ['ack'], continue: [], filler: []}, disable: {ack: ['sure'], continue: [], filler: []}}},
     quarantined: [], issues: [], history: [HISTORY_ROW], snapshots: [8],
+    config: {fields: GATE_CONFIG_FIELDS, effective: GATE_CONFIG_EFFECTIVE, overridden: ['safetyRefreshInterval']},
     ...gate,
   },
   rules: {
@@ -1174,6 +1188,7 @@ const overlayVariants = () => [
   ['overlays/gateEmpty', overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV,
     OVERLAY_STATUS({present: false, revision: 0, hash: null, updatedAt: null, updatedBy: null,
       user: {patterns: [], disabled: [], words: {add: {ack: [], continue: [], filler: []}, disable: {ack: [], continue: [], filler: []}}},
+      config: {fields: GATE_CONFIG_FIELDS, effective: Object.fromEntries(GATE_CONFIG_FIELDS.map(f => [f.key, f.default])), overridden: []},
       history: []}), null)],
   ['overlays/gateFiltered', overlayPage.overlayTab(l2ctx('tab=overlays&intent=trace'), OVERLAY_ENV, OVERLAY_STATUS(), null)],
   ['overlays/rules', overlayPage.overlayTab(l2ctx('tab=overlays&overlay=rules'), OVERLAY_ENV, OVERLAY_STATUS(), null)],
