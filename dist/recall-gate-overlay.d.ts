@@ -19,7 +19,7 @@
  */
 import { type Issue } from "./overlay-regex.js";
 import { type MatcherHandle, type QuarantineEntry, type UserPatternSpec } from "./overlay-matcher.js";
-import { BUILTIN_GATE_PATTERNS, type GateIntent, type GateLexicon, type RecallGateDecision, type RecallGateState, type UserIntentHits } from "./recall-gate.js";
+import { BUILTIN_GATE_PATTERNS, type GateIntent, type GateLexicon, type RecallGateConfig, type RecallGateDecision, type RecallGateState, type UserIntentHits } from "./recall-gate.js";
 export declare const RECALL_GATE_OVERLAY_SCHEMA = "memex.recall-gate-overlay";
 export declare const RECALL_GATE_OVERLAY_VERSION = 1;
 /** §1.3 / §2.2 — the complete limit table, also served to the Web UI. */
@@ -39,6 +39,39 @@ export declare const OVERLAY_LIMITS: Readonly<{
         wordChars: 32;
     }>;
 }>;
+/**
+ * One editable threshold: its kind, its accepted range and the BUILT-IN value
+ * it overrides.
+ *
+ * The catalogue lives here rather than in `recall-gate.ts` because a range is an
+ * overlay rule, not a gate rule: `decideRecall()` keeps taking any
+ * `Partial<RecallGateConfig>` its caller hands it (tests and the benchmark rely
+ * on that), and only a value that arrives from a USER FILE is range-checked.
+ *
+ * `integer` fields count prompt tokens, `fraction` fields are Jaccard overlaps
+ * and a cosine margin, so both ends of every fraction are 0..1 inclusive.
+ */
+export interface GateConfigField {
+    key: keyof RecallGateConfig;
+    kind: "integer" | "fraction";
+    min: number;
+    max: number;
+    /** The built-in value this field overrides (`DEFAULT_RECALL_GATE_CONFIG`). */
+    default: number;
+}
+export declare const GATE_CONFIG_FIELDS: readonly GateConfigField[];
+export declare const GATE_CONFIG_KEYS: readonly (keyof RecallGateConfig)[];
+export declare function gateConfigField(key: string): GateConfigField | undefined;
+/** The thresholds actually in force: the overlay's overrides over the built-ins. */
+export declare function effectiveGateConfig(config?: Partial<RecallGateConfig>): RecallGateConfig;
+/**
+ * Which thresholds the overlay moved, in catalogue order.
+ *
+ * A key whose value EQUALS the built-in still counts as overridden: the operator
+ * pinned it on purpose, and a future build that changes the default must not
+ * silently move a pinned threshold.
+ */
+export declare function overriddenGateConfigKeys(config?: Partial<RecallGateConfig>): (keyof RecallGateConfig)[];
 export interface UserGatePattern {
     id: string;
     intent: GateIntent;
@@ -63,6 +96,8 @@ export interface RecallGateOverlayDoc {
         add?: Partial<Record<GateLexicon, string[]>>;
         disable?: Partial<Record<GateLexicon, string[]>>;
     };
+    /** Issue #120 — threshold overrides. Every field optional; absent = built-in. */
+    config?: Partial<RecallGateConfig>;
 }
 export interface LoadedRecallGateOverlay {
     /** The file exists (even if it failed to load). */
@@ -78,6 +113,12 @@ export interface LoadedRecallGateOverlay {
         add: Record<GateLexicon, string[]>;
         disable: Record<GateLexicon, string[]>;
     };
+    /**
+     * Threshold overrides as applied (issue #120). Empty on any error severity, so
+     * a broken overlay falls back to `DEFAULT_RECALL_GATE_CONFIG` exactly as it
+     * falls back to the built-in patterns — fail-safe in the same direction.
+     */
+    config: Partial<RecallGateConfig>;
     /** Quarantined rows relevant to this overlay (already excluded from `patterns`). */
     quarantined: QuarantineEntry[];
     issues: Issue[];
@@ -136,6 +177,8 @@ export interface GateCatalog {
     builtin: readonly (typeof BUILTIN_GATE_PATTERNS)[number][];
     words: Readonly<Record<GateLexicon, readonly string[]>>;
     limits: typeof OVERLAY_LIMITS;
+    /** The editable thresholds with their ranges and built-in values (#120). */
+    config: readonly GateConfigField[];
 }
 export declare function gateCatalog(): GateCatalog;
 /**
@@ -184,6 +227,16 @@ export interface RecallExplanation {
             origin: "builtin" | "user";
         }>;
     }>;
+    /**
+     * The thresholds this decision actually used, plus the names the overlay moved
+     * (#120). A `test` transcript that does not say which numbers were in force
+     * cannot explain a decision an overridden threshold produced.
+     */
+    config: {
+        effective: RecallGateConfig;
+        builtin: RecallGateConfig;
+        overridden: (keyof RecallGateConfig)[];
+    };
     decision: RecallGateDecision;
     builtinOnly?: RecallGateDecision;
     /** Rules present in the overlay run and absent from the built-in-only run. */

@@ -17,8 +17,8 @@
  *    the exit code is 1 (§4).
  */
 import fs from "fs";
-import { OverlayInvalidError, OverlayLockedError, OverlayStaleError, PROBE_WALL_MS, addGatePattern, applyOverlayChange, clearQuarantine, disableGatePattern, listOverlayHistory, listOverlaySnapshots, overlayPaths, readOverlaySnapshot, resetOverlay, resolveGatePatternId, rollbackOverlay, setGateWords, validateOverlay, } from "./overlay-admin.js";
-import { OVERLAY_LIMITS, RECALL_GATE_OVERLAY_SCHEMA, RECALL_GATE_OVERLAY_VERSION, currentRecallGateRevision, explainRecall, gateCatalog, loadRecallGateOverlay, overlaysDisabled, readRecallGateOverlayFile, } from "./recall-gate-overlay.js";
+import { OverlayInvalidError, OverlayLockedError, OverlayStaleError, PROBE_WALL_MS, addGatePattern, applyOverlayChange, clearQuarantine, disableGatePattern, listOverlayHistory, listOverlaySnapshots, overlayPaths, readOverlaySnapshot, resetOverlay, resolveGatePatternId, rollbackOverlay, setGateConfig, setGateWords, validateOverlay, } from "./overlay-admin.js";
+import { GATE_CONFIG_FIELDS, GATE_CONFIG_KEYS, OVERLAY_LIMITS, RECALL_GATE_OVERLAY_SCHEMA, RECALL_GATE_OVERLAY_VERSION, currentRecallGateRevision, effectiveGateConfig, explainRecall, gateCatalog, gateConfigField, loadRecallGateOverlay, overlaysDisabled, overriddenGateConfigKeys, readRecallGateOverlayFile, } from "./recall-gate-overlay.js";
 import { MATCH_WALL_MS, oneShotMatcher, readQuarantine, } from "./overlay-matcher.js";
 import { userPatternId } from "./overlay-regex.js";
 const USAGE = `Usage:
@@ -29,6 +29,9 @@ const USAGE = `Usage:
   memex gate patterns enable <id> [--expect-revision <n>] [--dry-run] [--json]
   memex gate words list [--json]
   memex gate words add|remove <ack|continue|filler> <word> [--expect-revision <n>] [--dry-run] [--json]
+  memex gate config show [--json]
+  memex gate config set <key> <value> [--expect-revision <n>] [--dry-run] [--json]
+  memex gate config reset [<key>] [--expect-revision <n>] [--dry-run] [--json]
   memex gate test "<prompt>" [--session <id>] [--compare-builtin] [--json]
   memex gate replay [--limit <n>] [--project <path>] [--json]
   memex gate validate [--file <path>] [--json]
@@ -43,11 +46,19 @@ that decides whether a prompt retrieves memory. Built-ins are never deleted:
 'patterns disable' switches one off by id and 'patterns enable' switches it back
 on. 'patterns remove' is accepted as an alias of 'patterns disable'.
 
-READ-ONLY verbs: show, patterns list, words list, test, replay, validate,
-history, quarantine list. test and replay call NO model and NO embedding, and
-write neither the inject log nor any recall receipt or session state.
+'config' edits the eight gate THRESHOLDS. Every one is optional: a threshold you
+never set keeps its built-in value, and 'config reset' (no key) drops every
+override at once. A threshold is a number, so it runs in no worker and is never
+quarantined — but it does change what is recalled, so it is part of the overlay
+hash and gets a revision, a snapshot and a rollback target like any other change.
 
-WRITE verbs (patterns add/disable/enable, words add/remove, reset, rollback) take
+READ-ONLY verbs: show, patterns list, words list, config show, test, replay,
+validate, history, quarantine list. test and replay call NO model and NO
+embedding, and write neither the inject log nor any recall receipt or session
+state. 'test' prints the thresholds in force and marks the overridden ones.
+
+WRITE verbs (patterns add/disable/enable, words add/remove, config set/reset,
+reset, rollback) take
 the overlay write lock, bump 'revision', keep a rollback snapshot and append one
 metadata line to logs/ui-audit.jsonl and overlays/history.jsonl. --dry-run
 validates and prints the command to re-run with the current revision, writing
@@ -67,6 +78,8 @@ The syntax limits and the ${PROBE_WALL_MS} ms write-time probe are defence in de
 EXAMPLES:
   memex gate patterns add memory 'deploy\\s*history' --note "always recall deploy-history questions"
   memex gate test "why did we switch auth to supabase?" --compare-builtin
+  memex gate config set safetyRefreshInterval 10
+  memex gate config reset coherentMargin
   memex gate patterns disable memory.en.again
   memex gate quarantine list
   memex gate rollback --to 7`;
@@ -409,6 +422,12 @@ function cmdShow() {
             disabled: loaded.disabled.length,
             quarantined: quarantined.length,
             words: loaded.words,
+            config: loaded.config,
+        },
+        config: {
+            effective: effectiveGateConfig(loaded.config),
+            overridden: overriddenGateConfigKeys(loaded.config),
+            fields: GATE_CONFIG_FIELDS,
         },
         quarantine: quarantined,
         issues: loaded.issues,
@@ -422,6 +441,14 @@ function cmdShow() {
         row("Built-in", `${builtinTotal} patterns (${countText})`),
         `${CONTINUE}words ${LEXICONS.map((lexicon) => `${lexicon} ${catalog.words[lexicon].length}`).join(" · ")}`,
         row("User", `${loaded.patterns.length} added · ${loaded.disabled.length} disabled · ${quarantined.length} quarantined`),
+        (() => {
+            const overridden = overriddenGateConfigKeys(loaded.config);
+            return row("Thresholds", overridden.length === 0
+                ? `all ${GATE_CONFIG_FIELDS.length} built-in (memex gate config show)`
+                : `${overridden.length} of ${GATE_CONFIG_FIELDS.length} overridden: ${overridden
+                    .map((key) => `${key}=${thresholdText(loaded.config[key])}`)
+                    .join(" · ")}`);
+        })(),
         row("Execution", `User patterns run in a separate thread under a ${MATCH_WALL_MS}ms budget per prompt.`),
         `${CONTINUE}A pattern that exceeds it is quarantined and drops out of the recall decision.`,
         row("Warnings", warnings.length === 0 && errors.length === 0
@@ -743,6 +770,149 @@ async function cmdWords(verb) {
     });
 }
 /* -------------------------------------------------------------------------- */
+/* config (§2.2 `config`, issue #120)                                          */
+/* -------------------------------------------------------------------------- */
+/** `0.12` not `0.12000000000000001`: fractions print at the precision they were typed. */
+function thresholdText(value) {
+    return String(Number(value.toFixed(6)));
+}
+const CONFIG_KEY_LIST = GATE_CONFIG_KEYS.join(", ");
+function configRangeText(field) {
+    return field === undefined ? "" : `${field.kind === "integer" ? "integer" : "number"} ${field.min}–${field.max}`;
+}
+/** Reject an unknown key HERE, before the lock: the message can then list all eight. */
+function configKey(raw) {
+    if (!raw)
+        usageError(`config needs a threshold name — one of: ${CONFIG_KEY_LIST}`);
+    const field = gateConfigField(raw);
+    if (!field)
+        usageError(`unknown threshold ${JSON.stringify(raw)} — expected one of: ${CONFIG_KEY_LIST}`);
+    return field.key;
+}
+/**
+ * The eight thresholds with their built-in value, this overlay's override and
+ * what is actually in force. Reads only — no lock, no revision.
+ */
+function cmdConfigShow() {
+    const loaded = loadRecallGateOverlay();
+    const effective = effectiveGateConfig(loaded.config);
+    const overridden = overriddenGateConfigKeys(loaded.config);
+    const rows = GATE_CONFIG_FIELDS.map((field) => ({
+        key: field.key,
+        kind: field.kind,
+        min: field.min,
+        max: field.max,
+        builtin: field.default,
+        override: loaded.config[field.key] ?? null,
+        effective: effective[field.key],
+        overridden: loaded.config[field.key] !== undefined,
+    }));
+    emit({
+        revision: loaded.revision,
+        hash: loaded.hash,
+        overridden,
+        config: loaded.config,
+        effective,
+        builtin: Object.fromEntries(GATE_CONFIG_FIELDS.map((f) => [f.key, f.default])),
+        thresholds: rows,
+        file: overlayPaths().gate,
+    }, [
+        row("Overlay", statusLine(loaded)),
+        row("Thresholds", `${overridden.length} of ${GATE_CONFIG_FIELDS.length} overridden${overridden.length > 0 ? `: ${overridden.join(" · ")}` : ""}`),
+        "",
+        `  ${pad("threshold", 24)}${pad("built-in", 12)}${pad("override", 12)}${pad("in force", 12)}range`,
+        ...rows.map((item) => `  ${pad(item.key, 24)}${pad(thresholdText(item.builtin), 12)}` +
+            `${pad(item.override === null ? "—" : thresholdText(item.override), 12)}` +
+            `${pad(thresholdText(item.effective), 12)}${configRangeText(gateConfigField(item.key))}`),
+        "",
+        "A threshold you never set keeps its built-in value. Thresholds are numbers: they run in no worker",
+        "and are never quarantined, but they do change what is recalled, so they are part of the overlay hash.",
+    ]);
+}
+async function cmdConfigSet() {
+    const key = configKey(positional[2]);
+    const field = gateConfigField(key);
+    const raw = positional[3];
+    if (raw === undefined)
+        usageError(`config set needs a value: memex gate config set ${key} <value>`);
+    const value = Number(raw);
+    // The range check runs again inside the lock (the file is the authority); this
+    // one exists so a typo costs no lock and names the range in the usage voice.
+    if (!Number.isFinite(value))
+        usageError(`${key} must be a finite number (found ${JSON.stringify(raw)})`);
+    if (field.kind === "integer" && !Number.isInteger(value)) {
+        usageError(`${key} must be a whole number of tokens (found ${raw})`);
+    }
+    if (value < field.min || value > field.max) {
+        usageError(`${key} must be between ${field.min} and ${field.max} (found ${raw})`);
+    }
+    const loaded = loadRecallGateOverlay();
+    if (loaded.config[key] === value) {
+        fail("CONFIG_UNCHANGED", [
+            "Refused — nothing was saved.",
+            `  CONFIG_UNCHANGED  ${key} is already ${thresholdText(value)}.`,
+        ]);
+    }
+    if (bools.has("--dry-run")) {
+        const next = currentRawDoc();
+        next.config = { ...(next.config ?? {}), [key]: value };
+        await dryRun(next, [`Would set  ${key} ${thresholdText(field.default)} → ${thresholdText(value)} (built-in ${thresholdText(field.default)})`], { probe: false });
+    }
+    const snapshot = before();
+    let result;
+    try {
+        result = await setGateConfig({ set: { [key]: value } }, { surface: "cli", expectedRevision: expectRevision() });
+    }
+    catch (error) {
+        failFromError(error);
+    }
+    writeReceipt("gate.config", [
+        row("Set", `${key} = ${thresholdText(value)}  (built-in ${thresholdText(field.default)}` +
+            `${loaded.config[key] === undefined ? "" : `, was ${thresholdText(loaded.config[key])}`})`),
+    ], snapshot, result, { key, value, builtin: field.default });
+}
+/**
+ * `config reset` with no key drops EVERY override; with a key it drops that one.
+ * Either way the built-in value comes back — a reset never invents a number.
+ */
+async function cmdConfigReset() {
+    const loaded = loadRecallGateOverlay();
+    const overridden = overriddenGateConfigKeys(loaded.config);
+    const key = positional[2] === undefined ? null : configKey(positional[2]);
+    const remove = key === null ? overridden : [key];
+    if (remove.length === 0 || (key !== null && loaded.config[key] === undefined)) {
+        fail("CONFIG_NOT_OVERRIDDEN", [
+            "Refused — nothing was saved.",
+            key === null
+                ? "  CONFIG_NOT_OVERRIDDEN  no threshold is overridden (memex gate config show)."
+                : `  CONFIG_NOT_OVERRIDDEN  ${key} is not overridden (memex gate config show).`,
+        ]);
+    }
+    const headline = key === null
+        ? `every threshold — ${remove.length} override(s) dropped: ${remove.join(" · ")}`
+        : `${key} → built-in ${thresholdText(gateConfigField(key).default)}`;
+    if (bools.has("--dry-run")) {
+        const next = currentRawDoc();
+        const config = { ...(next.config ?? {}) };
+        for (const name of remove)
+            delete config[name];
+        if (Object.keys(config).length > 0)
+            next.config = config;
+        else
+            delete next.config;
+        await dryRun(next, [`Would reset  ${headline}`], { probe: false });
+    }
+    const snapshot = before();
+    let result;
+    try {
+        result = await setGateConfig({ remove }, { surface: "cli", expectedRevision: expectRevision() });
+    }
+    catch (error) {
+        failFromError(error);
+    }
+    writeReceipt("gate.config", [row("Reset", headline)], snapshot, result, { reset: remove });
+}
+/* -------------------------------------------------------------------------- */
 /* test / replay                                                               */
 /* -------------------------------------------------------------------------- */
 function originLabel(origin) {
@@ -861,6 +1031,21 @@ async function cmdTest() {
         ? `--session ${sessionId} → real state (epoch ${state?.contextEpoch ?? 0}, ${state?.topicFingerprint.length ?? 0} fingerprint token(s), no residents)`
         : "no --session → neutral state (epoch 0, no fingerprint, no residents)"));
     lines.push(row("Embeddings", "0 calls — the gate calls no model and no embedding"));
+    // #120 — the numbers this decision was judged against. Printed for EVERY run,
+    // not only when something is overridden: a transcript that hides the built-in
+    // values cannot be compared against one taken on another machine.
+    const overridden = new Set(explanation.config.overridden);
+    lines.push("");
+    lines.push(row("Thresholds", overridden.size === 0
+        ? `all ${GATE_CONFIG_FIELDS.length} built-in — no override`
+        : `${overridden.size} of ${GATE_CONFIG_FIELDS.length} overridden by the overlay`));
+    for (const field of GATE_CONFIG_FIELDS) {
+        const effective = explanation.config.effective[field.key];
+        lines.push(`  ${pad(field.key, 24)}${pad(thresholdText(effective), 12)}` +
+            (overridden.has(field.key)
+                ? `override (built-in ${thresholdText(field.default)})`
+                : "built-in"));
+    }
     if (explanation.builtinOnly) {
         lines.push("");
         lines.push(`${pad("", 20)}${pad("built-in only", 20)}built-in + overlay`);
@@ -1226,6 +1411,21 @@ switch (verb) {
                 break;
             default:
                 usageError(`Unknown 'memex gate words' subcommand: ${sub ?? "(none)"}`);
+        }
+        break;
+    case "config":
+        switch (sub) {
+            case "show":
+                cmdConfigShow();
+                break;
+            case "set":
+                await cmdConfigSet();
+                break;
+            case "reset":
+                await cmdConfigReset();
+                break;
+            default:
+                usageError(`Unknown 'memex gate config' subcommand: ${sub ?? "(none)"}`);
         }
         break;
     case "test":

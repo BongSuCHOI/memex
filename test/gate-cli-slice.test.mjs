@@ -113,6 +113,8 @@ const HELP_FORMS = [
   ['patterns', 'disable'],
   ['words'],
   ['words', 'add'],
+  ['config'],
+  ['config', 'set'],
   ['test'],
   ['replay'],
   ['validate'],
@@ -607,7 +609,7 @@ test('replay compares built-in and overlay verdicts over recent prompts, writing
 
 test('an unknown subcommand is exit 1 and prints the verb list', (t) => {
   const fixture = isolated(t);
-  for (const args of [['nope'], ['patterns', 'nope'], ['words', 'nope'], ['quarantine', 'nope']]) {
+  for (const args of [['nope'], ['patterns', 'nope'], ['words', 'nope'], ['quarantine', 'nope'], ['config', 'nope']]) {
     const result = run(fixture, args);
     assert.equal(result.status, 1, args.join(' '));
     assert.match(both(result), /Unknown 'memex gate/);
@@ -617,4 +619,134 @@ test('an unknown subcommand is exit 1 and prints the verb list', (t) => {
   assert.equal(badOption.status, 1);
   assert.match(both(badOption), /unknown option --nope/);
   assert.ok(!fs.existsSync(fixture.overlayDir));
+});
+
+/* -------------------------------------------------------------------------- */
+/* config — the eight thresholds (issue #120)                                  */
+/* -------------------------------------------------------------------------- */
+
+test('config show lists the eight thresholds with built-in, override and range', (t) => {
+  const fixture = isolated(t);
+  const fresh = asJson(ok(fixture, ['config', 'show', '--json']));
+  assert.equal(fresh.thresholds.length, 8);
+  assert.deepEqual(fresh.overridden, []);
+  assert.deepEqual(fresh.effective, fresh.builtin);
+  assert.ok(!fs.existsSync(fixture.overlayDir), 'a read must not create the overlay directory');
+
+  const text = ok(fixture, ['config', 'show']).stdout;
+  assert.match(text, /ackMaxTokens\s+4\s+—\s+4\s+integer 0–32/);
+  assert.match(text, /lexicalCoherentJaccard\s+0\.35\s+—\s+0\.35\s+number 0–1/);
+  assert.match(text, /0 of 8 overridden/);
+});
+
+test('config set writes one threshold, and show/doctor report it as an override', (t) => {
+  const fixture = isolated(t);
+  const saved = asJson(ok(fixture, ['config', 'set', 'safetyRefreshInterval', '10', '--json']));
+  assert.equal(saved.revision, 1);
+  assert.equal(saved.key, 'safetyRefreshInterval');
+  assert.equal(saved.value, 10);
+  assert.deepEqual(readGate(fixture).config, { safetyRefreshInterval: 10 });
+
+  const shown = asJson(ok(fixture, ['config', 'show', '--json']));
+  assert.deepEqual(shown.overridden, ['safetyRefreshInterval']);
+  assert.equal(shown.effective.safetyRefreshInterval, 10);
+  assert.equal(shown.effective.ackMaxTokens, 4, 'every other threshold stays built-in');
+
+  // A second threshold merges rather than replacing the first.
+  ok(fixture, ['config', 'set', 'coherentMargin', '0.2', '--json']);
+  assert.deepEqual(readGate(fixture).config, { safetyRefreshInterval: 10, coherentMargin: 0.2 });
+  assert.equal(readGate(fixture).revision, 2);
+
+  // Setting the same value again is refused rather than burning a revision.
+  const again = run(fixture, ['config', 'set', 'coherentMargin', '0.2', '--json']);
+  assert.equal(again.status, 1);
+  assert.equal(asJson(again).error.code, 'CONFIG_UNCHANGED');
+  assert.equal(readGate(fixture).revision, 2);
+});
+
+test('config set refuses an unknown key and an out-of-range value, writing nothing', (t) => {
+  const fixture = isolated(t);
+  for (const args of [
+    ['config', 'set', 'nope', '1'],
+    ['config', 'set', 'ackMaxTokens', '99'],
+    ['config', 'set', 'ackMaxTokens', '1.5'],
+    ['config', 'set', 'driftJaccard', '2'],
+    ['config', 'set', 'safetyRefreshInterval', 'abc'],
+  ]) {
+    const result = run(fixture, args);
+    assert.equal(result.status, 1, args.join(' '));
+    assert.match(both(result), /Usage:\n {2}memex gate show/);
+  }
+  assert.match(both(run(fixture, ['config', 'set', 'nope', '1'])), /ackMaxTokens, safetyRefreshInterval/);
+  assert.ok(!fs.existsSync(fixture.overlayDir), 'a refused set must not create the overlay file');
+});
+
+test('config honours --dry-run and --expect-revision', (t) => {
+  const fixture = isolated(t);
+  ok(fixture, ['config', 'set', 'ackMaxTokens', '6', '--json']);
+  const revision = readGate(fixture).revision;
+
+  const dry = asJson(ok(fixture, ['config', 'set', 'driftMinTokens', '9', '--dry-run', '--json']));
+  assert.equal(dry.dryRun, true);
+  assert.equal(dry.nextRevision, revision + 1);
+  assert.match(dry.rerun, /--expect-revision 1$/);
+  assert.deepEqual(readGate(fixture).config, { ackMaxTokens: 6 }, 'a dry run writes nothing');
+
+  const stale = run(fixture, ['config', 'set', 'driftMinTokens', '9', '--expect-revision', '99', '--json']);
+  assert.equal(stale.status, 1);
+  assert.equal(asJson(stale).error.code, 'OVERLAY_STALE');
+  assert.equal(readGate(fixture).revision, revision);
+
+  // The command the dry run printed is the one that works.
+  const fresh = run(fixture, ['config', 'set', 'driftMinTokens', '9', '--expect-revision', String(revision), '--json']);
+  assert.equal(fresh.status, 0, fresh.stderr);
+  assert.deepEqual(readGate(fixture).config, { ackMaxTokens: 6, driftMinTokens: 9 });
+});
+
+test('config reset drops one threshold or all of them, and refuses a no-op', (t) => {
+  const fixture = isolated(t);
+  const bare = run(fixture, ['config', 'reset', '--json']);
+  assert.equal(bare.status, 1);
+  assert.equal(asJson(bare).error.code, 'CONFIG_NOT_OVERRIDDEN');
+
+  ok(fixture, ['config', 'set', 'ackMaxTokens', '6', '--json']);
+  ok(fixture, ['config', 'set', 'coverageMinTokens', '12', '--json']);
+  const hashWithBoth = asJson(ok(fixture, ['config', 'show', '--json'])).hash;
+
+  const notSet = run(fixture, ['config', 'reset', 'driftJaccard', '--json']);
+  assert.equal(notSet.status, 1);
+  assert.equal(asJson(notSet).error.code, 'CONFIG_NOT_OVERRIDDEN');
+
+  const dry = asJson(ok(fixture, ['config', 'reset', 'ackMaxTokens', '--dry-run', '--json']));
+  assert.equal(dry.dryRun, true);
+  assert.deepEqual(readGate(fixture).config, { ackMaxTokens: 6, coverageMinTokens: 12 });
+
+  ok(fixture, ['config', 'reset', 'ackMaxTokens', '--json']);
+  assert.deepEqual(readGate(fixture).config, { coverageMinTokens: 12 });
+
+  const all = asJson(ok(fixture, ['config', 'reset', '--json']));
+  assert.deepEqual(all.reset, ['coverageMinTokens']);
+  // The `config` block is dropped entirely, so the hash returns to what it was
+  // before any threshold was ever overridden.
+  assert.equal('config' in readGate(fixture), false);
+  assert.notEqual(all.hash, hashWithBoth);
+  assert.deepEqual(asJson(ok(fixture, ['config', 'show', '--json'])).overridden, []);
+});
+
+test('gate test prints the thresholds in force and marks the overridden ones', (t) => {
+  const fixture = isolated(t);
+  const builtin = ok(fixture, ['test', 'why did we switch auth to supabase?']).stdout;
+  assert.match(builtin, /Thresholds\s+all 8 built-in — no override/);
+  assert.match(builtin, /ackMaxTokens\s+4\s+built-in/);
+
+  ok(fixture, ['config', 'set', 'ackMaxTokens', '6', '--json']);
+  const overridden = ok(fixture, ['test', 'why did we switch auth to supabase?']).stdout;
+  assert.match(overridden, /Thresholds\s+1 of 8 overridden by the overlay/);
+  assert.match(overridden, /ackMaxTokens\s+6\s+override \(built-in 4\)/);
+  assert.match(overridden, /driftJaccard\s+0\.12\s+built-in/);
+
+  const payload = asJson(ok(fixture, ['test', 'ok thanks', '--json']));
+  assert.deepEqual(payload.config.overridden, ['ackMaxTokens']);
+  assert.equal(payload.config.effective.ackMaxTokens, 6);
+  assert.equal(payload.config.builtin.ackMaxTokens, 4);
 });

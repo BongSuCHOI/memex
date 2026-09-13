@@ -12,9 +12,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  GATE_CONFIG_FIELDS,
+  GATE_CONFIG_KEYS,
   OVERLAY_LIMITS,
   currentRecallGateRevision,
+  effectiveGateConfig,
   gateCatalog,
+  neutralGateState,
+  overriddenGateConfigKeys,
   loadRecallGateOverlay,
   recallGateOverlayChecks,
   recallGateOverlayHash,
@@ -24,7 +29,7 @@ import {
 } from "../src/recall-gate-overlay.js";
 import { resetQuarantineMemory } from "../src/overlay-matcher.js";
 import { patternSourceSha8 } from "../src/overlay-regex.js";
-import { detectPromptIntents } from "../src/recall-gate.js";
+import { DEFAULT_RECALL_GATE_CONFIG, decideRecall, detectPromptIntents } from "../src/recall-gate.js";
 
 let root: string;
 let overlayFile: string;
@@ -153,12 +158,14 @@ describe("recall-gate overlay validation", () => {
 
   it("warns — never errors — on an unknown disable id or an unknown top-level field", () => {
     const result = validateRecallGateOverlayDoc(
-      doc({ patterns: { disable: ["memory.kr.nope"] }, config: { driftJaccard: 0.2 } }),
+      doc({ patterns: { disable: ["memory.kr.nope"] }, shared_with: ["laptop"] }),
     );
     expect(result.ok).toBe(true);
     const codes = result.issues.map((issue) => issue.code);
     expect(codes).toContain("DISABLE_ID_UNKNOWN");
-    // Forward compatibility: 0.7.1 adds `config` and 0.7.0 must ignore it quietly.
+    // Forward compatibility: a field a later release adds (0.7.1's sharing, say)
+    // must be ignored quietly rather than take the whole overlay down. An unknown
+    // key INSIDE `config` is the opposite — see the thresholds block below.
     expect(codes).toContain("OVERLAY_UNKNOWN_FIELD");
     expect(result.issues.every((issue) => issue.severity === "warning")).toBe(true);
   });
@@ -429,5 +436,148 @@ describe("doctor checks", () => {
     expect(matcher.status).toBe("fail");
     expect(matcher.detail).toMatch(/fail-safe/);
     expect(matcher.detail).toMatch(/fail-closed/);
+  });
+});
+
+/**
+ * Issue #120 — the `config` block. Eight thresholds, every one optional, every
+ * value range-checked, and a fail-safe that lands on the BUILT-IN numbers rather
+ * than on half of the operator's.
+ */
+describe("recall-gate overlay thresholds (config)", () => {
+  it("exposes eight fields whose defaults are the built-in gate config", () => {
+    expect(GATE_CONFIG_FIELDS).toHaveLength(8);
+    expect(GATE_CONFIG_KEYS).toEqual(Object.keys(DEFAULT_RECALL_GATE_CONFIG));
+    for (const field of GATE_CONFIG_FIELDS) {
+      expect(field.default).toBe(DEFAULT_RECALL_GATE_CONFIG[field.key]);
+      expect(field.min).toBeLessThan(field.max);
+    }
+    expect(gateCatalog().config).toBe(GATE_CONFIG_FIELDS);
+  });
+
+  it("accepts a partial config and leaves every other threshold built-in", () => {
+    const result = validateRecallGateOverlayDoc(doc({ config: { safetyRefreshInterval: 10 } }));
+    expect(result.ok).toBe(true);
+    expect(result.doc?.config).toEqual({ safetyRefreshInterval: 10 });
+    expect(effectiveGateConfig(result.doc?.config)).toEqual({
+      ...DEFAULT_RECALL_GATE_CONFIG,
+      safetyRefreshInterval: 10,
+    });
+    expect(overriddenGateConfigKeys(result.doc?.config)).toEqual(["safetyRefreshInterval"]);
+  });
+
+  it("drops an empty config rather than writing `{}` (the 0.7.0 document is unchanged)", () => {
+    const result = validateRecallGateOverlayDoc(doc({ config: {} }));
+    expect(result.ok).toBe(true);
+    expect(result.doc && "config" in result.doc).toBe(false);
+  });
+
+  it("rejects an unknown threshold with its own path, not a warning", () => {
+    const issues = validateRecallGateOverlayDoc(doc({ config: { ackMaxTokens: 3, nope: 1 } })).issues;
+    const unknown = issues.find((issue) => issue.code === "CONFIG_KEY_UNKNOWN")!;
+    expect(unknown.severity).toBe("error");
+    expect(unknown.path).toBe("config.nope");
+    expect(unknown.key).toBe("overlays.issue.configKeyUnknown");
+    // A rejected key takes the whole overlay down — the gate runs on built-ins.
+    expect(validateRecallGateOverlayDoc(doc({ config: { nope: 1 } })).ok).toBe(false);
+  });
+
+  it("range-checks every field and names the offending path", () => {
+    const cases: Array<[string, unknown]> = [
+      ["ackMaxTokens", 33],
+      ["ackMaxTokens", 1.5],
+      ["ackMaxTokens", "4"],
+      ["safetyRefreshInterval", 0],
+      ["driftJaccard", 1.01],
+      ["driftJaccard", -0.1],
+      ["driftMinTokens", 101],
+      ["coverageMinTokens", 0],
+      ["coherentMargin", 2],
+      ["substantiveMinTokens", 0],
+      ["lexicalCoherentJaccard", 1.5],
+      ["lexicalCoherentJaccard", Number.NaN],
+    ];
+    for (const [key, value] of cases) {
+      const issues = validateRecallGateOverlayDoc(doc({ config: { [key]: value } })).issues;
+      const problem = issues.find((issue) => issue.code === "CONFIG_VALUE_INVALID");
+      expect(problem, `${key}=${String(value)}`).toBeTruthy();
+      expect(problem!.path).toBe(`config.${key}`);
+      expect(problem!.severity).toBe("error");
+    }
+    // The boundaries themselves are accepted.
+    expect(validateRecallGateOverlayDoc(doc({
+      config: { ackMaxTokens: 0, driftJaccard: 1, coherentMargin: 0, safetyRefreshInterval: 100 },
+    })).ok).toBe(true);
+  });
+
+  it("refuses a config that is not an object", () => {
+    expect(errorCodes(doc({ config: [1, 2] }))).toContain("OVERLAY_NOT_OBJECT");
+    expect(errorCodes(doc({ config: 7 }))).toContain("OVERLAY_NOT_OBJECT");
+  });
+
+  it("merges the overrides over the built-ins on load, and caches with the file", () => {
+    write(doc({ config: { coherentMargin: 0.2 } }));
+    expect(loadRecallGateOverlay().config).toEqual({ coherentMargin: 0.2 });
+    expect(effectiveGateConfig(loadRecallGateOverlay().config).coherentMargin).toBe(0.2);
+    // Same mtime/size/ino key → the cached load is returned unchanged…
+    const first = loadRecallGateOverlay();
+    expect(loadRecallGateOverlay()).toBe(first);
+    // …and a rewrite (new inode) is observed without any explicit reset.
+    fs.writeFileSync(overlayFile, JSON.stringify(doc({ revision: 2, config: { coherentMargin: 0.3 } })));
+    expect(loadRecallGateOverlay().config).toEqual({ coherentMargin: 0.3 });
+  });
+
+  it("falls back to the BUILT-IN thresholds when the overlay will not load", () => {
+    write("{ not json");
+    expect(loadRecallGateOverlay().config).toEqual({});
+    expect(effectiveGateConfig(loadRecallGateOverlay().config)).toEqual(DEFAULT_RECALL_GATE_CONFIG);
+    // An out-of-range threshold is an error severity, so nothing is half-applied.
+    write(doc({ config: { ackMaxTokens: 3, driftJaccard: 9 } }));
+    expect(loadRecallGateOverlay().config).toEqual({});
+  });
+
+  it("keeps the hash stable for an overlay with no thresholds and moves it for one with", () => {
+    const without = validateRecallGateOverlayDoc(doc()).doc!;
+    const withConfig = validateRecallGateOverlayDoc(doc({ config: { ackMaxTokens: 6 } })).doc!;
+    // A 0.7.0 document (no `config` key at all) hashes exactly as it did before.
+    expect(recallGateOverlayHash(without)).toBe(recallGateOverlayHash({ ...without, config: {} }));
+    expect(recallGateOverlayHash(withConfig)).not.toBe(recallGateOverlayHash(without));
+    // The same thresholds hash the same whatever order they were written in.
+    const a = validateRecallGateOverlayDoc(doc({ config: { ackMaxTokens: 6, driftJaccard: 0.2 } })).doc!;
+    const b = validateRecallGateOverlayDoc(doc({ config: { driftJaccard: 0.2, ackMaxTokens: 6 } })).doc!;
+    expect(recallGateOverlayHash(a)).toBe(recallGateOverlayHash(b));
+  });
+
+  it("the overridden thresholds decide the gate, and doctor counts them", async () => {
+    // `safetyRefreshInterval: 1` makes one informative prompt force a refresh.
+    write(doc({ config: { safetyRefreshInterval: 1 } }));
+    const state = {
+      ...neutralGateState(),
+      lastRetrievalEpoch: 0,
+      topicFingerprint: ["alpha", "beta"],
+      informativePromptsSinceRetrieval: 1,
+    };
+    const base = {
+      prompt: "alpha beta gamma delta epsilon",
+      state,
+      currentCapsuleGeneration: 0,
+      currentProjectRevision: 0,
+      incidentMatched: false,
+    };
+    expect(decideRecall({ ...base }).triggers).not.toContain("safety_refresh");
+    expect(decideRecall({ ...base, config: loadRecallGateOverlay().config }).triggers)
+      .toContain("safety_refresh");
+
+    const check = (await recallGateOverlayChecks(async () => true))
+      .find((entry) => entry.name === "recall-gate-overlay")!;
+    expect(check.detail).toMatch(/1 threshold\(s\) overridden \(safetyRefreshInterval\)/);
+  });
+
+  it("says `0 threshold(s) overridden` when only patterns are applied", async () => {
+    write(doc({ patterns: { add: [{ id: "user.a", intent: "memory", source: "배포", flags: "i" }] } }));
+    const check = (await recallGateOverlayChecks(async () => true))
+      .find((entry) => entry.name === "recall-gate-overlay")!;
+    expect(check.detail).toMatch(/0 threshold\(s\) overridden/);
+    expect(check.detail).not.toMatch(/overridden \(/);
   });
 });

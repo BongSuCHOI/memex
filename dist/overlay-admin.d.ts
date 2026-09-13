@@ -30,7 +30,7 @@
 import { type OverlayName } from "./paths.js";
 import { type Issue } from "./overlay-regex.js";
 import { type UserGatePattern, type ValidationResult } from "./recall-gate-overlay.js";
-import { type GateIntent, type GateLexicon } from "./recall-gate.js";
+import { type GateIntent, type GateLexicon, type RecallGateConfig } from "./recall-gate.js";
 export type Surface = "cli" | "web-ui";
 /** Snapshots kept per overlay, for `rollback` (§1.3). */
 export declare const HISTORY_SNAPSHOT_LIMIT = 20;
@@ -145,6 +145,10 @@ export interface GateDelta {
         removeAdd?: Partial<Record<GateLexicon, string[]>>;
         removeDisable?: Partial<Record<GateLexicon, string[]>>;
     };
+    /** Issue #120 — threshold overrides to set (validated inside the lock). */
+    config?: Partial<RecallGateConfig>;
+    /** Threshold names to drop back to the built-in value. */
+    configRemove?: (keyof RecallGateConfig)[];
 }
 export interface ApplyOptions {
     surface: Surface;
@@ -201,6 +205,21 @@ export declare function setGateWords(lexicon: GateLexicon, change: {
     surface: Surface;
     expectedRevision?: number;
     probe?: boolean;
+}): Promise<WriteResult>;
+/**
+ * Issue #120 — set or clear recall-gate thresholds.
+ *
+ * A delta, not a document: two operators editing different thresholds from the
+ * CLI and the Web UI must not overwrite each other inside the same revision, and
+ * the merge happens under the lock like every other gate change. `probe: false`
+ * because no regex is involved — a number cannot burn the match budget.
+ */
+export declare function setGateConfig(change: {
+    set?: Partial<RecallGateConfig>;
+    remove?: (keyof RecallGateConfig)[];
+}, opts: {
+    surface: Surface;
+    expectedRevision?: number;
 }): Promise<WriteResult>;
 /**
  * Reset an overlay to "nothing applied".
