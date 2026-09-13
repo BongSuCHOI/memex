@@ -1440,7 +1440,8 @@ memex gate rollback --to <revision>
 다른 곳에 한 줄을 더해 전역 금지를 느슨하게 만드는 경로를 두지 않기 위해서입니다.
 
 **언어 기본값(#123)**: `preferred_language`를 지정하지 않아도 추출은 **대화의 언어**로 fact를
-씁니다. 추출 창의 사람 메시지 글자 수 다수결(코드 블록·URL 제외)로 정하고, 동률이면 마지막 사람
+씁니다. 추출 창의 사람 메시지 가중 글자 수 다수결(Hangul 음절 × 2.5 vs Latin 문자, 코드 블록·URL
+제외 — 근거는 [FACT-LIFECYCLE §10](FACT-LIFECYCLE.md#10-기억-언어와-kr-translation))로 정하고, 동률이면 마지막 사람
 메시지, 셀 글자가 없으면 절을 붙이지 않습니다. 즉 `preferred_language`는 이 기본값을 덮는
 **override**입니다. `memex extract rules show`의 `Language` 줄이 현재 유효한 값을 그대로 찍습니다.
 

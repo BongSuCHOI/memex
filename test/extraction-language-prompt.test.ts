@@ -47,8 +47,8 @@ import {
   writeRules,
 } from "./extraction-rules-fixture.js";
 
-const KO =
-  "이 프로젝트의 상태관리는 Riverpod으로 결정했습니다. 세션 저장소는 그대로 두기로 했습니다.";
+/** 13 Hangul against 15 Latin: Korean only once the syllables are weighted. */
+const KO = "Flutter 상태관리는 Riverpod으로 결정했습니다.";
 const EN = "We decided to use Riverpod for state management in this project.";
 
 let root: string;

@@ -22,16 +22,28 @@
  * prompt. It is never part of `policy_version`, never part of the scheduling
  * key, and it cannot make a candidate eligible or ineligible.
  *
- * KNOWN BIAS, stated rather than silently corrected: the approved rule is a raw
- * character-count majority (#123, "글자 수 다수결"), and one Hangul syllable
- * carries roughly two to three Latin letters' worth of text. A short Korean
- * sentence carrying two English product names — "Flutter 상태관리는 Riverpod으로
- * 결정했습니다." is 13 Hangul against 15 Latin — therefore classifies as English.
- * A weighting would fix that and would also be a policy nobody approved, so the
- * counts are exported: if the reporter's corpus shows this misfiring, the fix is
- * a weight here, not a rewrite anywhere else. `preferred_language` is the
- * operator's escape hatch in the meantime.
+ * WHY THE COUNT IS WEIGHTED. A raw character majority reads this project's real
+ * conversations backwards. Korean technical prose is Korean sentences wrapped
+ * around English identifiers, and the units are not comparable: a Hangul
+ * syllable block is an onset-nucleus-coda cluster carrying roughly a word's
+ * worth of information, while a Latin letter carries a phoneme. Counted raw,
+ * "Flutter 상태관리는 Riverpod으로 결정했습니다." is 13 Hangul against 15 Latin
+ * and classifies as ENGLISH — a plainly Korean sentence, judged English because
+ * it names two products. So one Hangul syllable counts as `HANGUL_WEIGHT` Latin
+ * letters. 2.5 sits in the middle of the two-to-three-letters-per-syllable range
+ * and is exact in binary floating point, so the tie rule below stays a real
+ * equality test and not an epsilon comparison.
+ *
+ * Both the raw counts and the weighted scores are exported: the weight is a
+ * judgement, and the next person to revisit it should be able to see what it
+ * did without re-deriving the inputs.
  */
+/**
+ * Latin letters one Hangul syllable is worth. See the module note: a syllable
+ * block is about a word, a letter is about a phoneme. Exact in binary floating
+ * point, which is what lets the tie rule below be a plain `===`.
+ */
+export const HANGUL_WEIGHT = 2.5;
 /**
  * Hangul: precomposed syllables plus the jamo blocks, so a decomposed or
  * IME-intermediate string is not silently counted as "no Korean".
@@ -70,7 +82,7 @@ function countChars(text) {
     };
 }
 /**
- * Classify one extraction window by character-count majority over human prose.
+ * Classify one extraction window by WEIGHTED character majority over human prose.
  *
  * Ties fall back to the LAST human message that carried any counted text: in a
  * mixed window the most recent human turn is the one the next fact is about. A
@@ -93,30 +105,22 @@ export function classifyWindowLanguage(exchanges) {
         countedMessages += 1;
         lastCounted = counts;
     }
+    const koScore = hangul * HANGUL_WEIGHT;
+    const enScore = latin;
+    const shape = { hangul, latin, koScore, enScore, countedMessages };
     if (countedMessages === 0) {
-        return { language: null, hangul, latin, countedMessages, decidedBy: "no_human_text" };
+        return { language: null, ...shape, decidedBy: "no_human_text" };
     }
-    if (hangul !== latin) {
-        return {
-            language: hangul > latin ? "ko" : "en",
-            hangul,
-            latin,
-            countedMessages,
-            decidedBy: "majority",
-        };
+    if (koScore !== enScore) {
+        return { language: koScore > enScore ? "ko" : "en", ...shape, decidedBy: "majority" };
     }
     // Tie on the window. The last human message that said anything breaks it.
     const last = lastCounted;
-    if (last.hangul === last.latin) {
-        return { language: null, hangul, latin, countedMessages, decidedBy: "tie_unresolved" };
+    const lastKo = last.hangul * HANGUL_WEIGHT;
+    if (lastKo === last.latin) {
+        return { language: null, ...shape, decidedBy: "tie_unresolved" };
     }
-    return {
-        language: last.hangul > last.latin ? "ko" : "en",
-        hangul,
-        latin,
-        countedMessages,
-        decidedBy: "tie_last_human",
-    };
+    return { language: lastKo > last.latin ? "ko" : "en", ...shape, decidedBy: "tie_last_human" };
 }
 /** The answer alone. `null` means "this window does not decide". */
 export function detectWindowLanguage(exchanges) {

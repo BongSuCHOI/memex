@@ -437,7 +437,7 @@ Bundled Codex skill 3개는 과거 대화 기억, 전체 대화 분석, Memex da
 | `MEMEX_MODEL_BUDGET_MAX_OUTPUT_CHARS` | `16000` | 최종 답변 문자 수; domain schema/필드 검증은 추가 적용 |
 | `MEMEX_AUTO_MODEL_MAX_ATTEMPTS` | `256` | 한 데이터 루트의 자동 유지보수 24시간 공통 호출 한도; `0`이면 차단 |
 
-토큰 수는 provider 관측값입니다. 미관측은 `null` / `NOT_PROVEN`, 일부 관측은 `partial`로 읽으며, 누락 usage나 달러 비용을 0으로 추정하지 않습니다. 모델 선택과 사용자 오버레이는 **이 기기에만** 적용되고 sync 세대에 들어가지 않습니다 — 쓸 수 있는 모델과 원하는 규칙이 기기마다 다르기 때문입니다. 기억은 **그 대화의 언어로** 저장됩니다 — 추출 창에서 사용자 메시지의 글자 수 다수결로 결정론적으로 정하고, 추출 규칙의 `preferred_language`로 기기별·프로젝트별로 덮어쓸 수 있습니다. 선택적 한국어 기억 번역(`fact_kr`)은 그 이전에 영어로 저장된 기억을 위한 레거시 표시 경로이며 local derived state로 sync에도 포함되지 않고 새 기억에는 생성되지 않습니다. source checkout에서는 `node scripts/translate-facts.mjs`로 채울 수 있으며, 요청 시작 이후 의미가 바뀌지 않은 경우에만 기록합니다. 전체 목록: [GUIDE §19](docs/GUIDE.md#19-환경-변수).
+토큰 수는 provider 관측값입니다. 미관측은 `null` / `NOT_PROVEN`, 일부 관측은 `partial`로 읽으며, 누락 usage나 달러 비용을 0으로 추정하지 않습니다. 모델 선택과 사용자 오버레이는 **이 기기에만** 적용되고 sync 세대에 들어가지 않습니다 — 쓸 수 있는 모델과 원하는 규칙이 기기마다 다르기 때문입니다. 기억은 **그 대화의 언어로** 저장됩니다 — 추출 창에서 사용자 메시지의 가중 글자 수 다수결로 결정론적으로 정하고(Hangul 음절 1자 = Latin 2.5자라서 영어 식별자가 잔뜩 섞인 한국어 문장도 한국어로 남습니다), 추출 규칙의 `preferred_language`로 기기별·프로젝트별로 덮어쓸 수 있습니다. 선택적 한국어 기억 번역(`fact_kr`)은 그 이전에 영어로 저장된 기억을 위한 레거시 표시 경로이며 local derived state로 sync에도 포함되지 않고 새 기억에는 생성되지 않습니다. source checkout에서는 `node scripts/translate-facts.mjs`로 채울 수 있으며, 요청 시작 이후 의미가 바뀌지 않은 경우에만 기록합니다. 전체 목록: [GUIDE §19](docs/GUIDE.md#19-환경-변수).
 
 </details>
 

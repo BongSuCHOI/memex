@@ -15,6 +15,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  HANGUL_WEIGHT,
   appendExtractionLanguageClause,
   classifyWindowLanguage,
   detectWindowLanguage,
@@ -83,38 +84,68 @@ describe("detectWindowLanguage (#123 §1)", () => {
     expect(result.latin).toBeLessThan(result.hangul);
   });
 
-  it("counts raw characters, bias included — this is the approved rule, not an accident", () => {
-    // #123 approved "글자 수 다수결". One Hangul syllable is worth two or three
-    // Latin letters of text, so a short Korean sentence carrying two English
-    // product names counts as English. Pinned deliberately: if this misfires on
-    // the reporter's corpus the fix is a WEIGHT in extraction-language.ts, and
-    // this assertion is what will tell whoever changes it what they changed.
-    const borderline = classifyWindowLanguage([ex("Flutter 상태관리는 Riverpod으로 결정했습니다.")]);
-    expect(borderline.hangul).toBe(13);
-    expect(borderline.latin).toBe(15);
-    expect(borderline.language).toBe("en");
-    // One more Korean clause and the same sentence is Korean again.
-    expect(
-      detectWindowLanguage([ex("Flutter 상태관리는 Riverpod으로 결정했습니다. 세션 저장소는 그대로 둡니다.")]),
-    ).toBe("ko");
+  it("weights a Hangul syllable at 2.5 Latin letters — the units are not comparable raw", () => {
+    // The case the weight exists for. Raw, this sentence is 13 Hangul against 15
+    // Latin and would classify as ENGLISH: a plainly Korean sentence, judged
+    // English because it names two products. A syllable block carries about a
+    // word; a letter carries a phoneme.
+    const sentence = classifyWindowLanguage([ex("Flutter 상태관리는 Riverpod으로 결정했습니다.")]);
+    expect(sentence.hangul).toBe(13);
+    expect(sentence.latin).toBe(15);
+    expect(HANGUL_WEIGHT).toBe(2.5);
+    expect(sentence.koScore).toBe(32.5);
+    expect(sentence.enScore).toBe(15);
+    expect(sentence.language).toBe("ko");
+    expect(sentence.decidedBy).toBe("majority");
+  });
+
+  it("keeps a Korean sentence Korean through a long path and a long identifier", () => {
+    // 19 Hangul against 45 Latin: raw, the identifiers win outright. This is the
+    // everyday shape of a Korean technical conversation, and it is the shape the
+    // reporter's corpus was losing to English.
+    const result = classifyWindowLanguage([
+      ex(
+        "세션 저장소 경로를 src/continuity-store.ts 의 readExtractionTargetItems 에서 " +
+          "읽도록 바꿨습니다.",
+      ),
+    ]);
+    expect(result.hangul).toBe(19);
+    expect(result.latin).toBe(45);
+    expect(result.koScore).toBe(47.5);
+    expect(result.language).toBe("ko");
+  });
+
+  it("keeps an English sentence English when one Korean word appears in it", () => {
+    // The weight must not turn any stray Hangul into a Korean verdict: 2 Hangul
+    // weighs 5, against 47 Latin letters of English prose.
+    const result = classifyWindowLanguage([
+      ex("We keep the 한글 label on the button so translators can find it."),
+    ]);
+    expect(result.hangul).toBe(2);
+    expect(result.koScore).toBe(5);
+    expect(result.enScore).toBe(47);
+    expect(result.language).toBe("en");
   });
 
   it("breaks an exact tie with the LAST human message that said anything", () => {
-    // Two turns of identical weight, one each way. The window total ties, so the
-    // most recent human turn decides — it is the one the next fact is about.
-    const koThenEn = classifyWindowLanguage([ex("가나다라"), ex("abcd")]);
-    expect(koThenEn.hangul).toBe(koThenEn.latin);
+    // Two turns of identical WEIGHT, one each way: 2 Hangul weigh 5, and so do 5
+    // Latin letters. The window total ties, so the most recent human turn
+    // decides — it is the one the next fact is about. 2.5 is exact in binary
+    // floating point, so this really is an equality and not a near-miss.
+    const koThenEn = classifyWindowLanguage([ex("가나"), ex("abcde")]);
+    expect(koThenEn.koScore).toBe(koThenEn.enScore);
     expect(koThenEn.language).toBe("en");
     expect(koThenEn.decidedBy).toBe("tie_last_human");
 
-    const enThenKo = classifyWindowLanguage([ex("abcd"), ex("가나다라")]);
-    expect(enThenKo.hangul).toBe(enThenKo.latin);
+    const enThenKo = classifyWindowLanguage([ex("abcde"), ex("가나")]);
+    expect(enThenKo.koScore).toBe(enThenKo.enScore);
     expect(enThenKo.language).toBe("ko");
     expect(enThenKo.decidedBy).toBe("tie_last_human");
   });
 
   it("decides nothing when the tie-breaking message is itself tied", () => {
-    const result = classifyWindowLanguage([ex("가나다라 abcd")]);
+    const result = classifyWindowLanguage([ex("가나 abcde")]);
+    expect(result.koScore).toBe(result.enScore);
     expect(result.language).toBeNull();
     expect(result.decidedBy).toBe("tie_unresolved");
   });

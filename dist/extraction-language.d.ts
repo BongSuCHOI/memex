@@ -22,27 +22,43 @@
  * prompt. It is never part of `policy_version`, never part of the scheduling
  * key, and it cannot make a candidate eligible or ineligible.
  *
- * KNOWN BIAS, stated rather than silently corrected: the approved rule is a raw
- * character-count majority (#123, "글자 수 다수결"), and one Hangul syllable
- * carries roughly two to three Latin letters' worth of text. A short Korean
- * sentence carrying two English product names — "Flutter 상태관리는 Riverpod으로
- * 결정했습니다." is 13 Hangul against 15 Latin — therefore classifies as English.
- * A weighting would fix that and would also be a policy nobody approved, so the
- * counts are exported: if the reporter's corpus shows this misfiring, the fix is
- * a weight here, not a rewrite anywhere else. `preferred_language` is the
- * operator's escape hatch in the meantime.
+ * WHY THE COUNT IS WEIGHTED. A raw character majority reads this project's real
+ * conversations backwards. Korean technical prose is Korean sentences wrapped
+ * around English identifiers, and the units are not comparable: a Hangul
+ * syllable block is an onset-nucleus-coda cluster carrying roughly a word's
+ * worth of information, while a Latin letter carries a phoneme. Counted raw,
+ * "Flutter 상태관리는 Riverpod으로 결정했습니다." is 13 Hangul against 15 Latin
+ * and classifies as ENGLISH — a plainly Korean sentence, judged English because
+ * it names two products. So one Hangul syllable counts as `HANGUL_WEIGHT` Latin
+ * letters. 2.5 sits in the middle of the two-to-three-letters-per-syllable range
+ * and is exact in binary floating point, so the tie rule below stays a real
+ * equality test and not an epsilon comparison.
+ *
+ * Both the raw counts and the weighted scores are exported: the weight is a
+ * judgement, and the next person to revisit it should be able to see what it
+ * did without re-deriving the inputs.
  */
 /** The two languages the clause can name. */
 export type ExtractionLanguage = "ko" | "en";
 /** Where the applied language came from, for the receipt and for tests. */
 export type ExtractionLanguageSource = "override" | "window" | "none";
+/**
+ * Latin letters one Hangul syllable is worth. See the module note: a syllable
+ * block is about a word, a letter is about a phoneme. Exact in binary floating
+ * point, which is what lets the tie rule below be a plain `===`.
+ */
+export declare const HANGUL_WEIGHT = 2.5;
 export interface WindowLanguageClassification {
     /** The decided language, or `null` when the window decides nothing. */
     language: ExtractionLanguage | null;
-    /** Hangul characters counted across the window's human prose. */
+    /** RAW Hangul characters counted across the window's human prose. */
     hangul: number;
-    /** Latin letters counted across the window's human prose. */
+    /** RAW Latin letters counted across the window's human prose. */
     latin: number;
+    /** The weighted Korean side of the comparison: `hangul * HANGUL_WEIGHT`. */
+    koScore: number;
+    /** The weighted English side. Latin letters are the unit, so this is `latin`. */
+    enScore: number;
     /** Human messages that contributed at least one counted character. */
     countedMessages: number;
     /** Which branch decided, so a test can assert the reason and not just the answer. */
@@ -53,7 +69,7 @@ export interface HumanTextSource {
     user_message?: string | null;
 }
 /**
- * Classify one extraction window by character-count majority over human prose.
+ * Classify one extraction window by WEIGHTED character majority over human prose.
  *
  * Ties fall back to the LAST human message that carried any counted text: in a
  * mixed window the most recent human turn is the one the next fact is about. A

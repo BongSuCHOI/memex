@@ -592,7 +592,7 @@ embedding과 stale-vector 복구는 계속 수행합니다. 자동 번역이나 
 ### 추출 언어 (#123)
 
 추출은 **대화의 언어로 fact를 씁니다**. 판정은 결정론적입니다 — 추출 창의 **사람 메시지**
-글자 수 다수결(Hangul 음절 vs Latin 문자)이고, 동률이면 마지막 사람 메시지의 언어, 셀 글자가
+**가중** 글자 수 다수결(Hangul 음절 × 2.5 vs Latin 문자)이고, 동률이면 마지막 사람 메시지의 언어, 셀 글자가
 없으면 **판정 없음**입니다. 코드 블록·인라인 코드·URL은 세기 전에 제거하고 assistant 메시지와
 tool 결과는 애초에 세지 않습니다(`src/extraction-language.ts`).
 
@@ -610,11 +610,21 @@ Write `fact` (and subject_key stays snake_case ASCII) in Korean; keep code ident
 `extraction_targets.fact_language`(`ko`/`en`/`mixed`/NULL, nullable, 로컬 전용, sync 대상 아님)에
 남습니다. `mixed`는 한 claim의 창들이 서로 다른 언어로 판정된 경우입니다.
 
-**글자 수 다수결의 알려진 편향**: Hangul 음절 1자는 Latin 문자 2–3자 분량이므로 영어 제품명이
-섞인 짧은 한국어 문장(`Flutter 상태관리는 Riverpod으로 결정했습니다.` = Hangul 13 : Latin 15)은
-영어로 판정됩니다. 가중치는 승인된 정책이 아니라 넣지 않았고, 대신 counts를 노출해
-`test/extraction-language.test.ts`가 이 동작을 명시적으로 고정합니다. 당장의 탈출구는
-`preferred_language`입니다.
+**가중치가 왜 필요한가**: Hangul 음절 블록은 초성·중성·종성 묶음으로 **단어 하나에 가까운 정보**를
+담고 Latin 문자 1자는 **음소 하나**를 담습니다. 단위가 다르므로 그냥 세면
+`Flutter 상태관리는 Riverpod으로 결정했습니다.`(Hangul 13 : Latin 15)가 **영어**로 판정됩니다 —
+영어 제품명 두 개 때문에 명백한 한국어 문장이 영어가 되는 것이고, 이 프로젝트의 실제 대화가
+정확히 이 모양입니다. 그래서 Hangul 음절 1자 = Latin 2.5자로 셉니다(`HANGUL_WEIGHT`). 2.5는
+"음절당 2–3자" 범위의 중앙이고 이진 부동소수점에서 **정확히 표현**되므로 위 동률 규칙이
+epsilon 비교가 아니라 진짜 등호로 남습니다. raw counts(`hangul`/`latin`)와 가중 점수
+(`koScore`/`enScore`)를 모두 노출하고, 아래 세 경계 사례를
+`test/extraction-language.test.ts`가 고정합니다.
+
+| 입력 | raw | 가중 | 판정 |
+| --- | --- | --- | --- |
+| `Flutter 상태관리는 Riverpod으로 결정했습니다.` | 13 : 15 | 32.5 : 15 | `ko` |
+| `세션 저장소 경로를 src/continuity-store.ts 의 readExtractionTargetItems 에서 읽도록 바꿨습니다.` | 19 : 45 | 47.5 : 45 | `ko` |
+| `We keep the 한글 label on the button so translators can find it.` | 2 : 47 | 5 : 47 | `en` |
 
 기존 fact는 다시 쓰지 않습니다. 이 정책은 **새로 추출되는 fact부터** 적용됩니다.
 
