@@ -2,6 +2,23 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.10 - 2026-09-14
+
+Hotfixes for the two findings of the post-release review of 0.7.9 (#121).
+
+### Custom fact kinds
+
+- Kind filter chips follow the viewed scope. The common-memory scope shows only
+  global kinds (a project-only kind never appears there, matching the badges).
+  The all-projects view draws one chip per id: the global definition when there
+  is one, a project definition only when every project agrees on it, and
+  otherwise the raw id — never one project's label chosen by file order while
+  the badges of other projects' memories say something else.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.9 - 2026-09-14
 
 Hotfixes for the three findings of the post-release review of 0.7.8.
