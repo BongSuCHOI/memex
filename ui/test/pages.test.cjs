@@ -694,3 +694,28 @@ test('정의되지 않은 종류로 저장된 기억은 코어 원문 그대로 
  assert(html.includes('>postmortem</span>'),'모르는 종류의 이름을 지어냄');
  assert(!html.includes('data-param-value="postmortem"'),'정의되지 않은 종류로 칩을 만듦');
 });
+
+// ── 0.7.9 후속 검토 P2 #1/#2 — 전체 보기의 충돌 id와 공통 기억 범위의 칩 ──────────────
+test('전체 보기에서 전역 정의 없이 두 프로젝트가 같은 id를 다르게 정의하면 칩은 파일 순서와 무관하게 원시 id를 보여 준다',async()=>{
+ const alpha={id:'runbook',projects:['/alpha'],label_en:'Alpha runbook',label_ko:'알파 운영 절차',description:'a'};
+ const beta={id:'runbook',projects:['/beta'],label_en:'Beta runbook',label_ko:'베타 운영 절차',description:'b'};
+ for(const order of [[alpha,beta],[beta,alpha]]){
+  setCustomFactKinds(order);
+  const {html}=await renderFacts('',{facts:factsPage([row({category:'runbook',scope_project:'/beta'})])});
+  assert(/data-param-value="runbook">runbook</.test(html),'충돌 id의 칩이 한 프로젝트의 라벨을 대표함: '+order.map(k=>k.label_en).join(','));
+  assert(html.includes('베타 운영 절차'),'배지는 여전히 자기 프로젝트 정의를 써야 한다');
+ }
+ // 두 프로젝트의 정의가 같으면 그 라벨을 그대로 쓴다.
+ setCustomFactKinds([alpha,{...alpha,projects:['/beta']}]);
+ const same=await renderFacts('',{facts:factsPage([row({category:'runbook',scope_project:'/beta'})])});
+ assert(/data-param-value="runbook">알파 운영 절차</.test(same.html),'동일 정의는 라벨을 보여 줘야 한다');
+ setCustomFactKinds([]);
+});
+
+test('공통 기억 범위에서는 프로젝트 전용 종류의 칩이 그려지지 않는다',async()=>{
+ setCustomFactKinds([{id:'runbook',projects:['/alpha'],label_en:'Alpha runbook',label_ko:'알파 운영 절차',description:'a'},{id:'policy',global:true,projects:[],label_en:'Policy',label_ko:'정책',description:'p'}]);
+ const {html}=await facts.render(ctx('',{taxonomy:TAXONOMY,facts:factsPage([row({category:'policy',scope_project:null})])},{scope:{scope:'global'}}));
+ assert(!html.includes('data-param-value="runbook"'),'프로젝트 전용 종류가 공통 범위 칩에 나옴');
+ assert(/data-param-value="policy">정책</.test(html),'전역 종류의 칩은 있어야 한다');
+ setCustomFactKinds([]);
+});
