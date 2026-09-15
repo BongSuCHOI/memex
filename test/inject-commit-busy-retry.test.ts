@@ -144,7 +144,10 @@ it("re-checks the deadline after the pause", async () => {
     // start now would succeed, so only the post-pause check can explain a
     // refusal with the first attempt's error.
     holder.exec("ROLLBACK");
-    await vi.advanceTimersByTimeAsync(200); // the pause ends 200 ms later
+    // The event loop was held up during the pause: the clock jumps past the
+    // deadline before the pause timer fires.
+    vi.setSystemTime(Date.now() + 500);
+    await vi.advanceTimersByTimeAsync(10);
     await expect(outcome).resolves.toMatchObject({ code: "SQLITE_BUSY" });
     expect(attempts).toBe(0);
     expect(writer.prepare("SELECT COUNT(*) AS n FROM receipts").get()).toEqual({ n: 0 });
