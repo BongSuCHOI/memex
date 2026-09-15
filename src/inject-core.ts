@@ -320,10 +320,18 @@ export const INJECT_COMMIT_BUSY_DELAY_MS = 300;
  * Issue #133: the retry's own lock wait. The first attempt already spent the
  * connection's full busy_timeout (5 s); a second full wait would push the
  * request past the hook's compute budget (10 s, `INJECT_DAEMON_REQUEST_TIMEOUT_MS`)
- * and, being synchronous, hide a hook that disconnected meanwhile. 5 s + 0.3 s
- * + 1 s stays inside it with the compute itself.
+ * and, being synchronous, hide a hook that disconnected meanwhile. The retry
+ * therefore waits at most this long, and only when `deadlineAt` still leaves
+ * room for pause + wait — the compute before the commit is not free.
  */
 export const INJECT_COMMIT_RETRY_BUSY_MS = 1_000;
+/**
+ * How long after the request started a retry may still begin (pause and lock
+ * wait included). Below the daemon's 10 s request timeout with margin for
+ * delivery; a request that is already this late gets the first attempt's
+ * error, exactly as before 0.7.11.
+ */
+export const INJECT_COMMIT_DEADLINE_MS = 8_000;
 
 export function isSqliteBusy(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
@@ -345,11 +353,12 @@ export function isSqliteBusy(error: unknown): boolean {
 export async function commitInjectionBundle(
   db: CommitDb,
   commit: () => void,
-  options: { retries?: number; delayMs?: number; retryBusyMs?: number } = {},
+  options: { retries?: number; delayMs?: number; retryBusyMs?: number; deadlineAt?: number } = {},
 ): Promise<void> {
   const retries = options.retries ?? INJECT_COMMIT_BUSY_RETRIES;
   const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
   const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
+  const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
   const run = () => {
     if (typeof db.transaction === "function") {
       const tx = db.transaction(commit);
@@ -372,9 +381,13 @@ export async function commitInjectionBundle(
       return;
     } catch (error) {
       if (!isSqliteBusy(error) || attempt >= retries || db.inTransaction) throw error;
+      // A retry that could not finish before the deadline is not started.
+      if (Date.now() + delayMs + retryBusyMs > deadlineAt) throw error;
       // The pause is an await: a hook that disconnected during the first wait is
       // observed here, and `deliverable()` inside the bundle refuses the retry.
       await new Promise((resolve) => setTimeout(resolve, delayMs));
+      // The event loop may have been held up during the pause; re-check.
+      if (Date.now() + retryBusyMs > deadlineAt) throw error;
     }
   }
 }
@@ -991,7 +1004,7 @@ export async function computeInjectContext(
     // Receipt, fact residency, Hot Evidence prefix and gate state either commit
     // together or remain retryable when this transaction fails. Delivery on
     // stdout happens afterwards; it is not an exactly-once transport.
-    await commitInjectionBundle(db as CommitDb, commitBundle);
+    await commitInjectionBundle(db as CommitDb, commitBundle, { deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS });
     // The receipt is durable at this point. The transport can now carry its
     // exact id and mark only this delivery after stdout succeeds.
     if (preparedReceiptId && options.onPreparedReceipt) {

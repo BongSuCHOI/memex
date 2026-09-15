@@ -2,6 +2,25 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.12 - 2026-09-15
+
+Hotfixes for the three findings of the post-release review of 0.7.11 (#133).
+
+### Injection
+
+- The injection-commit retry is deadline-aware: it starts only when the pause
+  and its 1 s lock wait still fit before 8 s after the request began. The
+  0.7.11 note claimed the whole request stayed inside the hook's compute
+  budget; the retry itself was bounded, the request as a whole was not.
+- The reembed worker's checkpoint restores a `busy_timeout` of 0 as 0 instead
+  of 5000.
+- The retry test checks the lock wait actually in force during the retry
+  instead of asserting wall-clock time.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.11 - 2026-09-15
 
 Fixes for two findings from a live 0.7.10 installation (#133, #134).

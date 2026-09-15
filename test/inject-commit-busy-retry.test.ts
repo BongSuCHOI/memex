@@ -76,21 +76,67 @@ it("surfaces SQLITE_BUSY when the retry budget is spent", async () => {
   expect(writer.prepare("SELECT COUNT(*) AS n FROM receipts").get()).toEqual({ n: 0 });
 });
 
-it("the retry waits for the lock only briefly and restores the connection's busy_timeout", async () => {
+it("the retry runs under the short lock wait and the connection's busy_timeout is restored", async () => {
+  const holder = open(50);
+  holder.exec("BEGIN IMMEDIATE");
+  setTimeout(() => { try { holder.exec("COMMIT"); } catch { /* test teardown */ } }, 60);
+  const writer = open(50);
+  writer.pragma("busy_timeout = 400");
+  const seen: number[] = [];
+  await commitInjectionBundle(
+    writer,
+    () => {
+      seen.push(Number(writer.pragma("busy_timeout", { simple: true })));
+      writer.prepare("INSERT INTO receipts(v) VALUES ('prepared')").run();
+    },
+    { retries: 1, delayMs: 150, retryBusyMs: 100 },
+  );
+  // first attempt failed at BEGIN IMMEDIATE (body never ran); the retry ran under 100 ms
+  expect(seen).toEqual([100]);
+  expect(Number(writer.pragma("busy_timeout", { simple: true }))).toBe(400);
+});
+
+it("restores busy_timeout when the retry itself fails", async () => {
   const holder = open(50);
   holder.exec("BEGIN IMMEDIATE");
   const writer = open(50);
   writer.pragma("busy_timeout = 400");
-  const started = Date.now();
   await expect(commitInjectionBundle(
     writer,
     () => { writer.prepare("INSERT INTO receipts(v) VALUES ('prepared')").run(); },
-    { retries: 1, delayMs: 20, retryBusyMs: 100 },
+    { retries: 1, delayMs: 10, retryBusyMs: 30 },
   )).rejects.toMatchObject({ code: "SQLITE_BUSY" });
-  // first attempt ≤ 400 ms, pause 20 ms, retry ≤ 100 ms — never a second full wait
-  expect(Date.now() - started).toBeLessThan(900);
   expect(Number(writer.pragma("busy_timeout", { simple: true }))).toBe(400);
   holder.exec("ROLLBACK");
+});
+
+it("does not start a retry that cannot finish before the deadline", async () => {
+  const holder = open(50);
+  holder.exec("BEGIN IMMEDIATE");
+  setTimeout(() => { try { holder.exec("COMMIT"); } catch { /* test teardown */ } }, 60);
+  const writer = open(50);
+  let attempts = 0;
+  await expect(commitInjectionBundle(
+    writer,
+    () => { attempts++; writer.prepare("INSERT INTO receipts(v) VALUES ('prepared')").run(); },
+    { retries: 1, delayMs: 150, retryBusyMs: 100, deadlineAt: Date.now() + 100 },
+  )).rejects.toMatchObject({ code: "SQLITE_BUSY" });
+  expect(attempts).toBe(0);
+});
+
+it("re-checks the deadline after the pause", async () => {
+  const holder = open(50);
+  holder.exec("BEGIN IMMEDIATE");
+  setTimeout(() => { try { holder.exec("COMMIT"); } catch { /* test teardown */ } }, 40);
+  const writer = open(50);
+  let attempts = 0;
+  // Fits before the pause (10 + 30 < 60) but not after it (30 > ~20 left).
+  await expect(commitInjectionBundle(
+    writer,
+    () => { attempts++; writer.prepare("INSERT INTO receipts(v) VALUES ('prepared')").run(); },
+    { retries: 1, delayMs: 10, retryBusyMs: 30, deadlineAt: Date.now() + 60 },
+  )).rejects.toMatchObject({ code: "SQLITE_BUSY" });
+  expect(attempts).toBe(0);
 });
 
 it("does not retry a non-lock failure", async () => {
