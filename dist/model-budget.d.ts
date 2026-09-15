@@ -566,6 +566,38 @@ export declare function getOrCreateAutomaticMaintenanceModelBudget(db: Database.
     limits?: Partial<ModelBudgetLimits>;
     now?: Date;
 }): ModelWorkBudget;
+export interface SpentWaveRollover {
+    budgetId: string;
+    nextBudgetId: string;
+    parentWaveId: string;
+    reboundJobIds: string[];
+}
+/**
+ * Issue #140: continue a spent Continuity wave whose window has passed.
+ *
+ * Observed live: a `capsule_update` job failed once under a hook-spawned
+ * worker (no maintenance wave in the environment), so the call was budgeted
+ * under `continuity:<workstream>` and the job stayed bound to that budget.
+ * The 15-minute window expired, the budget became `exhausted`, and from then
+ * on nothing could move: `nextJob` never claims a job on an exhausted budget,
+ * and `getOrCreateWaveModelBudget` keeps returning the exhausted budget while
+ * a job is bound to it — so every later job of that workstream claimed by a
+ * hook worker was bound to the same dead budget. Four days in `retry` with a
+ * 1 s backoff, and no operator path (`recover` accepts only `dead`).
+ *
+ * The continuation is bounded: one new run per elapsed deadline window per
+ * wave, with the run's own attempt cap — a wave exhausted by its cap waits
+ * for its window to end, exactly like the automatic root waits for its
+ * rolling window. Only lease-free `pending`/`retry` jobs without a hold move;
+ * `attempts` is kept; `cancelled` and automatic budgets are never touched.
+ * Selection, run creation and rebinding are one immediate transaction, so two
+ * workers cannot open two runs for the same wave; a job that becomes movable
+ * later (a released hold) joins the wave's current run instead.
+ */
+export declare function rolloverSpentWaveBudgets(db: Database.Database, input?: {
+    now?: Date;
+    limits?: Partial<ModelBudgetLimits>;
+}): SpentWaveRollover[];
 /** Stable budget used by the SessionStart maintenance sibling wave. */
 export declare function getOrCreateMaintenanceModelBudget(db: Database.Database, input?: {
     parentWaveId?: string;

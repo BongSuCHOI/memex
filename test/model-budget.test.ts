@@ -12,6 +12,7 @@ import {
   getOrCreateModelWorkBudget,
   ModelBudgetExhaustedError,
   reserveModelAttempt,
+  rolloverSpentWaveBudgets,
   startNewModelWorkRunForBudget,
 } from "../src/model-budget.js";
 
@@ -159,6 +160,113 @@ describe("durable model work budget", () => {
     expect(db.prepare("SELECT budget_id FROM memory_jobs WHERE job_id = 'job-held'").get()).toMatchObject({
       budget_id: oldBudget.budgetId,
     });
+    db.close();
+  });
+
+  it("continues a spent continuity wave after its window and moves only its lease-free queued jobs (#140)", () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE memory_jobs (
+        job_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        state TEXT NOT NULL,
+        target_id TEXT,
+        checkpoint_id TEXT,
+        available_at TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_until TEXT,
+        lease_generation INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        hold_reason TEXT,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    ensureModelBudgetSchema(db);
+    const now = new Date("2026-09-15T05:00:00.000Z");
+    const past = new Date(now.getTime() - 60 * 60_000).toISOString();
+    const future = new Date(now.getTime() + 60 * 60_000).toISOString();
+    const wave = (parentWaveId: string, state: string, deadlineAt: string | null, automatic = 0) => {
+      const budget = getOrCreateModelWorkBudget(db, { parentWaveId, limits: { maxAttempts: 3, deadlineAt } });
+      db.prepare("UPDATE model_work_budgets SET state = ?, automatic = ? WHERE budget_id = ?")
+        .run(state, automatic, budget.budgetId);
+      return budget.budgetId;
+    };
+    const job = (id: string, budgetId: string, state: string, extra: { leaseUntil?: string; hold?: string; attempts?: number } = {}) => {
+      db.prepare(`INSERT INTO memory_jobs (job_id, kind, state, available_at, lease_until, attempts, hold_reason, updated_at, budget_id)
+        VALUES (?, 'capsule_update', ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, state, past, extra.leaseUntil ?? null, extra.attempts ?? 0, extra.hold ?? null, past, budgetId);
+    };
+    const spent = wave("continuity:ws-1", "exhausted", past);
+    job("ws1-retry", spent, "retry", { attempts: 1 });
+    job("ws1-held", spent, "pending", { hold: "model_config_rejected" });
+    job("ws1-done", spent, "completed");
+    const leased = wave("continuity:ws-2", "exhausted", past);
+    job("ws2-retry", leased, "retry");
+    job("ws2-running", leased, "running", { leaseUntil: future });
+    const open = wave("continuity:ws-3", "exhausted", future);
+    job("ws3-retry", open, "retry");
+    const manual = wave("manual-run", "exhausted", past);
+    job("manual-retry", manual, "retry");
+    const auto = wave("maintenance", "exhausted", past, 1);
+    job("auto-retry", auto, "retry");
+    const cancelled = wave("continuity:ws-4", "cancelled", past);
+    job("ws4-retry", cancelled, "retry");
+
+    const rolled = rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } });
+    expect(rolled).toHaveLength(1);
+    expect(rolled[0]).toMatchObject({ budgetId: spent, reboundJobIds: ["ws1-retry"] });
+    expect(rolled[0].parentWaveId).toBe("continuity:ws-1#2");
+    const next = getModelWorkBudget(db, rolled[0].nextBudgetId)!;
+    expect(next).toMatchObject({ state: "active", rootWaveId: "continuity:ws-1", runSeq: 2, automatic: false });
+    const row = (id: string) => db.prepare("SELECT state, budget_id, attempts, available_at, maintenance_wave_id FROM memory_jobs WHERE job_id = ?").get(id) as Record<string, unknown>;
+    expect(row("ws1-retry")).toMatchObject({
+      state: "pending", budget_id: next.budgetId, attempts: 1, available_at: now.toISOString(), maintenance_wave_id: "continuity:ws-1#2",
+    });
+    for (const untouched of ["ws1-held", "ws1-done", "ws2-retry", "ws2-running", "ws3-retry", "manual-retry", "auto-retry", "ws4-retry"]) {
+      expect(row(untouched).budget_id, untouched).not.toBe(next.budgetId);
+    }
+    expect(row("ws1-held")).toMatchObject({ state: "pending", budget_id: spent });
+    expect(row("ws2-retry")).toMatchObject({ state: "retry", budget_id: leased });
+    // Idempotent: nothing movable is left on the spent budget.
+    expect(rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } })).toEqual([]);
+    // A hold released after the wave moved on joins the current run; no third run is opened.
+    db.prepare("UPDATE memory_jobs SET hold_reason = NULL WHERE job_id = 'ws1-held'").run();
+    const later = rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } });
+    expect(later).toHaveLength(1);
+    expect(later[0]).toMatchObject({ budgetId: spent, nextBudgetId: next.budgetId, reboundJobIds: ["ws1-held"] });
+    expect(row("ws1-held")).toMatchObject({ state: "pending", budget_id: next.budgetId });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM model_work_budgets WHERE root_wave_id = 'continuity:ws-1'").get()).toEqual({ n: 2 });
+    // The current run is spent but its window is still open: a job surfacing on
+    // the old run waits for that window instead of opening a third run.
+    job("ws1-late", spent, "retry");
+    db.prepare("UPDATE model_work_budgets SET state = 'exhausted' WHERE budget_id = ?").run(next.budgetId);
+    expect(rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } })).toEqual([]);
+    expect(row("ws1-late")).toMatchObject({ state: "retry", budget_id: spent });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM model_work_budgets WHERE root_wave_id = 'continuity:ws-1'").get()).toEqual({ n: 2 });
+    // Once that window has passed, exactly one next run opens and every job
+    // still parked on either spent run joins it.
+    db.prepare("UPDATE model_work_budgets SET deadline_at = ? WHERE budget_id = ?").run(past, next.budgetId);
+    const third = rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } });
+    expect(third.flatMap((entry) => entry.reboundJobIds).sort()).toEqual(["ws1-held", "ws1-late", "ws1-retry"]);
+    expect(new Set(third.map((entry) => entry.nextBudgetId)).size).toBe(1);
+    expect(getModelWorkBudget(db, third[0].nextBudgetId)).toMatchObject({ runSeq: 3, state: "active" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM model_work_budgets WHERE root_wave_id = 'continuity:ws-1'").get()).toEqual({ n: 3 });
+    // A latest run without a deadline is an indefinite window: joined while active.
+    db.prepare("UPDATE model_work_budgets SET deadline_at = NULL WHERE budget_id = ?").run(third[0].nextBudgetId);
+    job("ws1-open", spent, "retry");
+    const joined = rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } });
+    expect(joined.map((entry) => [entry.nextBudgetId, entry.reboundJobIds])).toEqual([[third[0].nextBudgetId, ["ws1-open"]]]);
+    // …and waited for while spent, however long that is.
+    db.prepare("UPDATE model_work_budgets SET state = 'exhausted' WHERE budget_id = ?").run(third[0].nextBudgetId);
+    job("ws1-wait", spent, "retry");
+    expect(rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } })).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM model_work_budgets WHERE root_wave_id = 'continuity:ws-1'").get()).toEqual({ n: 3 });
+    db.prepare("DELETE FROM memory_jobs WHERE job_id = 'ws1-wait'").run();
+    // An absolute deadline already in the past would open a run spent at birth: refused.
+    job("ws1-last", spent, "retry");
+    db.prepare("UPDATE model_work_budgets SET deadline_at = ? WHERE budget_id = ?").run(past, third[0].nextBudgetId);
+    expect(rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: past } })).toEqual([]);
     db.close();
   });
 

@@ -284,8 +284,16 @@ function resolveUnits(
   const byJob = jobRow("job_id = ?", id);
   if (byJob) {
     const state = String(byJob.state);
+    // Issue #140: a `retry` job nobody holds may be parked on a spent budget
+    // with no path back; the operator may reset it exactly like dead work.
+    const leaseUntil = byJob.lease_until == null ? null : String(byJob.lease_until);
+    const leaseLive = leaseUntil !== null && leaseUntil > nowIso;
+    if (state === "retry" && !leaseLive) return [unitFromJob(byJob)];
     if (state !== RECOVERABLE_JOB_STATE) {
-      throw new Error(`job ${id} is '${state}'; only '${RECOVERABLE_JOB_STATE}' work is recovered`);
+      throw new Error(
+        `job ${id} is '${state}'; only '${RECOVERABLE_JOB_STATE}' work is recovered` +
+        (state === "retry" ? ` (a 'retry' job qualifies once its lease expires; this one is held until ${leaseUntil})` : ""),
+      );
     }
     return [unitFromJob(byJob)];
   }
