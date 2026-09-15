@@ -2,6 +2,23 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.14 - 2026-09-15
+
+Hotfixes for the two findings of the post-release review of 0.7.13 (#140).
+
+### Continuity
+
+- A wave whose current run was cancelled by an operator is not reopened by
+  jobs left on an older spent run, whatever the window says.
+- `memex recover <id>` / `jobs retry <id>` on a job bound to an exhausted or
+  cancelled budget also opens the next run of that job's wave and moves the
+  job onto it; before, the recovered job stayed unclaimable on the spent
+  budget, for ever when that budget had no window.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.13 - 2026-09-15
 
 Fix for a queue job found frozen on a second machine (#140).

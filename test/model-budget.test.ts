@@ -263,6 +263,13 @@ describe("durable model work budget", () => {
     expect(rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } })).toEqual([]);
     expect(db.prepare("SELECT COUNT(*) AS n FROM model_work_budgets WHERE root_wave_id = 'continuity:ws-1'").get()).toEqual({ n: 3 });
     db.prepare("DELETE FROM memory_jobs WHERE job_id = 'ws1-wait'").run();
+    // An operator cancelled the current run: the wave stays closed, whatever the window says.
+    db.prepare("UPDATE model_work_budgets SET state = 'cancelled', deadline_at = ? WHERE budget_id = ?").run(past, third[0].nextBudgetId);
+    job("ws1-after-cancel", spent, "retry");
+    expect(rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } })).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM model_work_budgets WHERE root_wave_id = 'continuity:ws-1'").get()).toEqual({ n: 3 });
+    db.prepare("DELETE FROM memory_jobs WHERE job_id = 'ws1-after-cancel'").run();
+    db.prepare("UPDATE model_work_budgets SET state = 'exhausted' WHERE budget_id = ?").run(third[0].nextBudgetId);
     // An absolute deadline already in the past would open a run spent at birth: refused.
     job("ws1-last", spent, "retry");
     db.prepare("UPDATE model_work_budgets SET deadline_at = ? WHERE budget_id = ?").run(past, third[0].nextBudgetId);

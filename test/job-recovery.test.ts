@@ -299,6 +299,46 @@ it("recover accepts a retry job whose lease is not live, and only that (#140)", 
   expect(JSON.parse(row.retry_history)[0]).toMatchObject({ fromState: "retry", attempts: 1, action: "retry" });
 });
 
+it("recovering a job parked on a spent budget without a window moves it to a new run (#140)", () => {
+  put("session-A", "parked-source");
+  capture("session-A");
+  const jobId = (db.prepare("SELECT job_id FROM memory_jobs WHERE kind = 'capsule_update'")
+    .get() as { job_id: string }).job_id;
+  const spent = getOrCreateModelWorkBudget(db, {
+    parentWaveId: `continuity:${workstream}`, limits: { maxAttempts: 3, deadlineAt: null },
+  });
+  db.prepare("UPDATE model_work_budgets SET state = 'exhausted' WHERE budget_id = ?").run(spent.budgetId);
+  db.prepare("UPDATE memory_jobs SET state = 'retry', attempts = 1, budget_id = ?, maintenance_wave_id = ? WHERE job_id = ?")
+    .run(spent.budgetId, spent.parentWaveId, jobId);
+  // A dry run promises nothing and moves nothing.
+  expect(recoverTerminalWork(db, { jobId, dryRun: true }).dryRun).toBe(true);
+  expect(db.prepare("SELECT state, budget_id FROM memory_jobs WHERE job_id = ?").get(jobId))
+    .toMatchObject({ state: "retry", budget_id: spent.budgetId });
+  const result = recoverTerminalWork(db, { jobId });
+  expect(result.notes.some((note) => note.includes("exhausted model work budget"))).toBe(true);
+  const row = db.prepare("SELECT state, budget_id FROM memory_jobs WHERE job_id = ?").get(jobId) as { state: string; budget_id: string };
+  expect(row.state).toBe("pending");
+  expect(row.budget_id).not.toBe(spent.budgetId);
+  expect(db.prepare("SELECT state, root_wave_id, run_seq FROM model_work_budgets WHERE budget_id = ?").get(row.budget_id))
+    .toMatchObject({ state: "active", root_wave_id: `continuity:${workstream}`, run_seq: 2 });
+});
+
+it("recovering a dead extraction unit on a spent budget resets every table and then moves the job (#140)", () => {
+  const { jobId, targetId } = deadExtractionUnit();
+  const spent = getOrCreateModelWorkBudget(db, { parentWaveId: "continuity:extract", limits: { maxAttempts: 3, deadlineAt: null } });
+  db.prepare("UPDATE model_work_budgets SET state = 'exhausted' WHERE budget_id = ?").run(spent.budgetId);
+  db.prepare("UPDATE memory_jobs SET budget_id = ?, maintenance_wave_id = ? WHERE job_id = ?").run(spent.budgetId, spent.parentWaveId, jobId);
+  const result = recoverTerminalWork(db, { allDead: true });
+  const entry = result.entries.find((item) => item.jobId === jobId)!;
+  expect(entry.reset).toMatchObject({ memory_jobs: 1, extraction_targets: 1, extraction_target_items: 1, exchange_extraction_state: 1, checkpoints: 1 });
+  expect(db.prepare("SELECT state, attempts FROM extraction_targets WHERE target_id = ?").get(targetId)).toEqual({ state: "pending", attempts: 0 });
+  const row = db.prepare("SELECT state, attempts, budget_id FROM memory_jobs WHERE job_id = ?").get(jobId) as { state: string; attempts: number; budget_id: string };
+  expect(row).toMatchObject({ state: "pending", attempts: 0 });
+  expect(row.budget_id).not.toBe(spent.budgetId);
+  expect(db.prepare("SELECT state FROM model_work_budgets WHERE budget_id = ?").get(row.budget_id)).toEqual({ state: "active" });
+  expect(result.notes.some((note) => note.includes(`job ${jobId} was bound to a exhausted model work budget`))).toBe(true);
+});
+
 it("the worker continues a spent continuity wave and claims the job it had frozen (#140)", async () => {
   put("session-A", "frozen-source");
   capture("session-A");
