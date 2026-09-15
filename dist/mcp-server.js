@@ -12023,6 +12023,7 @@ function rolloverSpentWaveBudgets(db, input = {}) {
       const root = previous.rootWaveId || rootWaveIdOf(previous.parentWaveId);
       const latest = latestMaintenanceBudget(db, root);
       const latestIsOther = latest !== null && latest.budgetId !== previous.budgetId;
+      if (latestIsOther && latest.state === "cancelled") continue;
       const latestWindowOpen = latestIsOther && (latest.deadlineAt === null || Date.parse(latest.deadlineAt) > now.getTime());
       if (latestWindowOpen && latest.state !== "active") continue;
       const next = latestWindowOpen && latest.state === "active" ? latest : insertModelWorkBudget(db, {
@@ -33056,7 +33057,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.13"
+    version: "0.7.14"
   },
   {
     capabilities: {

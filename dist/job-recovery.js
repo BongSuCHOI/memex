@@ -16,6 +16,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { startNewModelWorkRunForJob } from "./model-budget.js";
 import { getMemexHome } from "./paths.js";
 /** Terminal states this module can act on. */
 const RECOVERABLE_JOB_STATE = "dead";
@@ -361,6 +362,25 @@ export function recoverTerminalWork(db, input) {
                             .get(unit.targetId).c
                         : db.prepare(`UPDATE extraction_failed_ranges SET state = 'retry', updated_at = ?
                 WHERE target_id = ? AND state = 'failed-visible'`).run(nowIso, unit.targetId).changes);
+                }
+            }
+            // Issue #140: a job recovered onto a spent budget is still unclaimable
+            // (the worker never claims on an exhausted or cancelled budget). An
+            // operator recovery says "run this", so it also opens the next run of
+            // the job's own wave — what `startNewModelWorkRunForJob` does for an
+            // operator by hand. Last, after every reset above: the rebind also
+            // touches target/items/checkpoint rows and would otherwise pre-empt the
+            // CAS-guarded resets (and their counts) that recovery reports.
+            if (unit.jobId && !dryRun && tableExists(db, "model_work_budgets")) {
+                const spent = db.prepare(`
+          SELECT b.state AS state FROM memory_jobs j
+          JOIN model_work_budgets b ON b.budget_id = j.budget_id
+          WHERE j.job_id = ? AND b.state IN ('exhausted','cancelled')
+        `).get(unit.jobId);
+                if (spent) {
+                    const next = startNewModelWorkRunForJob(db, { jobId: unit.jobId, now });
+                    notes.push(`job ${unit.jobId} was bound to a ${spent.state} model work budget; ` +
+                        `moved to new run ${next.parentWaveId} (${next.budgetId}).`);
                 }
             }
             entries.push({

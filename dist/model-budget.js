@@ -2106,6 +2106,10 @@ export function rolloverSpentWaveBudgets(db, input = {}) {
             // third one: reuse the root's latest budget while it is alive.
             const latest = latestMaintenanceBudget(db, root);
             const latestIsOther = latest !== null && latest.budgetId !== previous.budgetId;
+            // An operator cancelled the wave's current run: nothing in this wave may
+            // reopen it, whatever the window says.
+            if (latestIsOther && latest.state === "cancelled")
+                continue;
             // A null deadline is an indefinite window, never an expired one.
             const latestWindowOpen = latestIsOther
                 && (latest.deadlineAt === null || Date.parse(latest.deadlineAt) > now.getTime());
