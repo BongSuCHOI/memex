@@ -2,6 +2,34 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.11 - 2026-09-15
+
+Fixes for two findings from a live 0.7.10 installation (#133, #134).
+
+### Injection
+
+- The reembed worker's WAL `TRUNCATE` checkpoint no longer holds the writer
+  lock for up to 5 s while it waits for readers. The inject daemon queued
+  behind it with the same budget and logged `database is locked`; the first
+  prompt after a SessionStart then received no memory at all. The checkpoint
+  now gives up after 250 ms and the WAL simply stays for the next batch.
+- The injection commit (recall receipt, fact residency, evidence cursor, gate
+  state) is retried once, 300 ms later and with a 1 s lock wait, when SQLite
+  reports another writer. The bundle was always designed to be retryable;
+  nothing is delivered before it commits, and the whole request stays inside
+  the hook's compute budget.
+
+### Doctor
+
+- `inject-daemon` reports `not reachable from this process — connect() was
+  denied (EPERM)` instead of `hung` when the diagnostic itself may not talk to
+  the socket, which is what a sandboxed run (an agent running `memex doctor`)
+  sees on a healthy daemon. It no longer names a pid to stop.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.10 - 2026-09-14
 
 Hotfixes for the two findings of the post-release review of 0.7.9 (#121).

@@ -51,6 +51,47 @@ export interface InjectOptions {
      */
     matcher?: MatcherHandle;
 }
+/** The shape `commitInjectionBundle` needs from a database handle. */
+type CommitDb = {
+    transaction?: (fn: () => void) => {
+        (): void;
+        immediate(): void;
+    };
+    inTransaction?: boolean;
+    pragma?: (statement: string, options?: {
+        simple?: boolean;
+    }) => unknown;
+};
+/** Issue #133: how often the injection commit is retried when another writer holds the lock. */
+export declare const INJECT_COMMIT_BUSY_RETRIES = 1;
+/** Issue #133: pause before that retry. */
+export declare const INJECT_COMMIT_BUSY_DELAY_MS = 300;
+/**
+ * Issue #133: the retry's own lock wait. The first attempt already spent the
+ * connection's full busy_timeout (5 s); a second full wait would push the
+ * request past the hook's compute budget (10 s, `INJECT_DAEMON_REQUEST_TIMEOUT_MS`)
+ * and, being synchronous, hide a hook that disconnected meanwhile. 5 s + 0.3 s
+ * + 1 s stays inside it with the compute itself.
+ */
+export declare const INJECT_COMMIT_RETRY_BUSY_MS = 1000;
+export declare function isSqliteBusy(error: unknown): boolean;
+/**
+ * Issue #133: run the injection commit (receipt, residency, cursor, gate state)
+ * and retry it once when SQLite reports another writer.
+ *
+ * The bundle is designed to be retryable — nothing is delivered before it
+ * commits and every guard (`deliverable`, generation checks) re-runs inside it.
+ * Observed live: the inject daemon waited its whole 5 s busy_timeout behind a
+ * worker's WAL checkpoint and logged `database is locked`; the prompt received
+ * no memory at all, with no fallback and no retry. One short retry covers the
+ * residual contention left after the checkpoint fix, well inside the hook's
+ * compute budget. Never retried inside a caller-owned transaction.
+ */
+export declare function commitInjectionBundle(db: CommitDb, commit: () => void, options?: {
+    retries?: number;
+    delayMs?: number;
+    retryBusyMs?: number;
+}): Promise<void>;
 /**
  * Compute the UserPromptSubmit context block for a prompt.
  *
@@ -74,3 +115,4 @@ export interface InjectOptions {
  * "one recall must not taint sibling tools" 불변식의 추적 가능성이 이 영수증에 의존한다.
  */
 export declare function computeInjectContext(userPrompt: string, project: string, via: "daemon" | "fallback", sessionId?: string, options?: InjectOptions): Promise<string>;
+export {};

@@ -1395,6 +1395,20 @@ test('doctor reports absent, stale-with-reclaim, stale-with-nobody and hung', as
   const hung = await check();
   assert.equal(hung.status, 'warn', hung.detail);
   assert.match(hung.detail, /^hung — a listener holds the socket but did not identify itself within 3000ms/);
+
+  // 5. denied (#134) — a live listener this process may not connect to. A
+  // sandboxed diagnostic sees this on a healthy daemon; it must not be `hung`
+  // and must not name a pid to stop. connect(2) needs write permission on the
+  // socket inode, so mode 000 yields EACCES for any non-root user.
+  if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+    fs.chmodSync(socketIn(root), 0o000);
+    const denied = await check();
+    fs.chmodSync(socketIn(root), 0o600);
+    assert.equal(denied.status, 'warn', denied.detail);
+    assert.match(denied.detail, /^not reachable from this process — connect\(\) was denied \(EACCES\)/);
+    assert.match(denied.detail, /Re-run doctor from a plain terminal/);
+    assert.doesNotMatch(denied.detail, /^hung/);
+  }
   await new Promise((resolve) => mute.server.close(() => resolve()));
 });
 
