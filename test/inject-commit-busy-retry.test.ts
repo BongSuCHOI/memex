@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -125,18 +125,28 @@ it("does not start a retry that cannot finish before the deadline", async () => 
 });
 
 it("re-checks the deadline after the pause", async () => {
-  const holder = open(50);
-  holder.exec("BEGIN IMMEDIATE");
-  setTimeout(() => { try { holder.exec("COMMIT"); } catch { /* test teardown */ } }, 40);
-  const writer = open(50);
-  let attempts = 0;
-  // Fits before the pause (10 + 30 < 60) but not after it (30 > ~20 left).
-  await expect(commitInjectionBundle(
-    writer,
-    () => { attempts++; writer.prepare("INSERT INTO receipts(v) VALUES ('prepared')").run(); },
-    { retries: 1, delayMs: 10, retryBusyMs: 30, deadlineAt: Date.now() + 60 },
-  )).rejects.toMatchObject({ code: "SQLITE_BUSY" });
-  expect(attempts).toBe(0);
+  // Fake timers drive both setTimeout and Date.now(): the budget is still
+  // sufficient when the pause starts and exhausted when it ends, so only the
+  // post-pause check can refuse the retry.
+  vi.useFakeTimers();
+  try {
+    const holder = open(0);
+    holder.exec("BEGIN IMMEDIATE");
+    const writer = open(0); // the first attempt fails without waiting
+    let attempts = 0;
+    const pending = commitInjectionBundle(
+      writer,
+      () => { attempts++; writer.prepare("INSERT INTO receipts(v) VALUES ('prepared')").run(); },
+      { retries: 1, delayMs: 10, retryBusyMs: 30, deadlineAt: Date.now() + 100 },
+    );
+    const outcome = pending.then(() => "committed", (error) => error);
+    await vi.advanceTimersByTimeAsync(200); // the pause ends 200 ms later
+    holder.exec("ROLLBACK");
+    await expect(outcome).resolves.toMatchObject({ code: "SQLITE_BUSY" });
+    expect(attempts).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("does not retry a non-lock failure", async () => {
