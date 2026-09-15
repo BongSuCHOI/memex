@@ -692,6 +692,19 @@ async function injectDaemonCheck() {
     // stops that host's memory tools too, and pids are reused, so the advice
     // always names the build as well.
     const pidNote = "the pid is the whole MCP server process (stopping it affects that host's Memex tools), and pids can be reused — confirm the owner before acting";
+    // Issue #134: EPERM/EACCES on connect(2) say that THIS process may not talk to
+    // the socket — a sandboxed diagnostic (an agent running `memex doctor` inside
+    // its sandbox) sees exactly that on a perfectly healthy daemon. Reporting it as
+    // `hung` named a pid to stop for a problem the daemon did not have. The probe's
+    // reclaim decision is unchanged (a socket we cannot speak to is never unlinked).
+    if (!probe.owner && (probe.code === "EPERM" || probe.code === "EACCES")) {
+        return {
+            name, status: "warn",
+            detail: `not reachable from this process — connect() was denied (${probe.code}). This is what a ` +
+                `sandboxed diagnostic sees (for example \`memex doctor\` run by an agent inside its sandbox); ` +
+                `the daemon itself may be healthy. Re-run doctor from a plain terminal before acting on any pid. ${where}`,
+        };
+    }
     if (!probe.owner) {
         return {
             name, status: "warn",

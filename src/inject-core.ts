@@ -305,6 +305,80 @@ function markCapsuleGenerationSeen(db: SearchDb, sessionId: string, contextEpoch
     .run(generation, sessionId, contextEpoch);
 }
 
+/** The shape `commitInjectionBundle` needs from a database handle. */
+type CommitDb = {
+  transaction?: (fn: () => void) => { (): void; immediate(): void };
+  inTransaction?: boolean;
+  pragma?: (statement: string, options?: { simple?: boolean }) => unknown;
+};
+
+/** Issue #133: how often the injection commit is retried when another writer holds the lock. */
+export const INJECT_COMMIT_BUSY_RETRIES = 1;
+/** Issue #133: pause before that retry. */
+export const INJECT_COMMIT_BUSY_DELAY_MS = 300;
+/**
+ * Issue #133: the retry's own lock wait. The first attempt already spent the
+ * connection's full busy_timeout (5 s); a second full wait would push the
+ * request past the hook's compute budget (10 s, `INJECT_DAEMON_REQUEST_TIMEOUT_MS`)
+ * and, being synchronous, hide a hook that disconnected meanwhile. 5 s + 0.3 s
+ * + 1 s stays inside it with the compute itself.
+ */
+export const INJECT_COMMIT_RETRY_BUSY_MS = 1_000;
+
+export function isSqliteBusy(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED";
+}
+
+/**
+ * Issue #133: run the injection commit (receipt, residency, cursor, gate state)
+ * and retry it once when SQLite reports another writer.
+ *
+ * The bundle is designed to be retryable — nothing is delivered before it
+ * commits and every guard (`deliverable`, generation checks) re-runs inside it.
+ * Observed live: the inject daemon waited its whole 5 s busy_timeout behind a
+ * worker's WAL checkpoint and logged `database is locked`; the prompt received
+ * no memory at all, with no fallback and no retry. One short retry covers the
+ * residual contention left after the checkpoint fix, well inside the hook's
+ * compute budget. Never retried inside a caller-owned transaction.
+ */
+export async function commitInjectionBundle(
+  db: CommitDb,
+  commit: () => void,
+  options: { retries?: number; delayMs?: number; retryBusyMs?: number } = {},
+): Promise<void> {
+  const retries = options.retries ?? INJECT_COMMIT_BUSY_RETRIES;
+  const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
+  const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
+  const run = () => {
+    if (typeof db.transaction === "function") {
+      const tx = db.transaction(commit);
+      db.inTransaction ? tx() : tx.immediate();
+    } else commit();
+  };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (attempt === 0 || typeof db.pragma !== "function") {
+        run();
+      } else {
+        // The retry waits for the lock only briefly (see INJECT_COMMIT_RETRY_BUSY_MS);
+        // the connection's own budget is restored afterwards whatever happens.
+        const previous = Number(db.pragma("busy_timeout", { simple: true }));
+        db.pragma(`busy_timeout = ${retryBusyMs}`);
+        try { run(); } finally {
+          db.pragma(`busy_timeout = ${Number.isFinite(previous) ? previous : 5000}`);
+        }
+      }
+      return;
+    } catch (error) {
+      if (!isSqliteBusy(error) || attempt >= retries || db.inTransaction) throw error;
+      // The pause is an await: a hook that disconnected during the first wait is
+      // observed here, and `deliverable()` inside the bundle refuses the retry.
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 function truncateFact(text: string, cap = NORMAL_BUNDLE_BUDGET.lineChars): string {
   const t = text.replace(/\s+/g, " ").trim();
   return t.length > cap ? t.slice(0, cap - 1) + "…" : t;
@@ -917,10 +991,7 @@ export async function computeInjectContext(
     // Receipt, fact residency, Hot Evidence prefix and gate state either commit
     // together or remain retryable when this transaction fails. Delivery on
     // stdout happens afterwards; it is not an exactly-once transport.
-    if (typeof db.transaction === "function") {
-      const tx = db.transaction(commitBundle);
-      db.inTransaction ? tx() : tx.immediate();
-    } else commitBundle();
+    await commitInjectionBundle(db as CommitDb, commitBundle);
     // The receipt is durable at this point. The transport can now carry its
     // exact id and mark only this delivery after stdout succeeds.
     if (preparedReceiptId && options.onPreparedReceipt) {

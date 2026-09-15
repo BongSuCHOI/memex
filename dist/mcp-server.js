@@ -28943,6 +28943,43 @@ function markCapsuleGenerationSeen(db, sessionId, contextEpoch, generation) {
   if (!canQuery(db)) return;
   db.prepare("UPDATE session_memory_state SET capsule_generation_seen = ? WHERE session_id = ? AND context_epoch = ?").run(generation, sessionId, contextEpoch);
 }
+var INJECT_COMMIT_BUSY_RETRIES = 1;
+var INJECT_COMMIT_BUSY_DELAY_MS = 300;
+var INJECT_COMMIT_RETRY_BUSY_MS = 1e3;
+function isSqliteBusy(error2) {
+  const code = error2?.code;
+  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED";
+}
+async function commitInjectionBundle(db, commit, options = {}) {
+  const retries = options.retries ?? INJECT_COMMIT_BUSY_RETRIES;
+  const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
+  const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
+  const run = () => {
+    if (typeof db.transaction === "function") {
+      const tx = db.transaction(commit);
+      db.inTransaction ? tx() : tx.immediate();
+    } else commit();
+  };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (attempt === 0 || typeof db.pragma !== "function") {
+        run();
+      } else {
+        const previous = Number(db.pragma("busy_timeout", { simple: true }));
+        db.pragma(`busy_timeout = ${retryBusyMs}`);
+        try {
+          run();
+        } finally {
+          db.pragma(`busy_timeout = ${Number.isFinite(previous) ? previous : 5e3}`);
+        }
+      }
+      return;
+    } catch (error2) {
+      if (!isSqliteBusy(error2) || attempt >= retries || db.inTransaction) throw error2;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
 function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
   const t = text.replace(/\s+/g, " ").trim();
   return t.length > cap ? t.slice(0, cap - 1) + "\u2026" : t;
@@ -29432,10 +29469,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       });
       if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
     };
-    if (typeof db.transaction === "function") {
-      const tx = db.transaction(commitBundle);
-      db.inTransaction ? tx() : tx.immediate();
-    } else commitBundle();
+    await commitInjectionBundle(db, commitBundle);
     if (preparedReceiptId && options.onPreparedReceipt) {
       try {
         options.onPreparedReceipt(preparedReceiptId);
@@ -32959,7 +32993,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.10"
+    version: "0.7.11"
   },
   {
     capabilities: {

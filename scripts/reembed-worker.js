@@ -46,8 +46,27 @@ const WAL_CHECKPOINT_EVERY_BATCHES = 10; // ~2000 rows between WAL truncations
 // Periodically fold the WAL back with a TRUNCATE checkpoint. busy_timeout lets
 // it wait briefly for a checkpoint window; if readers never yield it stays a
 // no-op (PASSIVE-equivalent) rather than blocking the drain — best-effort.
+//
+// Issue #133: TRUNCATE takes the WAL *writer* lock first and only then invokes
+// the busy handler while it waits for readers to leave their snapshot — for the
+// whole busy_timeout. Every other writer (the inject daemon committing a recall
+// receipt, the hook's cold fallback, the continuity worker) queues behind it and,
+// with the same 5 s budget, dies with `database is locked`; observed live as a
+// first prompt after SessionStart that received no memory at all. So the wait is
+// capped: a checkpoint that cannot finish in CHECKPOINT_BUSY_MS gives up (the
+// WAL simply stays for the next batch) and the connection's normal budget is
+// restored for the drain itself.
+const CHECKPOINT_BUSY_MS = 250;
 function checkpointWal(db) {
-  try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* best-effort */ }
+  let previous = 5000;
+  try { previous = Number(db.pragma('busy_timeout', { simple: true })) || previous; } catch { /* keep default */ }
+  try {
+    db.pragma(`busy_timeout = ${CHECKPOINT_BUSY_MS}`);
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  } catch { /* best-effort */ }
+  finally {
+    try { db.pragma(`busy_timeout = ${previous}`); } catch { /* best-effort */ }
+  }
 }
 
 const LOCK = path.join(getIndexDir(), 'reembed.lock');
