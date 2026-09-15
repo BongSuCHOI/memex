@@ -2,6 +2,27 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.13 - 2026-09-15
+
+Fix for a queue job found frozen on a second machine (#140).
+
+### Continuity
+
+- A Continuity wave whose window has passed is continued. A `capsule_update`
+  that failed once under a hook-spawned worker was bound to a per-workstream
+  `continuity:*` budget; when that budget's window expired the job could never
+  be claimed again and the budget could never be rolled over while the job
+  was bound to it. The worker now opens the next run of such a wave before its
+  first claim and moves the wave's lease-free queued jobs onto it. Bounded to
+  one run per elapsed window; held jobs, live leases, cancelled and automatic
+  budgets are never touched.
+- `memex jobs retry <id>` and `memex recover <id>` accept a `retry` job whose
+  lease is not live, in addition to `dead` work.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.12 - 2026-09-15
 
 Hotfixes for the three findings of the post-release review of 0.7.11 (#133).

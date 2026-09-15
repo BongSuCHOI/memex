@@ -371,7 +371,7 @@ Every subcommand accepts `--help` / `-h`, prints usage only, and exits `0`; comm
 | `memex ontology` | Inspect and repair the local taxonomy: `list\|merge\|rename` |
 | `memex status` | Pipeline readiness, `Needs attention`, quarantined projects, and `memory_jobs` by kind × state; `--json` |
 | `memex jobs` | Inspect and recover memory jobs: `list\|show\|retry\|dismiss` |
-| `memex recover` | Reset terminal (dead) work back to claimable in one transaction; `--all-dead`, `--dry-run` |
+| `memex recover` | Reset terminal (dead) work — or one `retry` job whose lease is not live — back to claimable in one transaction; `--all-dead`, `--dry-run` |
 | `memex model-work` | Inspect a model-work budget or explicitly resume one; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex models` | Choose the model and reasoning effort for Memex's own model work: `show\|set\|reset\|test`. `set --model <id> [--reasoning <level>]` (`unset` removes the flag); `test` makes exactly one real call and clears the configuration hold for that selection |
 | `memex gate` | Your own recall-gate rules: `show\|patterns\|words\|test\|replay\|validate\|history\|quarantine\|reset\|rollback`. Built-ins are disabled by id, never deleted; writes take `--dry-run` and `--expect-revision <n>` |

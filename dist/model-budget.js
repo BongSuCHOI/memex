@@ -2040,6 +2040,106 @@ function getOrCreateWaveModelBudget(db, input) {
     });
     return maintain.immediate();
 }
+/**
+ * Issue #140: root waves that may be continued automatically once their
+ * window has passed. Only hook-spawned Continuity work qualifies: it never
+ * had the automatic rolling cap, and its budgets are created without an
+ * operator. Explicit manual runs keep their operator-only resume.
+ */
+const AUTO_CONTINUED_WAVE_PREFIXES = ["continuity:"];
+/**
+ * Issue #140: continue a spent Continuity wave whose window has passed.
+ *
+ * Observed live: a `capsule_update` job failed once under a hook-spawned
+ * worker (no maintenance wave in the environment), so the call was budgeted
+ * under `continuity:<workstream>` and the job stayed bound to that budget.
+ * The 15-minute window expired, the budget became `exhausted`, and from then
+ * on nothing could move: `nextJob` never claims a job on an exhausted budget,
+ * and `getOrCreateWaveModelBudget` keeps returning the exhausted budget while
+ * a job is bound to it — so every later job of that workstream claimed by a
+ * hook worker was bound to the same dead budget. Four days in `retry` with a
+ * 1 s backoff, and no operator path (`recover` accepts only `dead`).
+ *
+ * The continuation is bounded: one new run per elapsed deadline window per
+ * wave, with the run's own attempt cap — a wave exhausted by its cap waits
+ * for its window to end, exactly like the automatic root waits for its
+ * rolling window. Only lease-free `pending`/`retry` jobs without a hold move;
+ * `attempts` is kept; `cancelled` and automatic budgets are never touched.
+ * Selection, run creation and rebinding are one immediate transaction, so two
+ * workers cannot open two runs for the same wave; a job that becomes movable
+ * later (a released hold) joins the wave's current run instead.
+ */
+export function rolloverSpentWaveBudgets(db, input = {}) {
+    ensureModelBudgetSchema(db);
+    if (!tableExists(db, "memory_jobs"))
+        return [];
+    const now = input.now ?? new Date();
+    const nowIso = now.toISOString();
+    const limits = { ...modelBudgetLimitsFromEnv(now.getTime()), ...input.limits };
+    // An absolute deadline already in the past would make every new run spent at
+    // birth and this function would open one per worker run for ever.
+    if (limits.deadlineAt && Date.parse(limits.deadlineAt) <= now.getTime())
+        return [];
+    const holdClause = columnNames(db, "memory_jobs").has("hold_reason") ? "AND j.hold_reason IS NULL" : "";
+    const movable = `j.state IN ('pending','retry') AND (j.lease_until IS NULL OR j.lease_until <= ?) ${holdClause}`;
+    const prefixClause = AUTO_CONTINUED_WAVE_PREFIXES.map(() => "b.root_wave_id LIKE ?").join(" OR ");
+    const prefixParams = AUTO_CONTINUED_WAVE_PREFIXES.map((prefix) => `${prefix}%`);
+    const tx = db.transaction(() => {
+        const candidates = db.prepare(`
+      SELECT b.budget_id AS budget_id
+      FROM model_work_budgets b
+      WHERE b.automatic = 0 AND b.state = 'exhausted'
+        AND b.deadline_at IS NOT NULL AND b.deadline_at <= ?
+        AND (${prefixClause})
+        AND EXISTS (SELECT 1 FROM memory_jobs j WHERE j.budget_id = b.budget_id AND ${movable})
+        AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.budget_id = b.budget_id AND j.lease_until > ?)
+      ORDER BY b.root_wave_id
+    `).all(nowIso, ...prefixParams, nowIso, nowIso);
+        const out = [];
+        for (const candidate of candidates) {
+            const previous = readBudgetById(db, candidate.budget_id);
+            if (!previous)
+                continue;
+            const root = previous.rootWaveId || rootWaveIdOf(previous.parentWaveId);
+            // A job released from a hold (or skipped under a live lease) after the
+            // wave already moved on must join the wave's current run, not open a
+            // third one: reuse the root's latest budget while it is alive.
+            const latest = latestMaintenanceBudget(db, root);
+            const latestIsOther = latest !== null && latest.budgetId !== previous.budgetId;
+            // A null deadline is an indefinite window, never an expired one.
+            const latestWindowOpen = latestIsOther
+                && (latest.deadlineAt === null || Date.parse(latest.deadlineAt) > now.getTime());
+            // The current run's window is still open: join it if it is alive, and if
+            // it is spent, wait for its window to end — opening another run now would
+            // bypass the per-window bound.
+            if (latestWindowOpen && latest.state !== "active")
+                continue;
+            const next = latestWindowOpen && latest.state === "active" ? latest : insertModelWorkBudget(db, {
+                parentWaveId: runWaveId(root, nextRunSeq(db, root)),
+                limits,
+                now,
+            });
+            const jobs = db.prepare(`
+        SELECT j.job_id AS job_id FROM memory_jobs j WHERE j.budget_id = ? AND ${movable} ORDER BY j.rowid
+      `).all(previous.budgetId, nowIso);
+            const move = db.prepare(`
+        UPDATE memory_jobs
+        SET budget_id = ?, maintenance_wave_id = ?, state = 'pending', available_at = ?,
+            lease_owner = NULL, lease_until = NULL, updated_at = ?
+        WHERE job_id = ? AND budget_id = ?
+      `);
+            const rebound = [];
+            for (const job of jobs) {
+                if (move.run(next.budgetId, next.parentWaveId, nowIso, nowIso, job.job_id, previous.budgetId).changes === 1) {
+                    rebound.push(job.job_id);
+                }
+            }
+            out.push({ budgetId: previous.budgetId, nextBudgetId: next.budgetId, parentWaveId: next.parentWaveId, reboundJobIds: rebound });
+        }
+        return out;
+    });
+    return tx.immediate();
+}
 /** Stable budget used by the SessionStart maintenance sibling wave. */
 export function getOrCreateMaintenanceModelBudget(db, input = {}) {
     return getOrCreateWaveModelBudget(db, {

@@ -10444,6 +10444,7 @@ __export(model_budget_exports, {
   releaseExtractionClaimOnHold: () => releaseExtractionClaimOnHold,
   releaseHeldJobs: () => releaseHeldJobs,
   reserveModelAttempt: () => reserveModelAttempt,
+  rolloverSpentWaveBudgets: () => rolloverSpentWaveBudgets,
   rootWaveIdOf: () => rootWaveIdOf,
   settleConfigRejectedAttempt: () => settleConfigRejectedAttempt,
   settleModelWorkTargets: () => settleModelWorkTargets,
@@ -11993,6 +11994,63 @@ function getOrCreateWaveModelBudget(db, input) {
   });
   return maintain.immediate();
 }
+function rolloverSpentWaveBudgets(db, input = {}) {
+  ensureModelBudgetSchema(db);
+  if (!tableExists2(db, "memory_jobs")) return [];
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  const nowIso2 = now.toISOString();
+  const limits = { ...modelBudgetLimitsFromEnv(now.getTime()), ...input.limits };
+  if (limits.deadlineAt && Date.parse(limits.deadlineAt) <= now.getTime()) return [];
+  const holdClause = columnNames2(db, "memory_jobs").has("hold_reason") ? "AND j.hold_reason IS NULL" : "";
+  const movable = `j.state IN ('pending','retry') AND (j.lease_until IS NULL OR j.lease_until <= ?) ${holdClause}`;
+  const prefixClause = AUTO_CONTINUED_WAVE_PREFIXES.map(() => "b.root_wave_id LIKE ?").join(" OR ");
+  const prefixParams = AUTO_CONTINUED_WAVE_PREFIXES.map((prefix) => `${prefix}%`);
+  const tx = db.transaction(() => {
+    const candidates = db.prepare(`
+      SELECT b.budget_id AS budget_id
+      FROM model_work_budgets b
+      WHERE b.automatic = 0 AND b.state = 'exhausted'
+        AND b.deadline_at IS NOT NULL AND b.deadline_at <= ?
+        AND (${prefixClause})
+        AND EXISTS (SELECT 1 FROM memory_jobs j WHERE j.budget_id = b.budget_id AND ${movable})
+        AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.budget_id = b.budget_id AND j.lease_until > ?)
+      ORDER BY b.root_wave_id
+    `).all(nowIso2, ...prefixParams, nowIso2, nowIso2);
+    const out = [];
+    for (const candidate of candidates) {
+      const previous = readBudgetById(db, candidate.budget_id);
+      if (!previous) continue;
+      const root = previous.rootWaveId || rootWaveIdOf(previous.parentWaveId);
+      const latest = latestMaintenanceBudget(db, root);
+      const latestIsOther = latest !== null && latest.budgetId !== previous.budgetId;
+      const latestWindowOpen = latestIsOther && (latest.deadlineAt === null || Date.parse(latest.deadlineAt) > now.getTime());
+      if (latestWindowOpen && latest.state !== "active") continue;
+      const next = latestWindowOpen && latest.state === "active" ? latest : insertModelWorkBudget(db, {
+        parentWaveId: runWaveId(root, nextRunSeq(db, root)),
+        limits,
+        now
+      });
+      const jobs = db.prepare(`
+        SELECT j.job_id AS job_id FROM memory_jobs j WHERE j.budget_id = ? AND ${movable} ORDER BY j.rowid
+      `).all(previous.budgetId, nowIso2);
+      const move = db.prepare(`
+        UPDATE memory_jobs
+        SET budget_id = ?, maintenance_wave_id = ?, state = 'pending', available_at = ?,
+            lease_owner = NULL, lease_until = NULL, updated_at = ?
+        WHERE job_id = ? AND budget_id = ?
+      `);
+      const rebound = [];
+      for (const job of jobs) {
+        if (move.run(next.budgetId, next.parentWaveId, nowIso2, nowIso2, job.job_id, previous.budgetId).changes === 1) {
+          rebound.push(job.job_id);
+        }
+      }
+      out.push({ budgetId: previous.budgetId, nextBudgetId: next.budgetId, parentWaveId: next.parentWaveId, reboundJobIds: rebound });
+    }
+    return out;
+  });
+  return tx.immediate();
+}
 function getOrCreateMaintenanceModelBudget(db, input = {}) {
   return getOrCreateWaveModelBudget(db, {
     parentWaveId: input.parentWaveId?.trim() || "maintenance",
@@ -12438,7 +12496,7 @@ async function withResolvedModelWorkContext(requested, fn) {
     if (ownsDb) db.close();
   }
 }
-var MODEL_BUDGET_SCHEMA_VERSION, MODEL_BUDGET_TABLE, MODEL_ATTEMPT_TABLE, MODEL_TARGET_TABLE, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_INPUT_CHARS, DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_DEADLINE_MS, MAX_DEADLINE_MS, AUTOMATIC_MAINTENANCE_WINDOW_MS, AUTOMATIC_MAINTENANCE_COOLDOWN_MS, DEFAULT_AUTOMATIC_MAX_ATTEMPTS, MAINTENANCE_WAKE_INTERVAL_MS, MODEL_CONFIG_HOLD_TTL_MS, HOLD_REASONS, BUDGET_FREE_OUTCOMES, ModelBudgetError, ModelBudgetExhaustedError, ModelBudgetInputLimitError, ModelBudgetOutputLimitError, ModelBudgetOutputSchemaError, ModelBudgetNotFoundError, ModelBudgetAffinityError, ModelConfigHeldError, modelWorkStorage;
+var MODEL_BUDGET_SCHEMA_VERSION, MODEL_BUDGET_TABLE, MODEL_ATTEMPT_TABLE, MODEL_TARGET_TABLE, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_INPUT_CHARS, DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_DEADLINE_MS, MAX_DEADLINE_MS, AUTOMATIC_MAINTENANCE_WINDOW_MS, AUTOMATIC_MAINTENANCE_COOLDOWN_MS, DEFAULT_AUTOMATIC_MAX_ATTEMPTS, MAINTENANCE_WAKE_INTERVAL_MS, MODEL_CONFIG_HOLD_TTL_MS, HOLD_REASONS, BUDGET_FREE_OUTCOMES, ModelBudgetError, ModelBudgetExhaustedError, ModelBudgetInputLimitError, ModelBudgetOutputLimitError, ModelBudgetOutputSchemaError, ModelBudgetNotFoundError, ModelBudgetAffinityError, ModelConfigHeldError, modelWorkStorage, AUTO_CONTINUED_WAVE_PREFIXES;
 var init_model_budget = __esm({
   "src/model-budget.ts"() {
     "use strict";
@@ -12547,6 +12605,7 @@ var init_model_budget = __esm({
       }
     };
     modelWorkStorage = new AsyncLocalStorage();
+    AUTO_CONTINUED_WAVE_PREFIXES = ["continuity:"];
   }
 });
 
@@ -32997,7 +33056,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.12"
+    version: "0.7.13"
   },
   {
     capabilities: {

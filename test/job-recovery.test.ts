@@ -8,6 +8,7 @@ import type Database from "better-sqlite3";
 import { initDatabase, insertExchange } from "../src/db.js";
 import { captureTranscriptPrefix, ensureSessionMemoryState } from "../src/continuity-core.js";
 import { runContinuityWorker } from "../src/continuity-worker.js";
+import { getOrCreateModelWorkBudget } from "../src/model-budget.js";
 import { getPipelineStatus, formatPipelineStatus } from "../src/pipeline-status.js";
 import {
   dismissMemoryJob,
@@ -274,6 +275,51 @@ it("dismiss supersedes the job, records the reason, writes an audit line, and dr
   expect(JSON.stringify(audit.at(-1))).not.toContain("no longer relevant");
   // The dismissal is preserved in retry_history.
   expect(showMemoryJob(db, jobId)!.retryHistory.at(-1)).toMatchObject({ action: "dismiss", fromState: "dead" });
+});
+
+it("recover accepts a retry job whose lease is not live, and only that (#140)", () => {
+  put("session-A", "retry-source");
+  capture("session-A");
+  const jobId = (db.prepare("SELECT job_id FROM memory_jobs WHERE kind = 'capsule_update'")
+    .get() as { job_id: string }).job_id;
+  const future = new Date(Date.now() + 60_000).toISOString();
+  db.prepare("UPDATE memory_jobs SET state = 'retry', attempts = 1, last_error = 'capsule source was not present in the fixed evidence page', lease_until = ? WHERE job_id = ?")
+    .run(future, jobId);
+  expect(() => recoverTerminalWork(db, { jobId })).toThrow(/is 'retry'; only 'dead' work is recovered \(a 'retry' job qualifies once its lease expires/);
+  // --all-dead never touches retry work.
+  expect(recoverTerminalWork(db, { allDead: true }).entries.map((entry) => entry.jobId)).not.toContain(jobId);
+
+  db.prepare("UPDATE memory_jobs SET lease_until = NULL WHERE job_id = ?").run(jobId);
+  const result = recoverTerminalWork(db, { jobId });
+  expect(result.entries).toHaveLength(1);
+  expect(result.entries[0]).toMatchObject({ jobId, fromState: "retry" });
+  const row = db.prepare("SELECT state, attempts, last_error, retry_history FROM memory_jobs WHERE job_id = ?").get(jobId) as
+    { state: string; attempts: number; last_error: string | null; retry_history: string };
+  expect(row).toMatchObject({ state: "pending", attempts: 0, last_error: null });
+  expect(JSON.parse(row.retry_history)[0]).toMatchObject({ fromState: "retry", attempts: 1, action: "retry" });
+});
+
+it("the worker continues a spent continuity wave and claims the job it had frozen (#140)", async () => {
+  put("session-A", "frozen-source");
+  capture("session-A");
+  const jobId = (db.prepare("SELECT job_id FROM memory_jobs WHERE kind = 'capsule_update'")
+    .get() as { job_id: string }).job_id;
+  const past = new Date(Date.now() - 60 * 60_000).toISOString();
+  const spent = getOrCreateModelWorkBudget(db, {
+    parentWaveId: `continuity:${workstream}`, limits: { maxAttempts: 3, deadlineAt: past },
+  });
+  db.prepare("UPDATE model_work_budgets SET state = 'exhausted' WHERE budget_id = ?").run(spent.budgetId);
+  db.prepare("UPDATE memory_jobs SET state = 'retry', attempts = 1, budget_id = ?, maintenance_wave_id = ?, available_at = ?, last_error = 'capsule source was not present in the fixed evidence page' WHERE job_id = ?")
+    .run(spent.budgetId, spent.parentWaveId, past, jobId);
+  let calls = 0;
+  await runContinuityWorker(db, { maxJobs: 1, model: async () => { calls++; throw new Error(DEAD_ERROR); } });
+  expect(calls).toBe(1);
+  const row = db.prepare("SELECT state, budget_id, last_error FROM memory_jobs WHERE job_id = ?").get(jobId) as
+    { state: string; budget_id: string; last_error: string | null };
+  expect(row.budget_id).not.toBe(spent.budgetId);
+  expect(row.last_error).toBe(DEAD_ERROR);
+  expect(db.prepare("SELECT state, run_seq FROM model_work_budgets WHERE budget_id = ?").get(row.budget_id))
+    .toMatchObject({ state: "active", run_seq: 2 });
 });
 
 it("refuses to recover or dismiss the wrong state and unknown ids", async () => {

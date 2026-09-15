@@ -34,6 +34,7 @@ import {
 import { classifyLlmError } from "./llm-error-class.js";
 import { indexHotEvidenceForSession } from "./continuity-identity.js";
 import {
+  rolloverSpentWaveBudgets,
   currentModelConfigHold,
   deferMemoryJobForModelBudget,
   ensureModelBudgetSchema,
@@ -627,6 +628,19 @@ export async function runContinuityWorker(
   } = {},
 ): Promise<ContinuityWorkerResult[]> {
   ensureModelBudgetSchema(db);
+  // Issue #140: a Continuity wave whose window ended must not keep its queued
+  // jobs hostage — see rolloverSpentWaveBudgets. Before the first claim, so
+  // this very run can drain them.
+  try {
+    for (const rolled of rolloverSpentWaveBudgets(db, { now: options.now })) {
+      console.error(
+        `continuity-worker: wave ${rolled.parentWaveId} continued after its window — ` +
+        `${rolled.reboundJobIds.length} queued job(s) rebound`,
+      );
+    }
+  } catch (error) {
+    console.error(`continuity-worker: wave continuation skipped: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const maxJobs = Math.max(1, Math.min(32, options.maxJobs ?? 8));
   const owner = options.owner ?? randomUUID();
   const budgeted = options.model === undefined;
