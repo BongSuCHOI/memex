@@ -140,10 +140,14 @@ it("re-checks the deadline after the pause", async () => {
       { retries: 1, delayMs: 10, retryBusyMs: 30, deadlineAt: Date.now() + 100 },
     );
     const outcome = pending.then(() => "committed", (error) => error);
-    await vi.advanceTimersByTimeAsync(200); // the pause ends 200 ms later
+    // The lock is released while the pause is still running: a retry that did
+    // start now would succeed, so only the post-pause check can explain a
+    // refusal with the first attempt's error.
     holder.exec("ROLLBACK");
+    await vi.advanceTimersByTimeAsync(200); // the pause ends 200 ms later
     await expect(outcome).resolves.toMatchObject({ code: "SQLITE_BUSY" });
     expect(attempts).toBe(0);
+    expect(writer.prepare("SELECT COUNT(*) AS n FROM receipts").get()).toEqual({ n: 0 });
   } finally {
     vi.useRealTimers();
   }
