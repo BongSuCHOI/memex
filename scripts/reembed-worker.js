@@ -59,7 +59,11 @@ const WAL_CHECKPOINT_EVERY_BATCHES = 10; // ~2000 rows between WAL truncations
 const CHECKPOINT_BUSY_MS = 250;
 function checkpointWal(db) {
   let previous = 5000;
-  try { previous = Number(db.pragma('busy_timeout', { simple: true })) || previous; } catch { /* keep default */ }
+  try {
+    const current = Number(db.pragma('busy_timeout', { simple: true }));
+    // 0 is a valid budget ("never wait") and must come back as 0, not 5000.
+    if (Number.isFinite(current) && current >= 0) previous = current;
+  } catch { /* keep default */ }
   try {
     db.pragma(`busy_timeout = ${CHECKPOINT_BUSY_MS}`);
     db.pragma('wal_checkpoint(TRUNCATE)');

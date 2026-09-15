@@ -70,10 +70,18 @@ export declare const INJECT_COMMIT_BUSY_DELAY_MS = 300;
  * Issue #133: the retry's own lock wait. The first attempt already spent the
  * connection's full busy_timeout (5 s); a second full wait would push the
  * request past the hook's compute budget (10 s, `INJECT_DAEMON_REQUEST_TIMEOUT_MS`)
- * and, being synchronous, hide a hook that disconnected meanwhile. 5 s + 0.3 s
- * + 1 s stays inside it with the compute itself.
+ * and, being synchronous, hide a hook that disconnected meanwhile. The retry
+ * therefore waits at most this long, and only when `deadlineAt` still leaves
+ * room for pause + wait — the compute before the commit is not free.
  */
 export declare const INJECT_COMMIT_RETRY_BUSY_MS = 1000;
+/**
+ * How long after the request started a retry may still begin (pause and lock
+ * wait included). Below the daemon's 10 s request timeout with margin for
+ * delivery; a request that is already this late gets the first attempt's
+ * error, exactly as before 0.7.11.
+ */
+export declare const INJECT_COMMIT_DEADLINE_MS = 8000;
 export declare function isSqliteBusy(error: unknown): boolean;
 /**
  * Issue #133: run the injection commit (receipt, residency, cursor, gate state)
@@ -91,6 +99,7 @@ export declare function commitInjectionBundle(db: CommitDb, commit: () => void, 
     retries?: number;
     delayMs?: number;
     retryBusyMs?: number;
+    deadlineAt?: number;
 }): Promise<void>;
 /**
  * Compute the UserPromptSubmit context block for a prompt.

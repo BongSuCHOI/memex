@@ -28946,6 +28946,7 @@ function markCapsuleGenerationSeen(db, sessionId, contextEpoch, generation) {
 var INJECT_COMMIT_BUSY_RETRIES = 1;
 var INJECT_COMMIT_BUSY_DELAY_MS = 300;
 var INJECT_COMMIT_RETRY_BUSY_MS = 1e3;
+var INJECT_COMMIT_DEADLINE_MS = 8e3;
 function isSqliteBusy(error2) {
   const code = error2?.code;
   return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED";
@@ -28954,6 +28955,7 @@ async function commitInjectionBundle(db, commit, options = {}) {
   const retries = options.retries ?? INJECT_COMMIT_BUSY_RETRIES;
   const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
   const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
+  const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
   const run = () => {
     if (typeof db.transaction === "function") {
       const tx = db.transaction(commit);
@@ -28976,7 +28978,9 @@ async function commitInjectionBundle(db, commit, options = {}) {
       return;
     } catch (error2) {
       if (!isSqliteBusy(error2) || attempt >= retries || db.inTransaction) throw error2;
+      if (Date.now() + delayMs + retryBusyMs > deadlineAt) throw error2;
       await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (Date.now() + retryBusyMs > deadlineAt) throw error2;
     }
   }
 }
@@ -29469,7 +29473,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       });
       if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
     };
-    await commitInjectionBundle(db, commitBundle);
+    await commitInjectionBundle(db, commitBundle, { deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS });
     if (preparedReceiptId && options.onPreparedReceipt) {
       try {
         options.onPreparedReceipt(preparedReceiptId);
@@ -32993,7 +32997,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.11"
+    version: "0.7.12"
   },
   {
     capabilities: {
