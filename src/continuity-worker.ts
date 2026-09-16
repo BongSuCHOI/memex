@@ -14,6 +14,7 @@ import {
   readWorkCapsule,
   scheduleCapsuleBacklog,
 } from "./continuity-core.js";
+import type { WorkCapsule } from "./continuity-core.js";
 import { parseConversation } from "./codex-rollout.js";
 import { ingestPrefixExchanges } from "./archive-ingestion.js";
 import { callMemoryModel } from "./llm.js";
@@ -436,8 +437,19 @@ async function processCapsule(
       }
       return { jobId, kind: "capsule_update", state: "completed", detail: "empty segment" };
     }
+    // Issue #143: a model asked to *update* a capsule carries the previous
+    // generation's sources forward, and applyWorkCapsulePatch then rejected the
+    // whole answer ("capsule source was not present in the fixed evidence
+    // page"), spending a retry on the first attempt. The prompt already forbids
+    // those ids, so they are not handed over at all. Model input only — the
+    // stored capsule keeps its sourceExchangeIds.
+    let previousForModel: Omit<WorkCapsule, "sourceExchangeIds"> | null = null;
+    if (previous) {
+      const { sourceExchangeIds: _previousSources, ...withoutSources } = previous;
+      previousForModel = withoutSources;
+    }
     const modelInput = JSON.stringify({
-      previousCapsule: previous,
+      previousCapsule: previousForModel,
       contiguousSegment: evidence,
     });
     const invoke = () => model(CAPSULE_SYSTEM_PROMPT, modelInput);

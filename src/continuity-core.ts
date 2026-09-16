@@ -1515,13 +1515,7 @@ export function validateWorkCapsulePatchWithTruncation(
   // against the sources of an item that is no longer in the patch. The subset
   // direction means a cap can only ever satisfy this check, not break it, and
   // the surviving ids must still all be declared.
-  const evidenceSources = new Set([
-    ...patch.verifiedProgress.flatMap((item) => item.sourceExchangeIds),
-    ...patch.hypotheses.flatMap((item) => item.sourceExchangeIds),
-  ]);
-  if ([...evidenceSources].some((id) => !sources.includes(id))) {
-    throw new Error("capsule evidence sources must be declared in sourceExchangeIds");
-  }
+  assertCapsuleEvidenceSourcesDeclared(patch);
   const verifiedText = new Set(patch.verifiedProgress.map((item) => item.text.toLowerCase()));
   if (patch.hypotheses.some((item) => verifiedText.has(item.text.toLowerCase()))) {
     throw new Error("capsule text cannot be both verified progress and hypothesis");
@@ -1530,6 +1524,58 @@ export function validateWorkCapsulePatchWithTruncation(
   // Truncation is reported to the caller so the Capsule row can record it.
   const truncation = fitCapsulePatch(patch, capsuleMaxChars(), ledger);
   return { patch, truncation };
+}
+
+/**
+ * Issue #85: the evidence lists may have lost items to the item cap, so the
+ * declared-sources invariant is checked against what survived — never against
+ * the sources of an item that is no longer in the patch. Issue #143 re-runs it
+ * after carry-over normalization, which can only remove ids, so the direction
+ * still holds.
+ */
+function assertCapsuleEvidenceSourcesDeclared(patch: WorkCapsulePatch): void {
+  const declared = new Set(patch.sourceExchangeIds);
+  const evidenceSources = new Set([
+    ...patch.verifiedProgress.flatMap((item) => item.sourceExchangeIds),
+    ...patch.hypotheses.flatMap((item) => item.sourceExchangeIds),
+  ]);
+  if ([...evidenceSources].some((id) => !declared.has(id))) {
+    throw new Error("capsule evidence sources must be declared in sourceExchangeIds");
+  }
+}
+
+/**
+ * Issue #143: a model asked to update a capsule carries the previous
+ * generation's `sourceExchangeIds` forward. Those ids are real evidence of this
+ * workstream, just not on the fixed page this attempt read, so rejecting the
+ * whole answer (and spending a retry, and halving the page) was the wrong
+ * answer: they are dropped from the patch instead — from the top-level list AND
+ * from every per-claim list, because the per-claim lists are otherwise only
+ * reached through the top-level inclusion check. Ids that are on the page are
+ * kept even when the previous generation also cited them. Every remaining check
+ * runs on the normalized patch, so no off-page id can survive.
+ */
+function normalizeCapsuleCarryOverSources(
+  patch: WorkCapsulePatch,
+  previousSources: string[],
+  page: CapsulePage,
+): WorkCapsulePatch {
+  const presented = new Set(page.evidence.map((item) => item.exchangeId));
+  const carried = new Set(previousSources.filter((id) => !presented.has(id)));
+  if (carried.size === 0) return patch;
+  const keep = (ids: string[]): string[] => ids.filter((id) => !carried.has(id));
+  const keepClaims = (items: CapsuleEvidenceItem[]): CapsuleEvidenceItem[] =>
+    items
+      .map((item) => ({ ...item, sourceExchangeIds: keep(item.sourceExchangeIds) }))
+      // The schema requires at least one source per claim, so a claim whose only
+      // support was a carried-over id is dropped, never kept unsourced.
+      .filter((item) => item.sourceExchangeIds.length > 0);
+  return {
+    ...patch,
+    verifiedProgress: keepClaims(patch.verifiedProgress),
+    hypotheses: keepClaims(patch.hypotheses),
+    sourceExchangeIds: keep(patch.sourceExchangeIds),
+  };
 }
 
 function assertVerifiedSources(
@@ -1595,7 +1641,10 @@ export function applyWorkCapsulePatch(
     now?: string;
   },
 ): WorkCapsule | null {
-  const { patch, truncation } = validateWorkCapsulePatchWithTruncation(input.patch);
+  const { patch: validatedPatch, truncation } = validateWorkCapsulePatchWithTruncation(input.patch);
+  // Issue #143: re-bound once inside the transaction, after the previous
+  // generation's carried-over sources have been normalized away.
+  let patch = validatedPatch;
   if (truncation.truncated) {
     // Issue #17: one WARN line so a shortened projection is visible in the
     // worker's log, not only in the Capsule row that records it durably.
@@ -1641,11 +1690,29 @@ export function applyWorkCapsulePatch(
       | { session_id: string; workspace_id: string | null }
       | undefined;
     if (!checkpoint) throw new Error("checkpoint does not belong to workstream");
+    if (input.evidencePage) {
+      // Issue #143: normalize BEFORE any check, so the previous generation's
+      // off-page sources are gone from the top-level list and from every claim,
+      // and every check below then runs on what will actually be stored.
+      patch = normalizeCapsuleCarryOverSources(
+        patch,
+        readWorkCapsule(db, input.workstreamId)?.sourceExchangeIds ?? [],
+        input.evidencePage,
+      );
+      assertCapsuleEvidenceSourcesDeclared(patch);
+    }
     assertCapsuleSourcesExist(db, patch, input.workstreamId);
     if (input.evidencePage) {
       const presented = new Set(input.evidencePage.evidence.map((item) => item.exchangeId));
-      if (patch.sourceExchangeIds.some((id) => !presented.has(id))) {
-        throw new Error("capsule source was not present in the fixed evidence page");
+      const offPage = [...new Set(patch.sourceExchangeIds.filter((id) => !presented.has(id)))];
+      if (offPage.length > 0) {
+        // Issue #143: name the ids (bounded), so the next occurrence proves
+        // which ids the model invented instead of leaving it NOT_PROVEN.
+        throw new Error(
+          "capsule source was not present in the fixed evidence page: " +
+            offPage.slice(0, 8).join(", ") +
+            (offPage.length > 8 ? ` (+${offPage.length - 8} more)` : ""),
+        );
       }
     }
     assertVerifiedSources(db, patch.verifiedProgress, input.evidencePage);
