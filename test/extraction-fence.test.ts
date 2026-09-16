@@ -154,3 +154,22 @@ it("the fence is a transcript position: a trailing open turn inserted first does
   expect(items.map((item) => item.exchange_id)).toEqual(["a", "b"]);
   expect(db.prepare("SELECT closure_state FROM exchanges WHERE id = 'c'").get()).toEqual({ closure_state: "open" });
 });
+
+it("the checkpoint boundary is a main-line turn even when a sidechain turn is the last row within through_line", () => {
+  put("a", "closed", 1);
+  put("b", "open", 3);
+  put("side", "closed", 5, true);
+  db.prepare(`INSERT INTO checkpoints
+      (checkpoint_id, session_id, ordinal, kind, state, idempotency_key, created_at, closure_state, through_line)
+    VALUES ('cp-stop', ?, 1, 'stop', 'captured', 'cp-stop-key', ?, 'closed', 6)`)
+    .run(SESSION, new Date().toISOString());
+  expect(applyLatestLifecycleClosure(db, SESSION)).toBe(true);
+  expect(db.prepare("SELECT closure_state, content_generation FROM exchanges WHERE id = 'b'").get())
+    .toEqual({ closure_state: "closed", content_generation: 2 });
+  expect(db.prepare("SELECT closure_state, content_generation FROM exchanges WHERE id = 'side'").get())
+    .toEqual({ closure_state: "closed", content_generation: 1 });
+  const target = ensureExtractionTarget(db, { sessionId: SESSION, project: root })!;
+  const items = db.prepare("SELECT exchange_id FROM extraction_target_items WHERE target_id = ? ORDER BY ordinal")
+    .all(target.targetId) as Array<{ exchange_id: string }>;
+  expect(items.map((item) => item.exchange_id)).toEqual(["a", "b"]);
+});

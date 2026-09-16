@@ -2122,9 +2122,12 @@ function applyCheckpointClosure(db, sessionId) {
   `).get(sessionId);
     if (!checkpoint)
         return false;
+    // Issue #149 (review): the boundary is a MAIN-LINE turn. A sidechain turn
+    // that happens to be the last row within through_line must not take the
+    // label while the real trailing open turn stays fenced.
     const exchange = db.prepare(`
     SELECT id, closure_state FROM exchanges
-    WHERE session_id = ? AND line_end <= ?
+    WHERE session_id = ? AND line_end <= ? AND is_sidechain = 0
     ORDER BY line_end DESC, exchange_seq DESC, rowid DESC LIMIT 1
   `).get(sessionId, checkpoint.through_line);
     if (!exchange || exchange.closure_state === checkpoint.closure_state)
