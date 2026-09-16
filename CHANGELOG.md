@@ -2,6 +2,21 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.15 - 2026-09-16
+
+Fix for an extraction target found stuck on a second machine (#144).
+
+### Extraction
+
+- A window whose model input exceeds the durable budget is split in half and
+  retried, like any other per-request rejection. The local input-limit error
+  used to be classified as unknown and deferred, so the same oversized window
+  was retried on every run until the target died.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.14 - 2026-09-15
 
 Hotfixes for the two findings of the post-release review of 0.7.13 (#140).

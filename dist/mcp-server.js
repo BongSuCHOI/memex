@@ -31830,7 +31830,7 @@ function classifyLlmError(err) {
   const e = unwrapped;
   const localCode = unwrapped?.code;
   if (typeof localCode === "string" && CONFIG_ERROR_CODES.has(localCode)) return "config";
-  if (localCode === "MEMEX_MODEL_OUTPUT_LIMIT" || localCode === "MEMEX_MODEL_OUTPUT_SCHEMA") {
+  if (localCode === "MEMEX_MODEL_INPUT_LIMIT" || localCode === "MEMEX_MODEL_OUTPUT_LIMIT" || localCode === "MEMEX_MODEL_OUTPUT_SCHEMA") {
     return "deterministic";
   }
   const byCode = (code) => {
@@ -33057,7 +33057,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.14"
+    version: "0.7.15"
   },
   {
     capabilities: {

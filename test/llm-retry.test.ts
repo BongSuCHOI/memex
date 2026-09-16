@@ -192,6 +192,13 @@ describe('분류기 단일 소스 (llm-error-class)', () => {
     expect(classifyLlmError(new Error('Request failed with status code 400'))).toBe('deterministic');
   });
 
+  it('#144: the local input-limit rejection is deterministic (the extractor must split the window)', async () => {
+    const { classifyLlmError } = await import('../src/llm-error-class.js');
+    const { ModelBudgetInputLimitError, ModelBudgetOutputLimitError } = await import('../src/model-budget.js');
+    expect(classifyLlmError(new ModelBudgetInputLimitError(126_792, 120_000))).toBe('deterministic');
+    expect(classifyLlmError(new ModelBudgetOutputLimitError(9_000, 8_000))).toBe('deterministic');
+  });
+
   // Codex R3 CRITICAL 회귀 고정: 에러 단어 없이 '<명사> <숫자>' 가 오면 그 숫자를
   // 상태코드로 읽으면 안 된다. 'response 400 ms timeout' 이 HTTP 400(deterministic)
   // 으로 뒤집히면 타임아웃 배치가 영구 폐기돼 데이터 손실이 재현된다.

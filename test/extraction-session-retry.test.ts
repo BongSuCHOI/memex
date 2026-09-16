@@ -15,14 +15,23 @@ import path from 'node:path';
  */
 
 const llmBehavior: {
-  mode: 'transient' | 'verifier_transient' | 'deterministic' | 'ok' | 'unknown';
-} = { mode: 'ok' };
+  mode: 'transient' | 'verifier_transient' | 'deterministic' | 'ok' | 'unknown' | 'input_limit';
+  calls: number;
+} = { mode: 'ok', calls: 0 };
 
 vi.mock('../src/llm.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/llm.js')>();
   return {
     ...actual,
     callMemoryModel: async (systemPrompt: string, userMessage: string) => {
+      llmBehavior.calls += 1;
+      if (llmBehavior.mode === 'input_limit' && !systemPrompt.includes('authoritative-entailment-v3')) {
+        // Issue #144: the durable input budget rejects any window wider than
+        // one exchange, exactly as model-budget does before the provider call.
+        const { ModelBudgetInputLimitError } = await import('../src/model-budget.js');
+        const payload = JSON.parse(userMessage) as { local_exchanges: unknown[] };
+        if (payload.local_exchanges.length > 1) throw new ModelBudgetInputLimitError(126_792, 120_000);
+      }
       if (llmBehavior.mode === 'transient') {
         throw Object.assign(new Error('service unavailable'), { status: 503 });
       }
@@ -112,6 +121,7 @@ beforeEach(async () => {
   process.env.MEMEX_HOME = tmpDir;
   process.env.MEMEX_DB_PATH = path.join(tmpDir, 'test.sqlite');
   llmBehavior.mode = 'ok';
+  llmBehavior.calls = 0;
   db = await setupDb();
 });
 afterEach(() => {
@@ -176,6 +186,21 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
     expect(db.prepare(
       "SELECT state FROM extraction_targets WHERE session_id = ?",
     ).get(SESSION)).toEqual({ state: 'dead' });
+  });
+
+  it('#144: an oversized window is split, not deferred — the session still completes with facts', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    llmBehavior.mode = 'input_limit';
+
+    const result = await runFactExtraction(db, SESSION, PROJECT);
+    expect(result.extracted).toBeGreaterThan(0);
+    expect(result.skipped).toBeUndefined();
+    expect(loggedSessions()).toContain(SESSION);
+    expect(db.prepare("SELECT state FROM extraction_targets WHERE session_id = ?").get(SESSION))
+      .toEqual({ state: 'completed' });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM extraction_failed_ranges").get()).toEqual({ n: 0 });
+    // one rejected two-exchange window, then two singleton windows
+    expect(llmBehavior.calls).toBeGreaterThanOrEqual(3);
   });
 
   it('AC4e: 폐기된 배치는 dead-letter 로 기록돼 조회 가능하다 (무음 손실 금지)', async () => {
