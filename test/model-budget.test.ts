@@ -512,6 +512,85 @@ describe("#146 — a budget stop must never strand queued work", () => {
     db.close();
   });
 
+  it("A3: an already-exhausted legacy row keeps its NULL reason — and its cooldown", () => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    const createdAt = new Date(NOW.getTime() - 30 * 60_000).toISOString();
+    const budget = getOrCreateModelWorkBudget(db, {
+      parentWaveId: "maintenance",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() - 15 * 60_000).toISOString() },
+    });
+    // A pre-0.7.16 row: already settled, but nobody ever recorded WHY. It may
+    // well have been spent by its attempt cap.
+    db.prepare(`
+      UPDATE model_work_budgets
+      SET automatic = 1, state = 'exhausted', exhausted_reason = NULL,
+          created_at = ?, updated_at = ?
+      WHERE budget_id = ?
+    `).run(createdAt, createdAt, budget.budgetId);
+    insertJob(db, "job-waiting", { budgetId: budget.budgetId });
+
+    // The pre-claim check settles it again — and must not invent a reason. Its
+    // own answer is `deadline` only because the clock has moved on.
+    expect(findExhaustedModelBudgetForClaim(db, { jobId: "job-waiting", now: NOW })?.reason)
+      .toBe("deadline");
+    expect(getModelWorkBudget(db, budget.budgetId)?.exhaustedReason).toBeNull();
+
+    // Unknown is not `deadline`, so the automatic wake still waits out the hour.
+    const next = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      now: NOW,
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() + 15 * 60_000).toISOString() },
+    });
+    expect(next.budgetId).toBe(budget.budgetId);
+    db.close();
+  });
+
+  it("A4: settles a clock-dead `active` budget so its jobs are not left behind", () => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    // The row still says `active`; only its deadline says otherwise. Selecting
+    // on stored state alone left exactly these jobs stranded, and they are the
+    // ones that then stopped the foreground run on its first dequeue.
+    const clockDead = getOrCreateModelWorkBudget(db, {
+      parentWaveId: "maintenance",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() - 15 * 60_000).toISOString() },
+    });
+    expect(clockDead.state).toBe("active");
+    const live = getOrCreateModelWorkBudget(db, {
+      parentWaveId: "worker:live",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() + 60 * 60_000).toISOString() },
+    });
+    insertJob(db, "move-clock-dead", { budgetId: clockDead.budgetId });
+    insertJob(db, "keep-live", { budgetId: live.budgetId });
+
+    const target = startNewModelWorkRun(db, {
+      parentWaveId: nextModelWorkRunWaveId(db, "backfill"),
+      limits: { maxAttempts: 5, deadlineAt: null },
+    });
+    expect(
+      rebindSpentQueueJobsToBudget(db, {
+        budgetId: target.budgetId,
+        kind: "fact_extract",
+        now: NOW,
+      }),
+    ).toEqual(["move-clock-dead"]);
+    const jobBudget = (jobId: string) => (db
+      .prepare("SELECT budget_id FROM memory_jobs WHERE job_id = ?")
+      .get(jobId) as { budget_id: string }).budget_id;
+    expect(jobBudget("move-clock-dead")).toBe(target.budgetId);
+    // A budget with real time left keeps its work, as before.
+    expect(jobBudget("keep-live")).toBe(live.budgetId);
+    // The transition is durable, so `resume --new-run` and the diagnostics see
+    // the same thing this helper just acted on.
+    expect(getModelWorkBudget(db, clockDead.budgetId)).toMatchObject({
+      state: "exhausted", exhaustedReason: "deadline",
+    });
+    expect(getModelWorkBudget(db, live.budgetId)?.state).toBe("active");
+    db.close();
+  });
+
   it("A4: rebinds only lease-free, hold-free queue jobs of one kind off a spent budget", () => {
     const db = new Database(":memory:");
     db.exec(MEMORY_JOBS_DDL);

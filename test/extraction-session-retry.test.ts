@@ -400,6 +400,45 @@ describe('#146: 예산 이연은 backoff 도 attempt 도 태우지 않는다', (
     expect(loggedSessions()).toContain(SESSION);
   });
 
+  it('A4: 행은 active 지만 시계로 죽은 예산에 묶인 job 도 backfill run 에서 추출된다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const { ensureExtractionTarget } = await import('../src/continuity-store.js');
+    const {
+      bindMemoryJobToBudget, getOrCreateModelWorkBudget, nextModelWorkRunWaveId,
+      rebindSpentQueueJobsToBudget, startNewModelWorkRun,
+    } = await import('../src/model-budget.js');
+    // 관측된 상태 그대로: deadline 은 지났지만 durable state 는 아직 'active'.
+    const clockDead = getOrCreateModelWorkBudget(db, {
+      parentWaveId: 'maintenance',
+      limits: { maxAttempts: 5, deadlineAt: new Date(Date.now() - 60_000).toISOString() },
+    });
+    expect(clockDead.state).toBe('active');
+    const target = ensureExtractionTarget(db, { sessionId: SESSION, project: PROJECT })!;
+    bindMemoryJobToBudget(db, {
+      jobId: target.jobId,
+      budgetId: clockDead.budgetId,
+      parentWaveId: clockDead.parentWaveId,
+    });
+
+    // 전경 backfill 이 하는 것과 동일한 순서: 자기 run 을 열고, 묶여 있던 job 을 옮긴다.
+    const run = startNewModelWorkRun(db, {
+      parentWaveId: nextModelWorkRunWaveId(db, 'backfill'),
+      limits: { maxAttempts: 5, deadlineAt: null },
+    });
+    expect(
+      rebindSpentQueueJobsToBudget(db, { budgetId: run.budgetId, kind: 'fact_extract' }),
+      '시계로 죽은 예산에 묶인 job 이 남으면 첫 dequeue 에서 그대로 멈춘다',
+    ).toEqual([target.jobId]);
+
+    llmBehavior.mode = 'ok';
+    const result = await runFactExtraction(db, SESSION, PROJECT, {
+      modelContext: { parentWaveId: run.parentWaveId },
+    });
+    expect(result.skipped).toBeUndefined();
+    expect(result.saved).toBeGreaterThan(0);
+    expect(factExtractJob().budget_id).toBe(run.budgetId);
+  });
+
   it('A4: 다른 활성 예산에 묶인 job 도 wave 만 넘기면 affinity 오류 없이 추출된다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     const { ensureExtractionTarget } = await import('../src/continuity-store.js');

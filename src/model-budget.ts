@@ -2109,7 +2109,8 @@ function resolveBudgetExhaustion(
  *
  * The `state IN ('active','exhausted')` guard keeps a terminal `completed`/
  * `cancelled` budget from being rewritten; `exhausted` is included so the write
- * stays idempotent and refreshes `updated_at`.
+ * stays idempotent and refreshes `updated_at`. Issue #146 split that one guard
+ * in two so the REASON is written on the transition only — see below.
  */
 function markModelBudgetExhausted(
   db: Database.Database,
@@ -2117,16 +2118,31 @@ function markModelBudgetExhausted(
   reason: ModelBudgetExhaustionReason,
   nowIso: string,
 ): void {
-  // Issue #146: FIRST reason wins (COALESCE). `resolveBudgetExhaustion` is a
-  // function of the clock — a run stopped by the rolling `window` answers
-  // `deadline` once its own deadline passes — so recording the latest reason
-  // would silently rewrite a cap stop into a clock stop and let the automatic
-  // rollover skip the cooldown that the cap exists to enforce.
-  db.prepare(
+  const nextState = reason === "cancelled" ? "cancelled" : "exhausted";
+  // 🚨 Issue #146: the reason is recorded ONLY on the real transition out of
+  // `active` — the one moment we actually observe why this run stopped.
+  //
+  // `resolveBudgetExhaustion` is a function of the clock: a run stopped by the
+  // attempt cap or the rolling window answers `deadline` once its own deadline
+  // passes. So any write on an ALREADY settled row is a guess, and on a
+  // pre-0.7.16 row (reason NULL = unknown) that guess would be `deadline` —
+  // which is exactly the one value that lets the automatic wake skip the
+  // cooldown. A row that may have been spent by attempts would then roll over
+  // immediately. Unknown must stay unknown.
+  const settled = db.prepare(
     `UPDATE model_work_budgets
-     SET state = ?, exhausted_reason = COALESCE(exhausted_reason, ?), updated_at = ?
-     WHERE budget_id = ? AND state IN ('active','exhausted')`,
-  ).run(reason === "cancelled" ? "cancelled" : "exhausted", reason, nowIso, budgetId);
+     SET state = ?, exhausted_reason = ?, updated_at = ?
+     WHERE budget_id = ? AND state = 'active'`,
+  ).run(nextState, reason, nowIso, budgetId).changes;
+  if (settled === 0) {
+    // Already settled. Keep the write idempotent (a later `cancelled` still
+    // wins the state, `updated_at` still refreshes) but never touch the reason.
+    db.prepare(
+      `UPDATE model_work_budgets
+       SET state = ?, updated_at = ?
+       WHERE budget_id = ? AND state = 'exhausted'`,
+    ).run(nextState, nowIso, budgetId);
+  }
 }
 
 /**
@@ -2906,18 +2922,39 @@ export function rebindSpentQueueJobsToBudget(
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
   const holdClause = columns.has("hold_reason") ? "AND j.hold_reason IS NULL" : "";
+  const movable = `j.kind = ? AND j.budget_id IS NOT NULL AND j.budget_id != ?
+        AND j.state IN ('pending','retry')
+        AND (j.lease_until IS NULL OR j.lease_until <= ?)
+        ${holdClause}`;
   const tx = db.transaction((): string[] => {
     const target = readBudgetById(db, input.budgetId);
     if (!target) throw new ModelBudgetNotFoundError(input.budgetId);
+    // 🚨 #146, second pass: SETTLE before selecting.
+    //
+    // A run whose deadline has passed still says `active` in its row until
+    // somebody makes the transition. Selecting on stored state alone left
+    // exactly those jobs behind — and they are the ones the issue is about:
+    // the foreground run opens, the pre-claim check resolves the stale
+    // binding, `resolveBudgetExhaustion` calls it spent, and the first dequeue
+    // stops with `budget_exhausted`. This is the same transition every other
+    // caller makes (#14), so a budget that is genuinely live is untouched.
+    const boundBudgets = db.prepare(`
+      SELECT DISTINCT j.budget_id AS budget_id
+      FROM memory_jobs j
+      JOIN model_work_budgets b ON b.budget_id = j.budget_id
+      WHERE ${movable} AND b.state = 'active'
+    `).all(input.kind, target.budgetId, nowIso) as Array<{ budget_id: string }>;
+    for (const row of boundBudgets) {
+      const bound = readBudgetById(db, row.budget_id);
+      if (!bound || bound.state !== "active") continue;
+      const reason = resolveBudgetExhaustion(db, bound, now);
+      if (reason) markModelBudgetExhausted(db, bound.budgetId, reason, nowIso);
+    }
     const jobs = db.prepare(`
       SELECT j.job_id AS job_id, j.budget_id AS budget_id
       FROM memory_jobs j
       JOIN model_work_budgets b ON b.budget_id = j.budget_id
-      WHERE j.kind = ? AND j.budget_id != ?
-        AND b.state IN ('exhausted','cancelled')
-        AND j.state IN ('pending','retry')
-        AND (j.lease_until IS NULL OR j.lease_until <= ?)
-        ${holdClause}
+      WHERE ${movable} AND b.state IN ('exhausted','cancelled')
       ORDER BY j.rowid
     `).all(input.kind, target.budgetId, nowIso) as Array<{ job_id: string; budget_id: string }>;
     // `available_at` is reset because the backoff on these rows was recorded
