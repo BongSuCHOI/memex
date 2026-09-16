@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  budgetStopApplies,
   ensureModelBudgetSchema,
   exhaustModelBudget,
   findExhaustedModelBudgetForClaim,
@@ -303,6 +304,13 @@ describe("durable model work budget", () => {
     db.prepare("UPDATE model_work_budgets SET deadline_at = ? WHERE budget_id = ?").run(past, third[0].nextBudgetId);
     expect(rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: past } })).toEqual([]);
     db.close();
+  });
+
+  it("budgetStopApplies: only this run's budget (or an unknown one) stops a foreground run (post-release #146)", () => {
+    expect(budgetStopApplies("run-1", "run-1")).toBe(true);
+    expect(budgetStopApplies("run-1", null)).toBe(true);
+    expect(budgetStopApplies(null, "other")).toBe(true);
+    expect(budgetStopApplies("run-1", "other")).toBe(false);
   });
 
   it("closes an idle maintenance wave and creates a new wave for later work", () => {

@@ -1252,31 +1252,55 @@ function cleanList(values: unknown, field: string, drops: Record<string, number>
   });
 }
 
-function cleanEvidence(values: unknown, field: string, drops: Record<string, number>): CapsuleEvidenceItem[] {
+function cleanEvidenceItem(value: unknown, field: string): CapsuleEvidenceItem {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${field} contains invalid item`);
+  }
+  const item = value as Record<string, unknown>;
+  if (typeof item.text !== "string") {
+    throw new Error(`${field} contains invalid text type`);
+  }
+  if (item.text.trim().length > 500) {
+    throw new Error(`${field} contains overlong text (${item.text.trim().length} characters)`);
+  }
+  const text = item.text.trim();
+  if (!Array.isArray(item.sourceExchangeIds) ||
+    item.sourceExchangeIds.some((id) => typeof id !== "string" || !id)) {
+    throw new Error(`${field} contains invalid sources`);
+  }
+  const sources = item.sourceExchangeIds as string[];
+  if (!text || sources.length === 0) throw new Error(`${field} requires text and sources`);
+  // Issue #143: the per-claim slot cap is NOT applied here. Carried-over
+  // previous-generation ids often come first, so cutting to the cap before
+  // normalization threw away the page ids that keep the claim alive.
+  return { text, sourceExchangeIds: [...new Set(sources)] };
+}
+
+/**
+ * Issue #143 (post-release review): the evidence-list item cap is NOT applied
+ * while parsing either. Eight claims supported only by carried-over ids ahead
+ * of one page claim used to evict the page claim here and then lose the eight
+ * to normalization — an empty list stored. Every item up to the cap is still
+ * validated strictly (issue #85); an item BEYOND the cap that is invalid is
+ * dropped silently, exactly as the cap used to drop it, while a valid one
+ * stays a candidate. The cap itself runs in `finishWorkCapsulePatch`, after
+ * carry-over normalization, and is what the ledger records.
+ */
+function cleanEvidence(values: unknown, field: string): CapsuleEvidenceItem[] {
   if (!Array.isArray(values)) throw new Error(`${field} must be an array`);
-  return capItems(values, field, drops).map((value) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error(`${field} contains invalid item`);
+  const kept: CapsuleEvidenceItem[] = [];
+  values.forEach((value, index) => {
+    if (index < MAX_ARRAY_ITEMS) {
+      kept.push(cleanEvidenceItem(value, field));
+      return;
     }
-    const item = value as Record<string, unknown>;
-    if (typeof item.text !== "string") {
-      throw new Error(`${field} contains invalid text type`);
+    try {
+      kept.push(cleanEvidenceItem(value, field));
+    } catch {
+      // beyond the cap: dropped, never thrown (issue #85)
     }
-    if (item.text.trim().length > 500) {
-      throw new Error(`${field} contains overlong text (${item.text.trim().length} characters)`);
-    }
-    const text = item.text.trim();
-    if (!Array.isArray(item.sourceExchangeIds) ||
-      item.sourceExchangeIds.some((id) => typeof id !== "string" || !id)) {
-      throw new Error(`${field} contains invalid sources`);
-    }
-    const sources = item.sourceExchangeIds as string[];
-    if (!text || sources.length === 0) throw new Error(`${field} requires text and sources`);
-    // Issue #143: the per-claim slot cap is NOT applied here. Carried-over
-    // previous-generation ids often come first, so cutting to the cap before
-    // normalization threw away the page ids that keep the claim alive.
-    return { text, sourceExchangeIds: [...new Set(sources)] };
   });
+  return kept;
 }
 
 /**
@@ -1535,8 +1559,8 @@ function parseWorkCapsulePatchStructure(value: unknown): ParsedWorkCapsulePatch 
   const patch: WorkCapsulePatch = {
     objective: strictScalar("objective"),
     currentState: strictScalar("currentState"),
-    verifiedProgress: cleanEvidence(input.verifiedProgress ?? [], "verifiedProgress", itemCapDrops),
-    hypotheses: cleanEvidence(input.hypotheses ?? [], "hypotheses", itemCapDrops),
+    verifiedProgress: cleanEvidence(input.verifiedProgress ?? [], "verifiedProgress"),
+    hypotheses: cleanEvidence(input.hypotheses ?? [], "hypotheses"),
     blockers: cleanList(input.blockers ?? [], "blockers", itemCapDrops),
     openQuestions: cleanList(input.openQuestions ?? [], "openQuestions", itemCapDrops),
     nextActions: cleanList(input.nextActions ?? [], "nextActions", itemCapDrops),
@@ -1559,21 +1583,27 @@ function parseWorkCapsulePatchStructure(value: unknown): ParsedWorkCapsulePatch 
 function finishWorkCapsulePatch(
   parsed: ParsedWorkCapsulePatch,
 ): { patch: WorkCapsulePatch; truncation: CapsuleTruncation } {
+  // Issue #143: the evidence-list item cap runs here, after normalization, so
+  // a claim that normalization removes never costs a page claim its slot.
+  const itemCapDrops: Record<string, number> = { ...parsed.itemCapDrops };
+  const capEvidence = (items: CapsuleEvidenceItem[], field: "verifiedProgress" | "hypotheses") => {
+    const dropped = Math.max(0, items.length - MAX_ARRAY_ITEMS);
+    if (dropped > 0) itemCapDrops[field] = (itemCapDrops[field] ?? 0) + dropped;
+    return items.slice(0, MAX_ARRAY_ITEMS).map((item) => ({
+      ...item,
+      sourceExchangeIds: item.sourceExchangeIds.slice(0, MAX_EVIDENCE_SOURCES),
+    }));
+  };
   const patch: WorkCapsulePatch = {
     ...parsed.patch,
-    verifiedProgress: parsed.patch.verifiedProgress.map((item) => ({
-      ...item,
-      sourceExchangeIds: item.sourceExchangeIds.slice(0, MAX_EVIDENCE_SOURCES),
-    })),
-    hypotheses: parsed.patch.hypotheses.map((item) => ({
-      ...item,
-      sourceExchangeIds: item.sourceExchangeIds.slice(0, MAX_EVIDENCE_SOURCES),
-    })),
+    verifiedProgress: capEvidence(parsed.patch.verifiedProgress, "verifiedProgress"),
+    hypotheses: capEvidence(parsed.patch.hypotheses, "hypotheses"),
   };
   const ledger = newTruncationLedger();
   for (const field of CAPPED_LIST_FIELDS) {
-    // Issue #85 counted the drop while parsing; `kept` is the surviving length.
-    noteItemCap(ledger, field, patch[field].length, parsed.itemCapDrops[field] ?? 0);
+    // Issue #85 counted the string-list drops while parsing, the evidence-list
+    // drops just above; `kept` is the surviving length either way.
+    noteItemCap(ledger, field, patch[field].length, itemCapDrops[field] ?? 0);
   }
   // Issue #85: the evidence lists may have lost items to the item cap above, so
   // the declared-sources invariant is checked against what survived — never

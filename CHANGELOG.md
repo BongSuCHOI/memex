@@ -2,6 +2,28 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.17 - 2026-09-16
+
+Hotfixes for the two findings of the post-release review of 0.7.16.
+
+### Continuity
+
+- The Capsule evidence-list item cap (8 claims) is applied after carry-over
+  normalization. Eight claims supported only by previous-generation ids ahead
+  of one page claim used to evict the page claim first and then lose the
+  eight to normalization, storing an empty list. Items beyond the cap are
+  still parsed leniently: an invalid one is dropped, never thrown (#85).
+
+### Model work budgets
+
+- A foreground `memex backfill extract` stops dequeuing only when the
+  exhausted budget is its own run's budget (or unknown). A session parked on
+  another live budget is reported once at the end instead of halting the run.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.16 - 2026-09-16
 
 Budgets must never strand work. Fixes for #146 and #143, found on a second
