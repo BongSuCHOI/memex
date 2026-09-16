@@ -2683,6 +2683,7 @@ function applyCheckpointClosure(db: Database.Database, sessionId: string): boole
       SELECT 1 FROM exchanges l
       JOIN exchanges o ON o.id = ?
       WHERE l.session_id = o.session_id
+        AND l.is_sidechain = 0
         AND (l.line_end > o.line_end OR (l.line_end = o.line_end AND l.exchange_seq > o.exchange_seq))
       LIMIT 1
     `).get(exchange.id);
