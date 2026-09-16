@@ -168,8 +168,9 @@ it("the checkpoint boundary is a main-line turn even when a sidechain turn is th
     .toEqual({ closure_state: "closed", content_generation: 2 });
   expect(db.prepare("SELECT closure_state, content_generation FROM exchanges WHERE id = 'side'").get())
     .toEqual({ closure_state: "closed", content_generation: 1 });
+  // b is now closed and extractable; the sidechain turn was always an item (closed, no fence)
   const target = ensureExtractionTarget(db, { sessionId: SESSION, project: root })!;
   const items = db.prepare("SELECT exchange_id FROM extraction_target_items WHERE target_id = ? ORDER BY ordinal")
     .all(target.targetId) as Array<{ exchange_id: string }>;
-  expect(items.map((item) => item.exchange_id)).toEqual(["a", "b"]);
+  expect(items.map((item) => item.exchange_id)).toEqual(["a", "b", "side"]);
 });
