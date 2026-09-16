@@ -300,14 +300,15 @@ test('L4 en: 도움말 카탈로그 36항목과 용어집 17항목이 en으로 �
   assert.equal(help.badgeHelp('dead'), locale.en['badge.dead.help']);
 });
 
-test('L4 en: 실패 분류 38개의 제목·원인·영향·다음 행동이 en으로 읽힌다', () => {
+test('L4 en: 실패 분류 39개의 제목·원인·영향·다음 행동이 en으로 읽힌다', () => {
   locale.useEn();
   const entries = [];
   for (const cls of [...guidance.CLASSES, guidance.unknownClass('boom')])
     for (const field of ['title', 'cause', 'impact', 'next']) entries.push([`${cls.id}.${field}`, cls[field]]);
   assert.deepEqual(catalogueProblems(entries), []);
   // 0.7.0 (#31/#30): `job-held`가 들어와 36 → 37이 됐다(+ unknown = 38).
-  assert.equal(guidance.CLASSES.length, 37, '실패 클래스 수가 바뀌었다');
+  // 0.7.18 (#149): `no-eligible-exchanges`가 들어와 37 → 38이 됐다(+ unknown = 39).
+  assert.equal(guidance.CLASSES.length, 38, '실패 클래스 수가 바뀌었다');
   assert.equal(guidance.guidanceFor('job-dead').title, locale.en['guidance.job-dead.title']);
 });
 

@@ -2715,8 +2715,11 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
         project,
         policyVersion: FACT_EXTRACTION_POLICY_VERSION,
     });
+    // Issue #149: never silent. A session the scheduler counted as pending but
+    // the target builder found empty must say so, or it sits in "pending" for
+    // ever with no line in any log.
     if (!target)
-        return { extracted: 0, saved: 0 };
+        return { extracted: 0, saved: 0, skipped: "no_eligible_exchanges" };
     if (target.state === "dead") {
         return { extracted: 0, saved: 0, skipped: "failed_visible" };
     }

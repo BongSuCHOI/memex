@@ -317,7 +317,7 @@ export declare function runFactExtraction(db: Database.Database, sessionId: stri
 }): Promise<{
     extracted: number;
     saved: number;
-    skipped?: "claim_not_acquired" | "claim_error" | "excluded_project" | "excluded_project_unmarked" | "failed_visible" | "budget_exhausted" | "extraction_rules_invalid" | "extraction_rules_unavailable";
+    skipped?: "claim_not_acquired" | "claim_error" | "excluded_project" | "excluded_project_unmarked" | "failed_visible" | "budget_exhausted" | "no_eligible_exchanges" | "extraction_rules_invalid" | "extraction_rules_unavailable";
     /** Only for `claim_not_acquired`: why the claim was refused (issue #11). */
     claimReason?: MemoryJobClaimReason;
     /** Only for `claimReason === "backoff"`: when the job becomes claimable. */

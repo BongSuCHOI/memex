@@ -172,6 +172,24 @@ export interface ExtractionTarget {
 /** `mixed` = the claim's windows did not agree; `null` = no clause applied. */
 export type ExtractionFactLanguage = "ko" | "en" | "mixed" | null;
 /** Create one immutable target from a claim-time snapshot, never live completion MAX. */
+/**
+ * Issue #149: settle open/interrupted turns the session has moved past.
+ *
+ * `applyLatestLifecycleClosure` corrects only the exchange at the latest
+ * checkpoint boundary. An `interrupted` exchange that was never the latest
+ * boundary again (the parser marked it at an EOF, the session went on) kept
+ * its state for ever, and the extraction fence (`rowid < first open`) then hid
+ * every later closed exchange from the target builder — while the pending
+ * query kept counting them. Observed live on five sessions with 2–28 closed
+ * exchanges each behind one mid-session `interrupted` turn.
+ *
+ * A turn with a later exchange (in transcript order) in the same session cannot complete any more:
+ * it becomes `closed` with a new generation, exactly the transition the
+ * lifecycle closure makes, so a state row written for the stale generation is
+ * superseded and the fence moves to the trailing turn where it belongs. The
+ * trailing open/interrupted turn is left alone — it may still be in progress.
+ */
+export declare function settleStaleOpenExchanges(db: Database.Database, sessionId: string): number;
 export declare function ensureExtractionTarget(db: Database.Database, input: {
     sessionId: string;
     project: string;

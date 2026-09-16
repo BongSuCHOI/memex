@@ -3437,6 +3437,9 @@ export async function runFactExtraction(
     | "excluded_project_unmarked"
     | "failed_visible"
     | "budget_exhausted"
+    // Issue #149: the target builder found no closed exchange to extract
+    // (only a trailing open/interrupted turn, or everything already processed).
+    | "no_eligible_exchanges"
     // Issue #30 (G1). Both are HOLDS, not failures: no attempt is consumed and
     // the same input is claimed and re-checked once the rules are usable.
     | "extraction_rules_invalid"
@@ -3503,7 +3506,10 @@ export async function runFactExtraction(
     project,
     policyVersion: FACT_EXTRACTION_POLICY_VERSION,
   });
-  if (!target) return { extracted: 0, saved: 0 };
+  // Issue #149: never silent. A session the scheduler counted as pending but
+  // the target builder found empty must say so, or it sits in "pending" for
+  // ever with no line in any log.
+  if (!target) return { extracted: 0, saved: 0, skipped: "no_eligible_exchanges" };
   if (target.state === "dead") {
     return { extracted: 0, saved: 0, skipped: "failed_visible" };
   }

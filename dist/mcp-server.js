@@ -28571,6 +28571,7 @@ init_db();
 init_chronicle();
 
 // src/continuity-core.ts
+init_continuity_store();
 init_fact_db();
 init_read_scope();
 init_db();
@@ -33175,7 +33176,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.17"
+    version: "0.7.18"
   },
   {
     capabilities: {

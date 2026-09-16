@@ -798,10 +798,9 @@ describe("fixed targets, pagination, generation, and closure", () => {
     ).get(target.targetId)).toEqual({ state: "superseded" });
   });
 
-  it("does not target open/interrupted exchanges or pass their rowids", () => {
+  it("does not target a trailing open/interrupted exchange or pass its rowid", () => {
     put(exchange("closed", 1));
     put({ ...exchange("open", 2), closureState: "open" });
-    put(exchange("after-open", 3));
     const target = ensureExtractionTarget(db, {
       sessionId: "session-1",
       project: "/project",
@@ -812,10 +811,26 @@ describe("fixed targets, pagination, generation, and closure", () => {
     );
   });
 
-  it("honors an open fence below a legacy live-MAX watermark", () => {
+  it("settles an open/interrupted exchange the session moved past and targets everything behind it (#149)", () => {
+    put(exchange("closed", 1));
+    put({ ...exchange("open", 2), closureState: "interrupted" });
+    put(exchange("after-open", 3));
+    const target = ensureExtractionTarget(db, {
+      sessionId: "session-1",
+      project: "/project",
+    })!;
+    expect(readExtractionTargetItems(db, target.targetId, 0, 10).map((item) => item.exchange_id))
+      .toEqual(["closed", "open", "after-open"]);
+    expect(db.prepare("SELECT closure_state, content_generation FROM exchanges WHERE id = 'open'").get())
+      .toEqual({ closure_state: "closed", content_generation: 2 });
+    expect(target.throughRowid).toBe(
+      (db.prepare("SELECT rowid FROM exchanges WHERE id = 'after-open'").get() as { rowid: number }).rowid,
+    );
+  });
+
+  it("honors a trailing open fence below a legacy live-MAX watermark", () => {
     put(exchange("before-open", 1));
     put({ ...exchange("legacy-open", 2), closureState: "open" });
-    put(exchange("after-legacy-open", 3));
     const maxRowid = (db.prepare(
       "SELECT MAX(rowid) AS n FROM exchanges WHERE session_id = 'session-1'",
     ).get() as { n: number }).n;

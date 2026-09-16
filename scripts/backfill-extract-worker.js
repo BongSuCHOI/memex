@@ -291,6 +291,8 @@ async function main() {
       dead: 0,
       // 이슈 #31: 모델 설정 거절 — 예산 미소모, 실패 아님, 설정을 고치면 자동 재개.
       held: 0,
+      // 이슈 #149: 대상 빌더가 빈 결과 — 예전엔 아무 줄도 없이 pending 에 남았다.
+      no_eligible: 0,
     };
     // backoff 로 막힌 작업 중 **가장 이른** 재시도 시각 — 요약줄이 "언제 다시 되는지"를
     // 말하지 못하면 운영자는 결국 한 시간을 그냥 기다린다(이슈 #11 의 실제 피해).
@@ -383,7 +385,14 @@ async function main() {
         // 되고 버킷·경보·로그 어디에도 안 남으며, 유일한 흔적인 console.error 는
         // detached 워커의 stdio:'ignore' 로 폐기된다 — 무경보 기아(R18 독립 발견).
         if (result.skipped) {
-          if (result.skipped === "excluded_project_unmarked") {
+          if (result.skipped === "no_eligible_exchanges") {
+            // 이슈 #149: 조용히 넘기지 않는다. pending 집계가 이 세션을 세고 있다면
+            // 집계와 빌더의 규칙이 어긋난 것이고, 그 불일치는 여기서만 보인다.
+            buckets.no_eligible += 1;
+            log(
+              `session ${next.sid} (${next.n} exch): SKIPPED (no_eligible_exchanges) — 추출할 closed exchange 없음 · pending 집계와 어긋나면 점검`,
+            );
+          } else if (result.skipped === "excluded_project_unmarked") {
             // 마커가 안 써졌다 — 다음 run 에 다시 선정된다. 정상 제외와 구분해 경보.
             buckets.transient += 1;
             escalateFailures += 1;
@@ -558,6 +567,9 @@ async function main() {
           : "") +
         (buckets.dead > 0
           ? `, failed-visible ${buckets.dead} — completed 아님, exact range 점검 필요`
+          : "") +
+        (buckets.no_eligible > 0
+          ? `, no-eligible ${buckets.no_eligible} — 추출할 closed exchange 없음`
           : "") +
         (buckets.held > 0
           ? `, config-held ${buckets.held} — 모델 설정 대기(예산 미소모), 고치면 자동 재개: memex models show`
