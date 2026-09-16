@@ -117,7 +117,16 @@ export function classifyLlmError(err: unknown): LlmErrorClass {
   // 400 and "invalid_request" wording, both of which would otherwise read as
   // 'deterministic' and send the extractor into window splitting.
   if (typeof localCode === 'string' && CONFIG_ERROR_CODES.has(localCode)) return 'config';
-  if (localCode === 'MEMEX_MODEL_OUTPUT_LIMIT' || localCode === 'MEMEX_MODEL_OUTPUT_SCHEMA') {
+  // Issue #144: the INPUT limit belongs here too. It is raised locally before
+  // the provider is called, so it carries no status and no provider phrase;
+  // left to fall through it read as 'unknown', which the extractor defers like
+  // a transient failure — the identical oversized window was retried on every
+  // run until the target died. 'deterministic' hands it to the window splitter.
+  if (
+    localCode === 'MEMEX_MODEL_INPUT_LIMIT' ||
+    localCode === 'MEMEX_MODEL_OUTPUT_LIMIT' ||
+    localCode === 'MEMEX_MODEL_OUTPUT_SCHEMA'
+  ) {
     return 'deterministic';
   }
   const byCode = (code: number): LlmErrorClass => {
