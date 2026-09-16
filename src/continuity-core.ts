@@ -45,6 +45,12 @@ const SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
 export const DEFAULT_MAX_CAPSULE_CHARS = 12_000;
 const MIN_MAX_CAPSULE_CHARS = 2_000;
 const MAX_ARRAY_ITEMS = 8;
+/** Source slots one verifiedProgress/hypotheses claim may keep. */
+const MAX_EVIDENCE_SOURCES = 16;
+/** The lists `capItems` bounds, in the order they are recorded. */
+const CAPPED_LIST_FIELDS = [
+  "verifiedProgress", "hypotheses", "blockers", "openQuestions", "nextActions", "touchedAreas",
+] as const;
 /** Floor for the last-resort scalar halving in `fitCapsulePatch` (issue #74). */
 const SCALAR_TRUNCATION_FLOOR = 60;
 
@@ -1223,17 +1229,22 @@ function noteItemCap(ledger: TruncationLedger, field: string, kept: number, drop
  * budget every time the model answered with nine or more items
  * (`touchedAreas exceeds 8 items`, observed with `state=retry, attempts=1`), so
  * five such answers killed the job for a bound the patch could simply satisfy.
- * Per-item validity is still enforced — on the items that are kept.
+ * Per-item validity is still enforced — on the items that are kept, which is
+ * why this cap runs while parsing rather than after normalization.
+ *
+ * Issue #143: the drop is only *counted* here, into `drops`, and recorded in
+ * the ledger after carry-over normalization, so `kept` names the list that was
+ * actually stored rather than the one this cap produced.
  */
-function capItems<T>(values: T[], field: string, ledger: TruncationLedger): T[] {
+function capItems<T>(values: T[], field: string, drops: Record<string, number>): T[] {
   if (values.length <= MAX_ARRAY_ITEMS) return values;
-  noteItemCap(ledger, field, MAX_ARRAY_ITEMS, values.length - MAX_ARRAY_ITEMS);
+  drops[field] = (drops[field] ?? 0) + (values.length - MAX_ARRAY_ITEMS);
   return values.slice(0, MAX_ARRAY_ITEMS);
 }
 
-function cleanList(values: unknown, field: string, ledger: TruncationLedger): string[] {
+function cleanList(values: unknown, field: string, drops: Record<string, number>): string[] {
   if (!Array.isArray(values)) throw new Error(`${field} must be an array`);
-  return capItems(values, field, ledger).map((value) => {
+  return capItems(values, field, drops).map((value) => {
     if (typeof value !== "string" || !value.trim()) throw new Error(`${field} contains invalid text`);
     const text = value.trim();
     if (text.length > 500) throw new Error(`${field} contains overlong text`);
@@ -1241,9 +1252,9 @@ function cleanList(values: unknown, field: string, ledger: TruncationLedger): st
   });
 }
 
-function cleanEvidence(values: unknown, field: string, ledger: TruncationLedger): CapsuleEvidenceItem[] {
+function cleanEvidence(values: unknown, field: string, drops: Record<string, number>): CapsuleEvidenceItem[] {
   if (!Array.isArray(values)) throw new Error(`${field} must be an array`);
-  return capItems(values, field, ledger).map((value) => {
+  return capItems(values, field, drops).map((value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw new Error(`${field} contains invalid item`);
     }
@@ -1261,7 +1272,10 @@ function cleanEvidence(values: unknown, field: string, ledger: TruncationLedger)
     }
     const sources = item.sourceExchangeIds as string[];
     if (!text || sources.length === 0) throw new Error(`${field} requires text and sources`);
-    return { text, sourceExchangeIds: [...new Set(sources)].slice(0, 16) };
+    // Issue #143: the per-claim slot cap is NOT applied here. Carried-over
+    // previous-generation ids often come first, so cutting to the cap before
+    // normalization threw away the page ids that keep the claim alive.
+    return { text, sourceExchangeIds: [...new Set(sources)] };
   });
 }
 
@@ -1466,6 +1480,26 @@ export function validateWorkCapsulePatch(value: unknown): WorkCapsulePatch {
 export function validateWorkCapsulePatchWithTruncation(
   value: unknown,
 ): { patch: WorkCapsulePatch; truncation: CapsuleTruncation } {
+  return finishWorkCapsulePatch(parseWorkCapsulePatchStructure(value));
+}
+
+/**
+ * What the structural pass produced, before any semantic check or bound.
+ *
+ * Issue #143 split validation in two: shape and per-item legality are decided
+ * on the model's raw answer, while the declared-sources invariant, the slot and
+ * size bounds, and the truncation ledger are decided on the patch that will
+ * actually be stored — which, for a paged apply, is the carry-over-normalized
+ * one. Running them in the old single pass rejected (and cost a retry for) a
+ * claim whose only problem was a previous-generation id normalization removes.
+ */
+interface ParsedWorkCapsulePatch {
+  patch: WorkCapsulePatch;
+  /** Item-cap drops counted while parsing, recorded against the final patch. */
+  itemCapDrops: Record<string, number>;
+}
+
+function parseWorkCapsulePatchStructure(value: unknown): ParsedWorkCapsulePatch {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("capsule patch must be an object");
   }
@@ -1497,19 +1531,50 @@ export function validateWorkCapsulePatchWithTruncation(
     }
     return raw.trim();
   };
-  const ledger = newTruncationLedger();
+  const itemCapDrops: Record<string, number> = {};
   const patch: WorkCapsulePatch = {
     objective: strictScalar("objective"),
     currentState: strictScalar("currentState"),
-    verifiedProgress: cleanEvidence(input.verifiedProgress ?? [], "verifiedProgress", ledger),
-    hypotheses: cleanEvidence(input.hypotheses ?? [], "hypotheses", ledger),
-    blockers: cleanList(input.blockers ?? [], "blockers", ledger),
-    openQuestions: cleanList(input.openQuestions ?? [], "openQuestions", ledger),
-    nextActions: cleanList(input.nextActions ?? [], "nextActions", ledger),
-    touchedAreas: cleanList(input.touchedAreas ?? [], "touchedAreas", ledger),
+    verifiedProgress: cleanEvidence(input.verifiedProgress ?? [], "verifiedProgress", itemCapDrops),
+    hypotheses: cleanEvidence(input.hypotheses ?? [], "hypotheses", itemCapDrops),
+    blockers: cleanList(input.blockers ?? [], "blockers", itemCapDrops),
+    openQuestions: cleanList(input.openQuestions ?? [], "openQuestions", itemCapDrops),
+    nextActions: cleanList(input.nextActions ?? [], "nextActions", itemCapDrops),
+    touchedAreas: cleanList(input.touchedAreas ?? [], "touchedAreas", itemCapDrops),
     carryFactRevisions: carry.slice(0, 64),
     sourceExchangeIds: sources,
   };
+  return { patch, itemCapDrops };
+}
+
+/**
+ * Apply every bound and semantic check to the patch that will be stored.
+ *
+ * Issue #143: for a paged apply this runs AFTER carry-over normalization, so
+ * the per-claim slot cap and the size truncation can never cut a page id in
+ * favour of a previous-generation id that normalization is about to remove, the
+ * declared-sources invariant is judged on the normalized lists, and the ledger
+ * describes the patch the Capsule row actually holds.
+ */
+function finishWorkCapsulePatch(
+  parsed: ParsedWorkCapsulePatch,
+): { patch: WorkCapsulePatch; truncation: CapsuleTruncation } {
+  const patch: WorkCapsulePatch = {
+    ...parsed.patch,
+    verifiedProgress: parsed.patch.verifiedProgress.map((item) => ({
+      ...item,
+      sourceExchangeIds: item.sourceExchangeIds.slice(0, MAX_EVIDENCE_SOURCES),
+    })),
+    hypotheses: parsed.patch.hypotheses.map((item) => ({
+      ...item,
+      sourceExchangeIds: item.sourceExchangeIds.slice(0, MAX_EVIDENCE_SOURCES),
+    })),
+  };
+  const ledger = newTruncationLedger();
+  for (const field of CAPPED_LIST_FIELDS) {
+    // Issue #85 counted the drop while parsing; `kept` is the surviving length.
+    noteItemCap(ledger, field, patch[field].length, parsed.itemCapDrops[field] ?? 0);
+  }
   // Issue #85: the evidence lists may have lost items to the item cap above, so
   // the declared-sources invariant is checked against what survived — never
   // against the sources of an item that is no longer in the patch. The subset
@@ -1641,26 +1706,13 @@ export function applyWorkCapsulePatch(
     now?: string;
   },
 ): WorkCapsule | null {
-  const { patch: validatedPatch, truncation } = validateWorkCapsulePatchWithTruncation(input.patch);
-  // Issue #143: re-bound once inside the transaction, after the previous
-  // generation's carried-over sources have been normalized away.
-  let patch = validatedPatch;
-  if (truncation.truncated) {
-    // Issue #17: one WARN line so a shortened projection is visible in the
-    // worker's log, not only in the Capsule row that records it durably.
-    // Issue #85 adds the per-field item counts a bound removed, and issue #74
-    // says so plainly when the result is still above the declared budget.
-    const caps = Object.entries(truncation.itemCaps)
-      .map(([field, cap]) => `${field}(kept=${cap.kept},dropped=${cap.dropped})`)
-      .join(",");
-    console.warn(
-      `[memex] WARN capsule patch truncated for workstream ${input.workstreamId}: ` +
-        `${truncation.originalChars} -> ${truncation.finalChars} chars ` +
-        `(max=${truncation.maxChars}, MEMEX_CAPSULE_MAX_CHARS) fields=${truncation.truncatedFields.join(",") || "none"}` +
-        (caps ? ` items=${caps}` : "") +
-        (truncation.overBudget ? " overBudget=true" : ""),
-    );
-  }
+  // Issue #143: only the structural pass runs here. The bounds, the
+  // declared-sources invariant and the truncation ledger are settled inside the
+  // transaction, on the carry-over-normalized patch that is actually stored.
+  const parsed = parseWorkCapsulePatchStructure(input.patch);
+  // Boxed so the transaction body can publish it without control-flow narrowing
+  // deciding it is still the initial null after the closure runs.
+  const applied: { truncation: CapsuleTruncation | null } = { truncation: null };
   const now = input.now ?? new Date().toISOString();
   const tx = db.transaction(() => {
     if (input.evidencePage && !capsulePageIsCurrent(db, input.workstreamId, input.evidencePage)) return null;
@@ -1690,17 +1742,24 @@ export function applyWorkCapsulePatch(
       | { session_id: string; workspace_id: string | null }
       | undefined;
     if (!checkpoint) throw new Error("checkpoint does not belong to workstream");
-    if (input.evidencePage) {
-      // Issue #143: normalize BEFORE any check, so the previous generation's
-      // off-page sources are gone from the top-level list and from every claim,
-      // and every check below then runs on what will actually be stored.
-      patch = normalizeCapsuleCarryOverSources(
-        patch,
-        readWorkCapsule(db, input.workstreamId)?.sourceExchangeIds ?? [],
-        input.evidencePage,
-      );
-      assertCapsuleEvidenceSourcesDeclared(patch);
-    }
+    // Issue #143: normalize BEFORE the bounds and BEFORE every check, so the
+    // previous generation's off-page sources are gone from the top-level list
+    // and from every claim first, no bound can spend a claim's slots on an id
+    // that is about to be removed, and everything below — the declared-sources
+    // invariant included — is decided on what will actually be stored.
+    const normalized = input.evidencePage
+      ? {
+        patch: normalizeCapsuleCarryOverSources(
+          parsed.patch,
+          readWorkCapsule(db, input.workstreamId)?.sourceExchangeIds ?? [],
+          input.evidencePage,
+        ),
+        itemCapDrops: parsed.itemCapDrops,
+      }
+      : parsed;
+    const finished = finishWorkCapsulePatch(normalized);
+    const patch = finished.patch;
+    applied.truncation = finished.truncation;
     assertCapsuleSourcesExist(db, patch, input.workstreamId);
     if (input.evidencePage) {
       const presented = new Set(input.evidencePage.evidence.map((item) => item.exchangeId));
@@ -1768,9 +1827,9 @@ export function applyWorkCapsulePatch(
       checkpoint.workspace_id,
       checkpoint.session_id,
       now,
-      truncation.truncated ? 1 : 0,
-      serializeTruncationRecord(truncation),
-      truncation.originalChars,
+      finished.truncation.truncated ? 1 : 0,
+      serializeTruncationRecord(finished.truncation),
+      finished.truncation.originalChars,
       input.expectedGeneration,
     );
     if (result.changes !== 1) return null;
@@ -1810,7 +1869,28 @@ export function applyWorkCapsulePatch(
     }
     return readWorkCapsule(db, input.workstreamId);
   });
-  return tx.immediate();
+  const committed = tx.immediate();
+  // Issue #143: the WARN moved below the transaction because the ledger is only
+  // known once the normalized patch has been bounded — and a patch that never
+  // committed never had anything shortened in the Capsule row.
+  const truncation = applied.truncation;
+  if (committed && truncation?.truncated) {
+    // Issue #17: one WARN line so a shortened projection is visible in the
+    // worker's log, not only in the Capsule row that records it durably.
+    // Issue #85 adds the per-field item counts a bound removed, and issue #74
+    // says so plainly when the result is still above the declared budget.
+    const caps = Object.entries(truncation.itemCaps)
+      .map(([field, cap]) => `${field}(kept=${cap.kept},dropped=${cap.dropped})`)
+      .join(",");
+    console.warn(
+      `[memex] WARN capsule patch truncated for workstream ${input.workstreamId}: ` +
+        `${truncation.originalChars} -> ${truncation.finalChars} chars ` +
+        `(max=${truncation.maxChars}, MEMEX_CAPSULE_MAX_CHARS) fields=${truncation.truncatedFields.join(",") || "none"}` +
+        (caps ? ` items=${caps}` : "") +
+        (truncation.overBudget ? " overBudget=true" : ""),
+    );
+  }
+  return committed;
 }
 
 export function completeEmptyCapsuleCheckpoint(

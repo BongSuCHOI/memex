@@ -83,18 +83,18 @@ function capsuleJobs(): Array<{ state: string; attempts: number; last_error: str
   ).all() as Array<{ state: string; attempts: number; last_error: string | null }>;
 }
 
-/** Commits generation 1 from page one, citing only PREVIOUS_SOURCES. */
-async function seedGenerationOne(): Promise<void> {
+/** Commits generation 1 from page one, citing only `sources`. */
+async function seedGenerationOne(sources: string[] = PREVIOUS_SOURCES): Promise<void> {
   const results = await runContinuityWorker(db, {
     maxJobs: 4,
     model: async () => patch({
-      sourceExchangeIds: PREVIOUS_SOURCES,
-      verifiedProgress: [{ text: "page one was read", sourceExchangeIds: PREVIOUS_SOURCES }],
+      sourceExchangeIds: sources,
+      verifiedProgress: [{ text: "page one was read", sourceExchangeIds: sources }],
     }),
   });
   expect(results.every((result) => ["completed", "partial"].includes(result.state))).toBe(true);
   expect(readWorkCapsule(db, workstream)?.generation).toBe(1);
-  expect(readWorkCapsule(db, workstream)?.sourceExchangeIds).toEqual(PREVIOUS_SOURCES);
+  expect(readWorkCapsule(db, workstream)?.sourceExchangeIds).toEqual(sources);
   for (const id of PAGE_TWO) put(id);
   capture();
 }
@@ -120,6 +120,7 @@ afterEach(() => {
   delete process.env.MEMEX_HOME;
   delete process.env.MEMEX_DB_PATH;
   delete process.env.MEMEX_ALLOWED_TRANSCRIPT_ROOTS;
+  delete process.env.MEMEX_CAPSULE_MAX_CHARS;
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -202,6 +203,98 @@ it("an id that is neither on the page nor a previous source still throws, and na
   // The ids were invisible before; #143 could not be proven from the log.
   expect(results[0]?.detail).toContain(OFF_PAGE_STRANGER);
   expect(readWorkCapsule(db, workstream)?.generation).toBe(1);
+});
+
+/**
+ * The Codex review of the first fix: the declared-sources invariant still ran
+ * in the structural pass, before normalization. A model that declared only page
+ * ids at the top level but left one previous-generation id inside a claim was
+ * rejected there — `capsule evidence sources must be declared in
+ * sourceExchangeIds` — and spent a retry on an id normalization would remove.
+ */
+it("a claim carrying a previous id under a page-only top-level list is normalized, not rejected", async () => {
+  await seedGenerationOne();
+
+  const results = await runContinuityWorker(db, {
+    maxJobs: 4,
+    model: async () => patch({
+      // Top level: page ids only, exactly as the prompt asks for.
+      sourceExchangeIds: PAGE_TWO,
+      verifiedProgress: [
+        { text: "still supported by this page", sourceExchangeIds: ["exchange-0", PAGE_TWO[0]] },
+      ],
+      hypotheses: [
+        { text: "also still supported", sourceExchangeIds: ["exchange-1", PAGE_TWO[1]] },
+      ],
+    }),
+  });
+
+  expect(results.every((result) => ["completed", "partial"].includes(result.state))).toBe(true);
+  const capsule = readWorkCapsule(db, workstream);
+  expect(capsule?.generation).toBe(2);
+  expect(capsule?.verifiedProgress).toEqual([
+    { text: "still supported by this page", sourceExchangeIds: [PAGE_TWO[0]] },
+  ]);
+  expect(capsule?.hypotheses).toEqual([
+    { text: "also still supported", sourceExchangeIds: [PAGE_TWO[1]] },
+  ]);
+  expect(capsule?.sourceExchangeIds).toEqual(PAGE_TWO);
+  expect(capsuleJobs().every((job) => job.state !== "retry")).toBe(true);
+});
+
+/**
+ * The second Codex finding: the slot and size bounds ran before normalization
+ * too. A claim whose slots are filled with previous ids first lost its page ids
+ * to the bound, and normalization then removed the previous ids as well — so
+ * the claim disappeared entirely — while the ledger stored on the Capsule row
+ * described a patch that was never written.
+ */
+it("a MAX-slot claim keeps its page ids when previous ids fill the leading slots", async () => {
+  // The page holds eight items, so a claim at the sixteen-slot maximum is eight
+  // previous-generation ids followed by the eight ids of this page.
+  await seedGenerationOne(PAGE_ONE);
+  process.env.MEMEX_CAPSULE_MAX_CHARS = "2000";
+  const filler = (marker: string) => marker + "x".repeat(400 - marker.length);
+  const maxSlotClaim = { text: filler("max-slot"), sourceExchangeIds: [...PAGE_ONE, ...PAGE_TWO] };
+  expect(maxSlotClaim.sourceExchangeIds.length).toBe(16);
+  const answer = JSON.stringify({
+    objective: filler("objective"),
+    currentState: filler("current"),
+    verifiedProgress: [
+      maxSlotClaim,
+      { text: filler("second"), sourceExchangeIds: [PAGE_TWO[0]] },
+      { text: filler("third"), sourceExchangeIds: [PAGE_TWO[1]] },
+    ],
+    hypotheses: [], blockers: [], openQuestions: [], nextActions: [], touchedAreas: [],
+    carryFactRevisions: [],
+    sourceExchangeIds: [...PAGE_ONE, ...PAGE_TWO],
+  });
+
+  const results = await runContinuityWorker(db, { maxJobs: 4, model: async () => answer });
+
+  expect(results.every((result) => ["completed", "partial"].includes(result.state))).toBe(true);
+  const capsule = readWorkCapsule(db, workstream)!;
+  expect(capsule.generation).toBe(2);
+  // The claim survives, and what it kept is page evidence — not the leading
+  // previous ids the bound used to spend its slots on.
+  expect(capsule.verifiedProgress.length).toBe(3);
+  const kept = capsule.verifiedProgress.find((item) => item.text.startsWith("max-slot"));
+  expect(kept).toBeDefined();
+  expect(kept!.sourceExchangeIds.length).toBeGreaterThan(0);
+  expect(kept!.sourceExchangeIds.every((id) => PAGE_TWO.includes(id))).toBe(true);
+  expect(kept!.sourceExchangeIds.some((id) => PAGE_ONE.includes(id))).toBe(false);
+  // The ledger describes the patch that was stored: `kept` is the surviving
+  // length of each list, and `originalChars` counts the normalized patch, not
+  // the model's answer with the carried-over ids still in it.
+  for (const [field, cap] of Object.entries(capsule.itemCaps)) {
+    const list = capsule[field as "verifiedProgress" | "hypotheses" | "blockers"
+      | "openQuestions" | "nextActions" | "touchedAreas"];
+    expect(cap.kept).toBe(list.length);
+  }
+  expect(capsule.truncated).toBe(true);
+  expect(capsule.truncatedFields).toContain("verifiedProgress.sourceExchangeIds");
+  expect(capsule.originalChars).not.toBeNull();
+  expect(answer.length - capsule.originalChars!).toBeGreaterThan(150);
 });
 
 it("the model input no longer carries previousCapsule.sourceExchangeIds", async () => {
