@@ -102,6 +102,14 @@ export interface ModelWorkBudget {
   createdAt: string;
   updatedAt: string;
   automatic: boolean;
+  /**
+   * Issue #146: WHY this run stopped, persisted the first time it is settled.
+   * `resolveBudgetExhaustion` is a function of the clock, so a run that died of
+   * the rolling `window` re-reads as `deadline` once its own deadline passes —
+   * and the automatic cooldown has to tell those two apart. First reason wins;
+   * `null` means "pre-0.7.16 row, unknown" and is treated conservatively.
+   */
+  exhaustedReason: ModelBudgetExhaustionReason | null;
 }
 
 export interface ModelWorkContext {
@@ -524,6 +532,12 @@ export function ensureModelBudgetSchema(db: Database.Database): void {
     if (!budgetColumns.has("run_seq")) {
       db.exec("ALTER TABLE model_work_budgets ADD COLUMN run_seq INTEGER");
     }
+    // Issue #146: the exhaustion reason is durable, not recomputed. Additive
+    // and nullable so every existing row stays valid; no CHECK, for the same
+    // reason `model_work_attempts.outcome` has none — the value set may grow.
+    if (!budgetColumns.has("exhausted_reason")) {
+      db.exec("ALTER TABLE model_work_budgets ADD COLUMN exhausted_reason TEXT");
+    }
 
     // 기존 중첩 id 정규화. 실제 root는 3단계까지 중첩돼 있었고, rolling cap은
     // "모든 자동 작업이 하나의 wave 계보를 공유한다"는 전제 위에 서 있으므로
@@ -736,6 +750,11 @@ function budgetFromRow(row: Record<string, unknown>): ModelWorkBudget {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     automatic: row.automatic === 1,
+    // Issue #146: additive column — a pre-0.7.16 row simply has no reason.
+    exhaustedReason:
+      row.exhausted_reason == null
+        ? null
+        : (String(row.exhausted_reason) as ModelBudgetExhaustionReason),
   };
 }
 
@@ -1389,14 +1408,25 @@ export function startNewModelWorkRunForBudget(
  * left to run. Resolving the budget *before* the claim keeps a dead budget
  * from ever reaching the extractor.
  *
- * Resolution mirrors `withResolvedModelWorkContext`: a bound job's durable
- * budget wins over any explicitly requested/environment budget. Nothing is
- * created here — an unbound job with no explicit budget returns null and takes
- * the normal lazy-creation path.
+ * Resolution IS `withResolvedModelWorkContext`'s, via the shared pure
+ * `peekResolvedModelBudget`: a bound job's durable budget wins over any
+ * explicitly requested/environment budget, and an unbound job falls through to
+ * the wave's latest run (#146 — that fall-through is the whole point; without
+ * it an unbound job under a clock-dead wave passed this check and died inside
+ * the model call). Nothing is created here: when the resolver would open a new
+ * run this returns null and the normal lazy-creation path proceeds.
  */
 export function findExhaustedModelBudgetForClaim(
   db: Database.Database,
-  input: { jobId?: string | null; budgetId?: string | null; now?: Date },
+  input: {
+    jobId?: string | null;
+    budgetId?: string | null;
+    /** Issue #146: the wave the model call would resolve under when the job is
+     *  not yet bound. Without it an unbound job could not be checked at all. */
+    parentWaveId?: string | null;
+    stage?: string | null;
+    now?: Date;
+  },
 ): {
   budgetId: string;
   parentWaveId: string;
@@ -1404,17 +1434,17 @@ export function findExhaustedModelBudgetForClaim(
 } | null {
   ensureModelBudgetSchema(db);
   const now = input.now ?? new Date();
-  let budget: ModelWorkBudget | null = null;
-  const jobId = input.jobId?.trim();
-  if (jobId && tableExists(db, "memory_jobs") && columnNames(db, "memory_jobs").has("budget_id")) {
-    const row = db
-      .prepare("SELECT budget_id FROM memory_jobs WHERE job_id = ?")
-      .get(jobId) as { budget_id: string | null } | undefined;
-    if (row?.budget_id) budget = readBudgetById(db, row.budget_id);
-  }
-  const requested = input.budgetId?.trim();
-  if (!budget && requested) budget = readBudgetById(db, requested);
-  if (!budget) return null;
+  // 🚨 Issue #146: ask the resolver's own rule, not a private copy of half of
+  // it. `wouldCreate` NEVER blocks — a run that does not exist yet cannot be
+  // spent, and refusing on it would park work no budget ever refused.
+  const resolved = peekResolvedModelBudget(db, {
+    jobId: input.jobId,
+    budgetId: input.budgetId,
+    parentWaveId: input.parentWaveId,
+    stage: input.stage,
+  });
+  if ("wouldCreate" in resolved) return null;
+  const budget = resolved.budget;
   // Identical predicate to reserveModelAttempt — the pre-flight must not be
   // able to disagree with the reservation it is standing in for.
   const reason = resolveBudgetExhaustion(db, budget, now);
@@ -2087,9 +2117,16 @@ function markModelBudgetExhausted(
   reason: ModelBudgetExhaustionReason,
   nowIso: string,
 ): void {
+  // Issue #146: FIRST reason wins (COALESCE). `resolveBudgetExhaustion` is a
+  // function of the clock — a run stopped by the rolling `window` answers
+  // `deadline` once its own deadline passes — so recording the latest reason
+  // would silently rewrite a cap stop into a clock stop and let the automatic
+  // rollover skip the cooldown that the cap exists to enforce.
   db.prepare(
-    "UPDATE model_work_budgets SET state = ?, updated_at = ? WHERE budget_id = ? AND state IN ('active','exhausted')",
-  ).run(reason === "cancelled" ? "cancelled" : "exhausted", nowIso, budgetId);
+    `UPDATE model_work_budgets
+     SET state = ?, exhausted_reason = COALESCE(exhausted_reason, ?), updated_at = ?
+     WHERE budget_id = ? AND state IN ('active','exhausted')`,
+  ).run(reason === "cancelled" ? "cancelled" : "exhausted", reason, nowIso, budgetId);
 }
 
 /**
@@ -2604,7 +2641,19 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
         return readBudgetById(db, latest.budgetId)!;
       }
       if (latest.state === "active") return latest;
-      if (window.remaining === 0 || now.getTime() < retryAt) return latest;
+      // 🚨 Issue #146: the cooldown fences SPEND, not the clock.
+      //
+      // A run that stopped because its own 15-minute deadline passed spent
+      // nothing on the way out, so holding the next run back for the full
+      // hour parks every queued session for an hour over a failure that was
+      // not theirs — observed on the work Mac, where `memex backfill extract`
+      // joined a deadline-dead `maintenance#21` eight minutes after a
+      // successful run and deferred all 8 sessions with zero provider calls.
+      // Every other stop keeps the cooldown: `attempts` and `window` really
+      // were spent, and a NULL reason is a pre-0.7.16 row we cannot vouch for.
+      // The rolling 24h cap (`window.remaining`) is unconditional either way.
+      const clockOnlyStop = latest.exhaustedReason === "deadline";
+      if (window.remaining === 0 || (!clockOnlyStop && now.getTime() < retryAt)) return latest;
     }
     // 이슈 #42: rollover는 접미사 누적이 아니라 run 번호 증가다.
     // `maintenance` → `maintenance#2` → `maintenance#3` — 길이가 유한하고
@@ -2626,6 +2675,50 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
   return maintain.immediate();
 }
 
+/**
+ * Issue #146 — the wave selection rule, as ONE pure read.
+ *
+ * Until 0.7.16 this rule existed only inside `getOrCreateWaveModelBudget`, and
+ * it decided by writing. So the pre-claim check (`findExhaustedModelBudgetForClaim`)
+ * could not ask "which budget will the model call actually use?" without
+ * minting a run, and looked only at the job's own binding instead. An UNBOUND
+ * `fact_extract` job under wave `maintenance` therefore passed the check and
+ * met the clock-dead run inside the model call — nine stack traces, zero facts
+ * and an hour of backoff for a foreground `memex backfill extract`. The rule
+ * lives here now, and both the writer and the peek read the same answer.
+ */
+type WaveBudgetSelection =
+  /** Use this run as it stands; no write. */
+  | { kind: "reuse"; budget: ModelWorkBudget }
+  /** The latest run is idle: the writer completes it, then either reuses it
+   *  (`reuseCompletedIfIdle`) or opens the next run. */
+  | { kind: "retire"; budget: ModelWorkBudget }
+  /** Nothing usable in this wave — the writer would open a run. */
+  | { kind: "create"; latest: ModelWorkBudget | null };
+
+function selectWaveModelBudget(
+  db: Database.Database,
+  input: { parentWaveId: string; reuseCompletedIfIdle: boolean },
+): WaveBudgetSelection {
+  const latest = latestMaintenanceBudget(db, input.parentWaveId);
+  if (!latest) return { kind: "create", latest: null };
+  const allPending = countPendingModelWork(db);
+  if (latest.state === "active" || latest.state === "exhausted") {
+    const linked = countPendingModelWork(db, latest.budgetId);
+    // Keep a cap attached while either already-owned work or a newly
+    // observed derived target is still pending. The latter covers the
+    // restart window before a worker has registered its whole batch.
+    if (linked.pending > 0 || linked.reserved > 0 || allPending.unbound > 0) {
+      return { kind: "reuse", budget: latest };
+    }
+    return { kind: "retire", budget: latest };
+  }
+  if (input.reuseCompletedIfIdle && allPending.unbound === 0) {
+    return { kind: "reuse", budget: latest };
+  }
+  return { kind: "create", latest };
+}
+
 /** Stable budget used by the SessionStart maintenance sibling wave. */
 function getOrCreateWaveModelBudget(
   db: Database.Database,
@@ -2638,41 +2731,21 @@ function getOrCreateWaveModelBudget(
   ensureModelBudgetSchema(db);
   const parentWaveId = input.parentWaveId.trim();
   if (!parentWaveId) throw new Error("parentWaveId must not be empty");
+  const reuseCompletedIfIdle = input.reuseCompletedIfIdle ?? true;
   const maintain = db.transaction(() => {
-    let latest = latestMaintenanceBudget(db, parentWaveId);
-    const allPending = countPendingModelWork(db);
-    if (latest && latest.state === "active") {
-      const linked = countPendingModelWork(db, latest.budgetId);
-      if (linked.pending > 0 || linked.reserved > 0 || allPending.unbound > 0) {
-        return latest;
-      }
+    const selection = selectWaveModelBudget(db, { parentWaveId, reuseCompletedIfIdle });
+    if (selection.kind === "reuse") return selection.budget;
+    let latest = selection.kind === "retire" ? selection.budget : selection.latest;
+    if (selection.kind === "retire") {
       db.prepare(`
         UPDATE model_work_budgets
         SET state = 'completed', updated_at = ?
         WHERE budget_id = ? AND state IN ('active','exhausted')
-      `).run(new Date().toISOString(), latest.budgetId);
-      latest = readBudgetById(db, latest.budgetId);
-    }
-    if (latest && latest.state === "exhausted") {
-      const linked = countPendingModelWork(db, latest.budgetId);
-      // Keep a cap attached while either already-owned work or a newly
-      // observed derived target is still pending. The latter covers the
-      // restart window before a worker has registered its whole batch.
-      if (linked.pending > 0 || linked.reserved > 0 || allPending.unbound > 0) return latest;
-      db.prepare(`
-        UPDATE model_work_budgets
-        SET state = 'completed', updated_at = ?
-        WHERE budget_id = ? AND state = 'exhausted'
-      `).run(new Date().toISOString(), latest.budgetId);
-      latest = readBudgetById(db, latest.budgetId);
-    }
-    if (
-      latest &&
-      (latest.state === "completed" || latest.state === "cancelled") &&
-      (input.reuseCompletedIfIdle ?? true) &&
-      allPending.unbound === 0
-    ) {
-      return latest;
+      `).run(new Date().toISOString(), selection.budget.budgetId);
+      latest = readBudgetById(db, selection.budget.budgetId);
+      // The idle run is now `completed`; an operator-reusable wave keeps it
+      // rather than opening a run for work that does not exist.
+      if (reuseCompletedIfIdle && latest) return latest;
     }
     // 이슈 #42: 여기도 접미사 누적이 아니라 run 번호 증가.
     const root = rootWaveIdOf(parentWaveId);
@@ -2796,6 +2869,79 @@ export function rolloverSpentWaveBudgets(
   return tx.immediate();
 }
 
+/**
+ * Issue #146: the name of the NEXT run of `rootWaveId`, without creating it.
+ *
+ * An operator command that opens its own run (foreground `memex backfill
+ * extract`) needs a fresh, bounded name in the same lineage — `backfill`,
+ * `backfill#2`, … — and the run-number rule already lives here. Exported so a
+ * script cannot invent a second naming convention for the same column.
+ */
+export function nextModelWorkRunWaveId(db: Database.Database, rootWaveId: string): string {
+  ensureModelBudgetSchema(db);
+  const root = rootWaveIdOf(rootWaveId);
+  return runWaveId(root, nextRunSeq(db, root));
+}
+
+/**
+ * Issue #146: move queue jobs stranded on a spent budget onto `budgetId`.
+ *
+ * An operator who types `memex backfill extract` has already said "run this
+ * now". Jobs bound to an exhausted/cancelled budget cannot run under it —
+ * `nextJob` will not claim them and the pre-claim check refuses them — so
+ * without this they sit until an automatic rollover or an explicit
+ * `model-work resume` per budget. The movable set is exactly #140's: only
+ * `pending`/`retry`, lease-free, hold-free jobs of one kind move, `attempts`
+ * is preserved (this is not a retry reset), and a job bound to a LIVE budget
+ * is never touched — its own run is still the right one.
+ */
+export function rebindSpentQueueJobsToBudget(
+  db: Database.Database,
+  input: { budgetId: string; kind: string; now?: Date },
+): string[] {
+  ensureModelBudgetSchema(db);
+  if (!tableExists(db, "memory_jobs")) return [];
+  const columns = columnNames(db, "memory_jobs");
+  if (!columns.has("budget_id")) return [];
+  const now = input.now ?? new Date();
+  const nowIso = now.toISOString();
+  const holdClause = columns.has("hold_reason") ? "AND j.hold_reason IS NULL" : "";
+  const tx = db.transaction((): string[] => {
+    const target = readBudgetById(db, input.budgetId);
+    if (!target) throw new ModelBudgetNotFoundError(input.budgetId);
+    const jobs = db.prepare(`
+      SELECT j.job_id AS job_id, j.budget_id AS budget_id
+      FROM memory_jobs j
+      JOIN model_work_budgets b ON b.budget_id = j.budget_id
+      WHERE j.kind = ? AND j.budget_id != ?
+        AND b.state IN ('exhausted','cancelled')
+        AND j.state IN ('pending','retry')
+        AND (j.lease_until IS NULL OR j.lease_until <= ?)
+        ${holdClause}
+      ORDER BY j.rowid
+    `).all(input.kind, target.budgetId, nowIso) as Array<{ job_id: string; budget_id: string }>;
+    // `available_at` is reset because the backoff on these rows was recorded
+    // for a budget stop, not for anything the session did wrong (#146).
+    const move = db.prepare(`
+      UPDATE memory_jobs
+      SET budget_id = ?, maintenance_wave_id = ?, state = 'pending', available_at = ?,
+          lease_owner = NULL, lease_until = NULL, updated_at = ?
+      WHERE job_id = ? AND budget_id = ? AND state IN ('pending','retry')
+        AND (lease_until IS NULL OR lease_until <= ?)
+    `);
+    const rebound: string[] = [];
+    for (const job of jobs) {
+      const changed = move.run(
+        target.budgetId, target.parentWaveId, nowIso, nowIso,
+        job.job_id, job.budget_id, nowIso,
+      ).changes;
+      if (changed === 1) rebound.push(job.job_id);
+    }
+    return rebound;
+  });
+  return tx.immediate();
+}
+
 /** Stable budget used by the SessionStart maintenance sibling wave. */
 export function getOrCreateMaintenanceModelBudget(
   db: Database.Database,
@@ -2833,6 +2979,72 @@ export function getOrCreateWorkerModelBudget(
     limits: input.limits,
     reuseCompletedIfIdle: false,
   });
+}
+
+/**
+ * Issue #146 — "which budget will the model call use?", answered WITHOUT
+ * creating one.
+ *
+ * This is `withResolvedModelWorkContext`'s own selection, minus every write:
+ * the job's durable binding, then a legacy `maintenance_wave_id` marker, then
+ * an explicit/environment budget id, then the wave's latest run via the shared
+ * `selectWaveModelBudget`. `wouldCreate` means the resolver would open a run
+ * that does not exist yet — a run that cannot be spent, so no caller may treat
+ * it as a reason to refuse anything.
+ *
+ * Deliberately NOT mirrored here: the affinity throw. A peek answers a
+ * question; a mismatch between an explicit budget and a job's binding is the
+ * resolver's error to raise at the point where it would actually bind.
+ */
+export function peekResolvedModelBudget(
+  db: Database.Database,
+  input: {
+    jobId?: string | null;
+    parentWaveId?: string | null;
+    budgetId?: string | null;
+    stage?: string | null;
+  },
+): { budget: ModelWorkBudget } | { wouldCreate: true } {
+  ensureModelBudgetSchema(db);
+  const stage = input.stage?.trim() || "default";
+  let parentWaveId = input.parentWaveId?.trim() || undefined;
+  const jobId = input.jobId?.trim();
+  if (jobId && tableExists(db, "memory_jobs")) {
+    const columns = columnNames(db, "memory_jobs");
+    if (columns.has("budget_id")) {
+      const row = db.prepare(
+        `SELECT budget_id${columns.has("maintenance_wave_id") ? ", maintenance_wave_id" : ""}
+         FROM memory_jobs WHERE job_id = ?`,
+      ).get(jobId) as
+        | { budget_id: string | null; maintenance_wave_id?: string | null }
+        | undefined;
+      if (row?.budget_id) {
+        // Queue ownership is durable and outranks every requested or
+        // environment default, exactly as the resolver treats it.
+        const bound = readBudgetById(db, row.budget_id);
+        return bound ? { budget: bound } : { wouldCreate: true };
+      }
+      if (row?.maintenance_wave_id) parentWaveId = row.maintenance_wave_id;
+    }
+  }
+  const requestedBudgetId =
+    input.budgetId?.trim() || process.env.MEMEX_MODEL_BUDGET_ID?.trim() || undefined;
+  if (requestedBudgetId) {
+    const requested = readBudgetById(db, requestedBudgetId);
+    return requested ? { budget: requested } : { wouldCreate: true };
+  }
+  const wave =
+    parentWaveId ||
+    process.env.MEMEX_MAINTENANCE_WAVE_ID?.trim() ||
+    process.env.MEMEX_MODEL_PARENT_WAVE_ID?.trim() ||
+    `standalone:${stage}`;
+  // The worker path never reuses a completed run (reuseCompletedIfIdle: false),
+  // so an idle wave resolves to a run that does not exist yet.
+  const selection = selectWaveModelBudget(db, {
+    parentWaveId: wave,
+    reuseCompletedIfIdle: false,
+  });
+  return selection.kind === "reuse" ? { budget: selection.budget } : { wouldCreate: true };
 }
 
 export interface ModelAttemptDiagnostic {

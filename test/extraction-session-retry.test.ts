@@ -15,7 +15,18 @@ import path from 'node:path';
  */
 
 const llmBehavior: {
-  mode: 'transient' | 'verifier_transient' | 'deterministic' | 'ok' | 'unknown' | 'input_limit';
+  mode:
+    | 'transient'
+    | 'verifier_transient'
+    | 'deterministic'
+    | 'ok'
+    | 'unknown'
+    | 'input_limit'
+    // Issue #146: the budget refused the reservation mid-window. `_wrapped` is
+    // the shape the outer handler used to receive — an LlmCallError around the
+    // budget error — and it must be read exactly like the bare one.
+    | 'budget_deadline'
+    | 'budget_deadline_wrapped';
   calls: number;
 } = { mode: 'ok', calls: 0 };
 
@@ -23,7 +34,14 @@ vi.mock('../src/llm.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/llm.js')>();
   return {
     ...actual,
-    callMemoryModel: async (systemPrompt: string, userMessage: string) => {
+    callMemoryModel: async (
+      systemPrompt: string,
+      userMessage: string,
+      _maxTokens?: number,
+      // #146: the budget modes below need the caller's model context, exactly
+      // as llm.ts uses it to resolve the budget before the first reservation.
+      { modelContext }: { modelContext?: Partial<import('../src/model-budget.js').ModelWorkContext> } = {},
+    ) => {
       llmBehavior.calls += 1;
       if (llmBehavior.mode === 'input_limit' && !systemPrompt.includes('authoritative-entailment-v3')) {
         // Issue #144: the durable input budget rejects any window wider than
@@ -31,6 +49,30 @@ vi.mock('../src/llm.js', async (importOriginal) => {
         const { ModelBudgetInputLimitError } = await import('../src/model-budget.js');
         const payload = JSON.parse(userMessage) as { local_exchanges: unknown[] };
         if (payload.local_exchanges.length > 1) throw new ModelBudgetInputLimitError(126_792, 120_000);
+      }
+      if (
+        llmBehavior.mode === 'budget_deadline' ||
+        llmBehavior.mode === 'budget_deadline_wrapped'
+      ) {
+        // Reproduce llm.ts exactly up to the refusal: resolve the work context
+        // (which binds the job to its budget), then throw the way
+        // reserveModelAttempt does — BEFORE any model_work_attempts row exists,
+        // so this claim has spent nothing at all.
+        const mb = await import('../src/model-budget.js');
+        return await mb.withResolvedModelWorkContext(
+          modelContext ?? {},
+          async () => {
+            const resolved = mb.getModelWorkContext()!;
+            const budgetError = new mb.ModelBudgetExhaustedError(
+              resolved.budgetId!, resolved.parentWaveId!, 'deadline',
+            );
+            if (llmBehavior.mode === 'budget_deadline_wrapped') {
+              const { LlmCallError } = await import('../src/llm-error-class.js');
+              throw new LlmCallError(budgetError);
+            }
+            throw budgetError;
+          },
+        );
       }
       if (llmBehavior.mode === 'transient') {
         throw Object.assign(new Error('service unavailable'), { status: 503 });
@@ -278,6 +320,113 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
       'SELECT dropped_batches FROM extraction_log WHERE session_id = ?',
     ).get(SESSION) as { dropped_batches: number } | undefined;
     expect(row?.dropped_batches).toBe(0);
+  });
+});
+
+/**
+ * Issue #146 — a budget stop that spent nothing must cost the session nothing.
+ *
+ * Observed on the work Mac (0.7.15, 08:11Z): `memex backfill extract` joined a
+ * clock-dead automatic maintenance run, every window failed with
+ * `ModelBudgetExhaustedError` before a single provider call, and the sessions
+ * ended up in `retry` with a one-hour backoff and a spent attempt each.
+ */
+describe('#146: 예산 이연은 backoff 도 attempt 도 태우지 않는다', () => {
+  // A5: 예산 소진은 window 마다 스택 트레이스를 찍으면 안 된다 — 관측된 실패의
+  // 절반은 "같은 예산 이야기를 9번 반복한 로그"였다.
+  const consoleErrors: string[] = [];
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    consoleErrors.length = 0;
+    errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      consoleErrors.push(args.map((arg) => String(arg)).join(' '));
+    });
+  });
+  afterEach(() => errorSpy.mockRestore());
+
+  const factExtractJob = () => db.prepare(
+    "SELECT state, attempts, available_at, budget_id FROM memory_jobs WHERE kind = 'fact_extract'",
+  ).get() as { state: string; attempts: number; available_at: string; budget_id: string | null };
+
+  for (const mode of ['budget_deadline', 'budget_deadline_wrapped'] as const) {
+    it(`${mode}: 세션은 즉시 pending 으로 돌아가고 attempt 는 환불된다`, async () => {
+      const { runFactExtraction } = await import('../src/fact-extractor.js');
+      llmBehavior.mode = mode;
+      const before = Date.now();
+
+      const result = await runFactExtraction(db, SESSION, PROJECT);
+      expect(result.skipped).toBe('budget_exhausted');
+      // 래퍼에서 읽으면 reason 은 **에러 객체**, budgetId 는 undefined 였다.
+      expect(result.budgetReason).toBe('deadline');
+      expect(typeof result.budgetId).toBe('string');
+
+      const job = factExtractJob();
+      expect(job.state).toBe('pending'); // 'retry' 였다
+      expect(job.attempts).toBe(0); // 선점이 태운 1이 환불된다
+      // available_at 은 '지금'이다 — 1시간 backoff 는 이 세션의 잘못이 아니다.
+      expect(Date.parse(job.available_at)).toBeLessThanOrEqual(Date.now());
+      expect(Date.parse(job.available_at) - before).toBeLessThan(60_000);
+      expect(db.prepare(
+        'SELECT state, attempts FROM extraction_targets WHERE session_id = ?',
+      ).get(SESSION)).toEqual({ state: 'pending', attempts: 0 });
+      // 완료 마커는 없어야 다음 run 이 다시 집어간다.
+      expect(loggedSessions()).not.toContain(SESSION);
+      // A5: 예산 소진은 분류기에 가기 전에 그대로 다시 던져진다 — window 단위
+      // 실패 로그(스택 트레이스)가 한 줄도 남으면 안 된다.
+      expect(
+        consoleErrors.filter((line) => /Window \d+ extraction failed/.test(line)),
+      ).toEqual([]);
+    });
+  }
+
+  it('예산이 새 run 을 열면 같은 세션이 그대로 추출된다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    llmBehavior.mode = 'budget_deadline';
+    await runFactExtraction(db, SESSION, PROJECT);
+
+    const { exhaustModelBudget, startNewModelWorkRunForBudget } =
+      await import('../src/model-budget.js');
+    const stranded = factExtractJob().budget_id!;
+    // 실제 경로에서는 reserveModelAttempt 가 이 전이를 남긴다 — 목 호출은
+    // 예약 직전에서 끊기므로 여기서 같은 전이를 만든다.
+    exhaustModelBudget(db, { budgetId: stranded, reason: 'deadline' });
+    startNewModelWorkRunForBudget(db, {
+      budgetId: stranded,
+      limits: { maxAttempts: 5, deadlineAt: null },
+    });
+    llmBehavior.mode = 'ok';
+    const result = await runFactExtraction(db, SESSION, PROJECT);
+    expect(result.extracted).toBeGreaterThan(0);
+    expect(loggedSessions()).toContain(SESSION);
+  });
+
+  it('A4: 다른 활성 예산에 묶인 job 도 wave 만 넘기면 affinity 오류 없이 추출된다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const { ensureExtractionTarget } = await import('../src/continuity-store.js');
+    const { bindMemoryJobToBudget, startNewModelWorkRun } = await import('../src/model-budget.js');
+    // 이 job 은 자기 run 에 이미 묶여 있고, 그 run 은 멀쩡히 살아 있다.
+    const own = startNewModelWorkRun(db, {
+      parentWaveId: 'worker:already-bound',
+      limits: { maxAttempts: 5, deadlineAt: null },
+    });
+    const target = ensureExtractionTarget(db, { sessionId: SESSION, project: PROJECT });
+    expect(target).not.toBeNull();
+    bindMemoryJobToBudget(db, {
+      jobId: target!.jobId,
+      budgetId: own.budgetId,
+      parentWaveId: own.parentWaveId,
+    });
+
+    // 전경 backfill 이 하는 것과 동일하게 **wave 만** 넘긴다 — budgetId 까지
+    // 넘기면 여기서 ModelBudgetAffinityError 가 났다.
+    llmBehavior.mode = 'ok';
+    const result = await runFactExtraction(db, SESSION, PROJECT, {
+      modelContext: { parentWaveId: 'backfill' },
+    });
+    expect(result.skipped).toBeUndefined();
+    expect(result.saved).toBeGreaterThan(0);
+    // 묶임은 그대로 — 살아 있는 예산을 빼앗지 않는다.
+    expect(factExtractJob().budget_id).toBe(own.budgetId);
   });
 });
 

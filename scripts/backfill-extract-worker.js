@@ -125,12 +125,20 @@ function pendingSessions(db, limit) {
   return db.prepare(`${sql} ORDER BY ts DESC LIMIT ?`).all(...params, limit);
 }
 
-/** Simple concurrency pool — LLM latency dominates, DB writes are sync-safe. */
-async function runPool(items, concurrency, fn) {
+/**
+ * Simple concurrency pool — LLM latency dominates, DB writes are sync-safe.
+ *
+ * 🚨 이슈 #146: `shouldStop` 은 **더 이상 꺼내지 않는다**는 뜻이지 진행 중인 세션을
+ * 죽인다는 뜻이 아니다. 예산이 소진되면 남은 세션도 전부 같은 대답을 받으므로
+ * (관측: 동일 스택 9개) 큐에서 빼는 것을 멈추고, 이미 시작된 4건은 각자 깨끗하게
+ * 이연을 마치게 둔다. 꺼내지 않은 건수는 요약이 들고 간다 — 조용히 사라지면 안 된다.
+ */
+async function runPool(items, concurrency, fn, shouldStop) {
   const queue = [...items];
   let isolated = 0;
   const workers = Array.from({ length: concurrency }, async () => {
     while (queue.length > 0) {
+      if (shouldStop?.()) break;
       const item = queue.shift();
       if (!item) continue;
       // 이중 방어: fn 이 자체 격리를 하지만, 한 태스크의 예외가 Promise.all 을 통해
@@ -151,7 +159,7 @@ async function runPool(items, concurrency, fn) {
     return undefined;
   });
   await Promise.all(workers);
-  return { isolated };
+  return { isolated, notStarted: queue.length };
 }
 
 function sessionProject(db, sid) {
@@ -183,6 +191,54 @@ async function modelConfigHeld(db) {
   }
 }
 
+/**
+ * 🚨 이슈 #146 — 전경(foreground) `memex backfill extract` 는 **자기 run** 에서 돈다.
+ *
+ * 예전에는 wave 가 환경에 없으면 `"maintenance"` 로 떨어졌다. 즉 터미널에서 친
+ * 명령이 **자동 유지보수 계보**에 올라탔고, 그 계보의 최신 run 은 15분 deadline 이
+ * 지나 죽어 있는데 자동 롤오버는 60분 cooldown 안이라 새 run 을 열어주지 않는다.
+ * 결과: 공급자 호출 0회, fact 0건, 세션 8건이 1시간 backoff (관측 08:11Z).
+ * 운영자가 직접 친 명령은 훅의 cooldown 을 기다릴 이유가 없으므로 `backfill` 계보의
+ * 다음 run 을 열고, 죽은 예산에 묶여 오도 가도 못하던 fact_extract job 을 그 run 으로
+ * 옮긴다. 훅이 부른 경우(wave/budget 이 환경에 있음)는 종전 동작 그대로다.
+ */
+async function openForegroundRun(db) {
+  if (process.env.MEMEX_MAINTENANCE_WAVE_ID || process.env.MEMEX_MODEL_BUDGET_ID) {
+    return null; // hook-spawned or explicitly pinned — not ours to redirect
+  }
+  try {
+    const { startNewModelWorkRun, nextModelWorkRunWaveId, rebindSpentQueueJobsToBudget } =
+      await import('../dist/model-budget.js');
+    const budget = startNewModelWorkRun(db, {
+      parentWaveId: nextModelWorkRunWaveId(db, 'backfill'),
+    });
+    const rebound = rebindSpentQueueJobsToBudget(db, {
+      budgetId: budget.budgetId,
+      kind: 'fact_extract',
+    });
+    return { budget, rebound: rebound.length };
+  } catch (e) {
+    // 구버전 dist 에는 이 헬퍼들이 없다 — 종전(maintenance 계보) 동작으로 수렴한다.
+    log(
+      `backfill-extract: 전용 run 을 열지 못했습니다(${e instanceof Error ? e.message : e}) — 기존 계보로 진행합니다`,
+    );
+    return null;
+  }
+}
+
+/** 예산 id 를 사람이 읽는 wave 이름으로 — 안내 한 줄에만 쓰이므로 best-effort. */
+function budgetWaveName(db, budgetId) {
+  if (!budgetId) return null;
+  try {
+    const row = db
+      .prepare('SELECT parent_wave_id FROM model_work_budgets WHERE budget_id = ?')
+      .get(budgetId);
+    return row?.parent_wave_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   if (!acquireLock()) {
     console.log("backfill-extract: another worker is running, exiting");
@@ -208,6 +264,17 @@ async function main() {
     log(
       `backfill-extract: ${sessions.length} sessions this run (concurrency ${CONCURRENCY})`,
     );
+    // 이슈 #146: 할 일이 없으면 run 도 열지 않는다 — 빈 예산 행만 쌓인다.
+    const foreground = sessions.length > 0 ? await openForegroundRun(db) : null;
+    if (foreground) {
+      log(
+        `backfill-extract: 이 실행 전용 model run ${foreground.budget.parentWaveId}` +
+          ` (${foreground.budget.budgetId})` +
+          (foreground.rebound > 0
+            ? ` — 소진된 예산에 묶여 있던 job ${foreground.rebound}건을 이 run 으로 이관`
+            : ''),
+      );
+    }
 
     let done = 0,
       totalSaved = 0,
@@ -231,7 +298,11 @@ async function main() {
     // 이슈 #14: 요약줄도 "explicit new run 필요"로 끝나면 안 된다. 실제로 칠 명령을
     // 만들 수 있도록 막힌 예산 id 를 모은다.
     const budgetsToResume = new Set();
-    const { isolated } = await runPool(sessions, CONCURRENCY, async (next) => {
+    // 🚨 이슈 #146: 첫 예산 소진에서 **꺼내기를 멈춘다**. 예산은 run 단위 상태라
+    // 남은 세션도 전부 같은 대답을 받는다 — 관측된 실패는 동일한 스택 9개였다.
+    // 진행 중인 세션은 자기 이연을 끝내고, 안내는 마지막에 한 줄로만 찍는다.
+    let budgetStop = null;
+    const { isolated, notStarted } = await runPool(sessions, CONCURRENCY, async (next) => {
       // 🚨 sessionProject 도 try 안에서 부른다. 밖에 두면 SQLITE_BUSY 같은 **세션 단위**
       // DB 오류가 콜백을 reject 시켜 배치 전체가 중단되고, 요약줄·INTERNAL 경보까지
       // 통째로 사라진 채 exit 0 으로 끝난다 — R12~R14 가 닫아온 "무음 경보 소실"과
@@ -280,12 +351,19 @@ async function main() {
         // 덮어 재추출하는 중복 경로가 구조적으로 막힌다(Codex R6 HIGH).
         // 🚨 options 는 4번째 인자다(재감사 P1-8). 5번째로 넘기면 JS 가 조용히
         // 버려서 훅 변형으로 선점했다 — settled 마커 위를 덮는 의도 위반 계약.
+        // 🚨 이슈 #146: 전경 실행은 **wave 만** 넘긴다. budgetId 를 같이 넘기면
+        // 다른(살아 있는) 예산에 이미 묶인 job 에서 ModelBudgetAffinityError 가
+        // 나서, 정상적으로 처리될 수 있는 세션까지 실패로 떨어진다. wave 만
+        // 넘기면 묶인 job 은 자기 예산을 계속 쓰고, 묶이지 않은/이관된 job 만
+        // 이 run(= 그 wave 의 최신 활성 run)으로 해석된다.
         const result = await runFactExtraction(db, next.sid, project ?? "unknown", {
           claimVariant: "worker",
-          modelContext: {
-            parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || "maintenance",
-            budgetId: process.env.MEMEX_MODEL_BUDGET_ID || undefined,
-          },
+          modelContext: foreground
+            ? { parentWaveId: foreground.budget.parentWaveId }
+            : {
+                parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || "maintenance",
+                budgetId: process.env.MEMEX_MODEL_BUDGET_ID || undefined,
+              },
         });
         // 🚨 claim 미획득은 "fact 0건 처리 완료"가 아니다. 구분하지 않으면 done++ 만
         // 되고 버킷·경보·로그 어디에도 안 남으며, 유일한 흔적인 console.error 는
@@ -349,11 +427,19 @@ async function main() {
             // 그대로 복사해 붙일 수 있는 명령을 찍는다.
             // 필드 단위 폴백(dist↔scripts 스큐 방어): 구버전 dist 는 budgetId 를
             // 돌려주지 않으므로 자리표시자로 수렴한다.
+            // 🚨 이슈 #146: 재개 명령은 여기서 세션마다 찍지 않는다. 같은 run 의
+            // 모든 세션이 같은 예산을 가리키므로 N번 반복되는 안내는 노이즈였다 —
+            // 마지막에 예산별로 한 줄씩만 찍는다.
             if (result.budgetId) budgetsToResume.add(result.budgetId);
-            const resumeCommand = `memex model-work resume ${result.budgetId ?? "<budget-id>"} --new-run`;
+            if (!budgetStop) {
+              budgetStop = {
+                budgetId: result.budgetId ?? null,
+                reason: result.budgetReason ?? null,
+              };
+            }
             log(
               `session ${next.sid}: DEFERRED (budget_exhausted${result.budgetReason ? `: ${result.budgetReason}` : ""})` +
-                ` — exact target/cursor 보존, 새 model run 전까지 pending · 재개: ${resumeCommand}`,
+                ` — exact target/cursor 보존, 새 model run 전까지 pending`,
             );
           } else if (result.skipped === "failed_visible") {
             buckets.dead += 1;
@@ -426,7 +512,7 @@ async function main() {
         log(
           `progress: ${done}/${sessions.length} sessions, facts saved ${totalSaved}`,
         );
-    });
+    }, () => budgetStop !== null);
     log(
       `backfill-extract: done this run (sessions ${done}, facts saved ${totalSaved}` +
         (buckets.transient > 0
@@ -447,13 +533,12 @@ async function main() {
         (buckets.budget > 0
           ? `, budget-burned ${buckets.budget} — 재시도 예산 소모(반복 시 영구 제외)`
           : "") +
+        // 이슈 #146: 재개 명령은 요약줄에 이어 붙이지 않는다 — 아래에 한 줄로 찍는다.
         (buckets.budget_exhausted > 0
-          ? `, budget-exhausted ${buckets.budget_exhausted} — target/cursor pending, explicit new run 필요` +
-            (budgetsToResume.size > 0
-              ? `: ${[...budgetsToResume]
-                  .map((id) => `memex model-work resume ${id} --new-run`)
-                  .join(" · ")}`
-              : "")
+          ? `, budget-exhausted ${buckets.budget_exhausted} — target/cursor pending, explicit new run 필요`
+          : "") +
+        (notStarted > 0
+          ? `, not-started ${notStarted} — 예산 정지로 꺼내지 않음, 다음 run 대상`
           : "") +
         (buckets.dead > 0
           ? `, failed-visible ${buckets.dead} — completed 아님, exact range 점검 필요`
@@ -471,6 +556,23 @@ async function main() {
           : "") +
         ")",
     );
+    // 🚨 이슈 #146 — 예산 안내는 이 실행에서 **딱 한 줄**이다.
+    // 관측된 실패는 세션마다 스택 트레이스 한 개씩(9개) + 세션마다 재개 명령이었고,
+    // 정작 운영자가 알아야 할 것(어느 예산이, 왜, 몇 건을 세웠고, 무엇을 치면 되는지)은
+    // 그 안에 묻혀 있었다.
+    if (budgetStop) {
+      const wave = budgetWaveName(db, budgetStop.budgetId);
+      const deferred = buckets.budget_exhausted + notStarted;
+      const others = [...budgetsToResume].filter((id) => id !== budgetStop.budgetId);
+      log(
+        `backfill-extract: model work budget ${budgetStop.budgetId ?? "<budget-id>"}` +
+          `${wave ? ` (${wave})` : ""} is exhausted (${budgetStop.reason ?? "unknown"});` +
+          ` ${deferred} session(s) deferred — resume: memex model-work resume ` +
+          `${budgetStop.budgetId ?? "<budget-id>"} --new-run` +
+          // 진행 중이던 세션이 다른 예산에서 멈췄을 수 있다 — 조용히 버리지 않는다.
+          (others.length > 0 ? ` (다른 예산 ${others.length}건: ${others.join(", ")})` : ""),
+      );
+    }
   } catch (error) {
     log(
       `backfill-extract: FATAL ${error instanceof Error ? error.message : error}`,

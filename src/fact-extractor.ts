@@ -61,6 +61,7 @@ import {
   findExhaustedModelBudgetForClaim,
   isAutomaticOntologyEnabled,
   isModelBudgetExhausted,
+  modelBudgetErrorFromUnknown,
   releaseExtractionClaimOnHold,
   withResolvedModelWorkContext,
   HOLD_REASONS,
@@ -2545,6 +2546,15 @@ export async function extractFactsFromExchanges(
       // 재시도로 흡수했고, 워커가 이연 건수를 로그로 표면화한다.
       // (Codex 적대 리뷰 2026-07-17: 'API Error: 500 …' 이 unknown 으로 떨어져
       //  배치 폐기 → 세션 완료 기록 = 원 결함 재현. 분류기 보강 + 이 이연이 이중 방어.)
+      // 🚨 이슈 #146 — 예산 소진은 공급자 장애가 아니다. **분류보다 먼저** 걸러
+      // 원본 그대로 다시 던진다.
+      // 예전 동작: classifyLlmError 가 'unknown' 으로 떨어뜨려 window 마다 전체
+      // 스택 트레이스를 찍고 transientFailures 에 모았다가 루프 끝에서
+      // `new LlmCallError(...)` 로 **감싸서** 던졌다. 그러면 바깥 핸들러가 래퍼에서
+      // reason/budgetId 를 읽지 못해 환불 조건이 깨지고, 공급자 호출이 0회인
+      // 세션이 1시간 backoff 로 파킹됐다(관측: 8세션·스택 9개·fact 0건).
+      // 남은 window 도 같은 죽은 예산을 만나므로 즉시 중단하는 것이 옳다.
+      if (isModelBudgetExhausted(error)) throw error;
       const cls = classifyLlmError(error);
       if (cls === "config") {
         // BEFORE the deterministic branch on purpose: an envelope rejection
@@ -3505,12 +3515,23 @@ export async function runFactExtraction(
   // 같은 wake 가 26초 뒤 새 예산을 만들어도 유일한 작업은 backoff 안이라 창이 통째로
   // 비었다. 죽은 예산이 추출기에 도달하지 못하게 선점 전에 막는다.
   const claimedAt = new Date();
+  // 🚨 이슈 #146 — 사전 확인은 **모델 호출이 실제로 쓸 예산**을 봐야 한다.
+  // 예전에는 job 에 묶인 예산(또는 명시 budgetId)만 봤기 때문에, 아직 묶이지
+  // 않은 job 이 `maintenance` wave 의 시계-사망 run 으로 해석되는 경우를 통과
+  // 시켜 버렸다. 그래서 wave 도 같은 값으로 넘긴다 — 아래 modelContext 와
+  // 한 글자도 다르면 안 되므로 여기서 한 번만 계산한다.
+  const modelParentWaveId =
+    _opts?.modelContext?.parentWaveId ||
+    process.env.MEMEX_MAINTENANCE_WAVE_ID ||
+    `extraction:${sessionId}`;
   const spentBudget = findExhaustedModelBudgetForClaim(db, {
     jobId: target.jobId,
     budgetId:
       _opts?.modelContext?.budgetId?.trim() ||
       process.env.MEMEX_MODEL_BUDGET_ID?.trim() ||
       null,
+    parentWaveId: modelParentWaveId,
+    stage: "fact_extract",
     now: claimedAt,
   });
   if (spentBudget) {
@@ -3610,10 +3631,8 @@ export async function runFactExtraction(
   };
   const modelContext: Partial<ModelWorkContext> = {
     db,
-    parentWaveId:
-      _opts?.modelContext?.parentWaveId ||
-      process.env.MEMEX_MAINTENANCE_WAVE_ID ||
-      `extraction:${sessionId}`,
+    // #146: same value the pre-claim check resolved against, by construction.
+    parentWaveId: modelParentWaveId,
     stage: "fact_extract",
     jobId: target.jobId,
     targetId: target.targetId,
@@ -3660,13 +3679,20 @@ export async function runFactExtraction(
       // 넘어가는 경주가 남아 있다. `claimedAt` 을 넘기면 이 선점이 공급자 attempt
       // 를 **한 번도** 쓰지 않은 경우에 한해 선점이 태운 attempt 를 환불하고
       // 1시간 backoff 대신 즉시 pending 으로 돌려놓는다(attempts 소진은 종전대로).
+      // 🚨 이슈 #146 — 예산 정보는 **가장 안쪽 예산 에러**에서 읽는다.
+      // isModelBudgetExhausted 는 `.reason` 체인을 따라가므로 LlmCallError 로
+      // 감싸인 소진도 true 를 돌려주지만, 그때 `error.reason` 은 감싸인 **에러
+      // 객체**이고 `error.budgetId` 는 undefined 다. 그 상태로 아래 환불 조건
+      // (reason === 'deadline' | 'window')을 보면 항상 거짓이라, 공급자 호출을
+      // 한 번도 쓰지 않은 선점이 1시간 backoff 로 파킹됐다(#146 관측).
+      const budgetError = modelBudgetErrorFromUnknown(error) ?? error;
       deferMemoryJobForModelBudget(db, {
         jobId: target.jobId,
-        budgetId: error.budgetId,
-        parentWaveId: error.parentWaveId,
+        budgetId: budgetError.budgetId,
+        parentWaveId: budgetError.parentWaveId,
         owner: claimed.owner,
         leaseGeneration: claimed.leaseGeneration,
-        reason: error.reason,
+        reason: budgetError.reason,
         now: new Date(),
         claimedAt,
       });
@@ -3674,8 +3700,8 @@ export async function runFactExtraction(
         extracted: 0,
         saved: 0,
         skipped: "budget_exhausted",
-        budgetReason: error.reason,
-        budgetId: error.budgetId,
+        budgetReason: budgetError.reason,
+        budgetId: budgetError.budgetId,
       };
     }
     const kind = classifyLlmError(error);
