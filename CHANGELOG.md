@@ -13,7 +13,7 @@ Hotfixes for the three findings of the post-release review of 0.7.18 (#149).
   longer hides the closed turns that precede it in the transcript.
 - A sidechain (sub-agent) turn is never evidence that the main line moved on:
   neither settlement nor the checkpoint's trailing-turn guard counts it as a
-  later turn.
+  later turn, and the checkpoint boundary itself is always a main-line turn.
 
 ### Upgrade
 
