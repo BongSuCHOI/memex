@@ -53,6 +53,10 @@ export default {
   'guidance.claim-error.cause': 'The claim step errored. The processing itself never started.',
   'guidance.claim-error.impact': 'Only this pass is skipped.',
   'guidance.claim-error.next': 'If it repeats on the same work, read the original text in the system log.',
+  'guidance.no-eligible-exchanges.title': 'Nothing left to extract in this session',
+  'guidance.no-eligible-exchanges.cause': 'The target builder found no closed exchange to extract: only a still-open turn, or everything is already processed.',
+  'guidance.no-eligible-exchanges.impact': 'This pass is skipped. If the session keeps counting as pending, the count and the builder disagree.',
+  'guidance.no-eligible-exchanges.next': 'If it repeats for the same session, read the backfill line in the system log.',
 
   'guidance.excluded-project.title': 'Project excluded by policy',
   'guidance.excluded-project.cause': 'The project is excluded in the configuration, so it is not a capture or extraction target. This is intended behaviour, not a failure.',

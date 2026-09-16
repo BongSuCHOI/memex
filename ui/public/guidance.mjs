@@ -96,6 +96,13 @@ export const CLASSES=[
   ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'logs',level:'error'},labelKey:'guidance.action.viewErrorLogs'}],
   source:GUIDE}),
 
+ // 0.7.18 (#149): 대상 빌더가 추출할 closed exchange를 못 찾은 세션. 예전엔 아무 줄도 없이
+ // pending 에 남았다. 이제는 사유가 보이고, pending 집계와 어긋나면 그 자체가 점검 신호다.
+ failure('no-eligible-exchanges',{
+  match:['no_eligible_exchanges'],
+  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'logs',level:'error'},labelKey:'guidance.action.viewErrorLogs'}],
+  source:GUIDE}),
+
  failure('excluded-project',{
   match:['excluded_project','excluded_project_unmarked'],
   ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'runtime'},labelKey:'guidance.action.viewEnvironment'}],

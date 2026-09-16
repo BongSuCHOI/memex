@@ -576,7 +576,8 @@ describe("Final Integration: cross-phase end-to-end", () => {
     expect(handleContinuityHook(hook(A, "Stop", { turn_id: "turn-16" }), { db })).toEqual({ stdout: "" });
     expect(handleContinuityHook(hook(A, "SessionEnd", { reason: "other" }), { db })).toEqual({ stdout: "" });
     expect(await runContinuityWorker(db, { maxJobs: 4, model: capsuleModel })).toEqual([]);
-    expect(await runFactExtraction(db, A, PROJECT)).toEqual({ extracted: 0, saved: 0 });
+    // #149: a no-op is named, never silent
+    expect(await runFactExtraction(db, A, PROJECT)).toEqual({ extracted: 0, saved: 0, skipped: "no_eligible_exchanges" });
     const afterPurge = await inject("Which runtime session store are we on?", C);
     expect(afterPurge.context).not.toContain("Redis");
     const resurrection = count("SELECT COUNT(*) AS n FROM exchanges WHERE session_id = ?", A) + count("SELECT COUNT(*) AS n FROM facts WHERE id = ?", factId) + count("SELECT COUNT(*) AS n FROM checkpoints WHERE session_id = ?", A);

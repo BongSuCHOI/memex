@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { settleStaleOpenExchanges } from "./continuity-store.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -2639,40 +2640,65 @@ export function applyLatestLifecycleClosure(
   sessionId: string,
 ): boolean {
   const tx = db.transaction(() => {
-    const checkpoint = db.prepare(`
-      SELECT closure_state, through_line FROM checkpoints
-      WHERE session_id = ? AND kind IN ('stop','interrupt','precompact','final')
-        AND through_line IS NOT NULL
-      ORDER BY stream_epoch DESC, through_byte DESC,
-        CASE kind WHEN 'final' THEN 4 WHEN 'stop' THEN 3
-          WHEN 'interrupt' THEN 2 ELSE 1 END DESC,
-        created_at DESC
-      LIMIT 1
-    `).get(sessionId) as
-      | { closure_state: string; through_line: number }
-      | undefined;
-    if (!checkpoint) return false;
-    const exchange = db.prepare(`
-      SELECT id, closure_state FROM exchanges
-      WHERE session_id = ? AND line_end <= ?
-      ORDER BY line_end DESC, exchange_seq DESC, rowid DESC LIMIT 1
-    `).get(sessionId, checkpoint.through_line) as
-      | { id: string; closure_state: string }
-      | undefined;
-    if (!exchange || exchange.closure_state === checkpoint.closure_state) return false;
-    db.prepare(`
-      UPDATE exchange_extraction_state SET state = 'superseded'
-      WHERE exchange_id = ? AND state <> 'processed'
-    `).run(exchange.id);
-    return db.prepare(`
-      UPDATE exchanges
-      SET closure_state = ?, content_generation = content_generation + 1
-      WHERE id = ? AND closure_state = ?
-    `).run(
-      checkpoint.closure_state,
-      exchange.id,
-      exchange.closure_state,
-    ).changes === 1;
+    const changed = applyCheckpointClosure(db, sessionId);
+    // Issue #149: the checkpoint speaks for the latest boundary only. A turn
+    // the session has already moved past is settled AFTER it, so a historical
+    // interrupt checkpoint can never re-open a turn that later turns closed.
+    const settled = settleStaleOpenExchanges(db, sessionId);
+    return changed || settled > 0;
   });
   return db.inTransaction ? tx() : tx.immediate();
+}
+
+/** The pre-#149 body: the latest lifecycle checkpoint labels its boundary exchange. */
+function applyCheckpointClosure(db: Database.Database, sessionId: string): boolean {
+  const checkpoint = db.prepare(`
+    SELECT closure_state, through_line FROM checkpoints
+    WHERE session_id = ? AND kind IN ('stop','interrupt','precompact','final')
+      AND through_line IS NOT NULL
+    ORDER BY stream_epoch DESC, through_byte DESC,
+      CASE kind WHEN 'final' THEN 4 WHEN 'stop' THEN 3
+        WHEN 'interrupt' THEN 2 ELSE 1 END DESC,
+      created_at DESC
+    LIMIT 1
+  `).get(sessionId) as
+    | { closure_state: string; through_line: number }
+    | undefined;
+  if (!checkpoint) return false;
+  const exchange = db.prepare(`
+    SELECT id, closure_state FROM exchanges
+    WHERE session_id = ? AND line_end <= ?
+    ORDER BY line_end DESC, exchange_seq DESC, rowid DESC LIMIT 1
+  `).get(sessionId, checkpoint.through_line) as
+    | { id: string; closure_state: string }
+    | undefined;
+  if (!exchange || exchange.closure_state === checkpoint.closure_state) return false;
+  // Issue #149 (review): a historical open/interrupted checkpoint stays the
+  // latest one when later hooks were missed, and re-applying it on every
+  // ingestion would re-open a turn that settlement just closed — two generation
+  // bumps per call, for ever, and the turn never reaching `processed`. An
+  // open/interrupted label only ever applies to the session's trailing turn.
+  if (checkpoint.closure_state === "open" || checkpoint.closure_state === "interrupted") {
+    const later = db.prepare(`
+      SELECT 1 FROM exchanges l
+      JOIN exchanges o ON o.id = ?
+      WHERE l.session_id = o.session_id
+        AND (l.line_end > o.line_end OR (l.line_end = o.line_end AND l.exchange_seq > o.exchange_seq))
+      LIMIT 1
+    `).get(exchange.id);
+    if (later) return false;
+  }
+  db.prepare(`
+    UPDATE exchange_extraction_state SET state = 'superseded'
+    WHERE exchange_id = ? AND state <> 'processed'
+  `).run(exchange.id);
+  return db.prepare(`
+    UPDATE exchanges
+    SET closure_state = ?, content_generation = content_generation + 1
+    WHERE id = ? AND closure_state = ?
+  `).run(
+    checkpoint.closure_state,
+    exchange.id,
+    exchange.closure_state,
+  ).changes === 1;
 }

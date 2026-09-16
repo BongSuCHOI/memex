@@ -55,6 +55,10 @@ export default {
   'guidance.claim-error.cause': '작업을 확보하는 단계에서 오류가 났습니다. 처리 자체는 시작되지 않았습니다.',
   'guidance.claim-error.impact': '이번 회차만 건너뜁니다.',
   'guidance.claim-error.next': '같은 작업에서 반복되면 시스템 로그의 원문을 확인하세요.',
+  'guidance.no-eligible-exchanges.title': '이 세션에는 추출할 것이 남아 있지 않음',
+  'guidance.no-eligible-exchanges.cause': '대상 빌더가 추출할 closed exchange를 찾지 못했습니다. 아직 열린 턴만 남았거나 모두 처리된 상태입니다.',
+  'guidance.no-eligible-exchanges.impact': '이번 회차만 건너뜁니다. 그런데도 이 세션이 계속 pending으로 집계되면 집계와 빌더가 어긋난 것입니다.',
+  'guidance.no-eligible-exchanges.next': '같은 세션에서 반복되면 시스템 로그의 backfill 줄을 확인하세요.',
 
   'guidance.excluded-project.title': '정책상 제외된 프로젝트',
   'guidance.excluded-project.cause': '설정에서 제외한 프로젝트라 수집·추출 대상이 아닙니다. 실패가 아니라 정상 동작입니다.',

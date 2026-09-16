@@ -179,7 +179,13 @@ async function main() {
     // skipped 를 무시하면 claim 미획득·보류가 'extracted=0 saved=0' 정상 처리와
     // 구분되지 않아 DB 장애가 무경보로 남는다(R19 — backfill 에서 닫은 결함이
     // 이쪽에 그대로 있었다).
-    if (result.skipped) {
+    if (result.skipped === "no_eligible_exchanges") {
+      // 이슈 #149: 훅 경로에서는 "추출할 closed exchange 가 없다"가 정상 결과다
+      // (마지막 턴이 아직 열려 있거나 이미 모두 처리됨). 경보가 아니라 0건 줄에 사유만 남긴다.
+      log(
+        `worker: session=${sessionId} extracted=0 saved=0 (no_eligible_exchanges)`,
+      );
+    } else if (result.skipped) {
       log(
         `worker: SKIPPED (${result.skipped}) session=${sessionId} — 처리하지 않음`,
       );

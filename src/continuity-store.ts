@@ -1896,6 +1896,54 @@ export interface ExtractionTarget {
 export type ExtractionFactLanguage = "ko" | "en" | "mixed" | null;
 
 /** Create one immutable target from a claim-time snapshot, never live completion MAX. */
+/**
+ * Issue #149: settle open/interrupted turns the session has moved past.
+ *
+ * `applyLatestLifecycleClosure` corrects only the exchange at the latest
+ * checkpoint boundary. An `interrupted` exchange that was never the latest
+ * boundary again (the parser marked it at an EOF, the session went on) kept
+ * its state for ever, and the extraction fence (`rowid < first open`) then hid
+ * every later closed exchange from the target builder — while the pending
+ * query kept counting them. Observed live on five sessions with 2–28 closed
+ * exchanges each behind one mid-session `interrupted` turn.
+ *
+ * A turn with a later exchange (in transcript order) in the same session cannot complete any more:
+ * it becomes `closed` with a new generation, exactly the transition the
+ * lifecycle closure makes, so a state row written for the stale generation is
+ * superseded and the fence moves to the trailing turn where it belongs. The
+ * trailing open/interrupted turn is left alone — it may still be in progress.
+ */
+export function settleStaleOpenExchanges(db: Database.Database, sessionId: string): number {
+  const stale = db.prepare(`
+    SELECT o.id AS id FROM exchanges o
+    WHERE o.session_id = ? AND o.closure_state IN ('open','interrupted')
+      AND EXISTS (
+        SELECT 1 FROM exchanges l
+        WHERE l.session_id = o.session_id
+          -- transcript order, not insertion order: ingestion may interleave
+          AND (l.line_end > o.line_end
+            OR (l.line_end = o.line_end AND l.exchange_seq > o.exchange_seq))
+      )
+    ORDER BY o.line_end, o.exchange_seq, o.rowid
+  `).all(sessionId) as Array<{ id: string }>;
+  if (stale.length === 0) return 0;
+  const supersede = db.prepare(`
+    UPDATE exchange_extraction_state SET state = 'superseded'
+    WHERE exchange_id = ? AND state <> 'processed'
+  `);
+  const settle = db.prepare(`
+    UPDATE exchanges
+    SET closure_state = 'closed', content_generation = content_generation + 1
+    WHERE id = ? AND closure_state IN ('open','interrupted')
+  `);
+  let settled = 0;
+  for (const row of stale) {
+    supersede.run(row.id);
+    settled += settle.run(row.id).changes;
+  }
+  return settled;
+}
+
 export function ensureExtractionTarget(
   db: Database.Database,
   input: {
@@ -1908,6 +1956,10 @@ export function ensureExtractionTarget(
   const ensure = db.transaction((): ExtractionTarget | null => {
     const policy = input.policyVersion ?? FACT_EXTRACTION_POLICY_VERSION;
     refreshExchangeMetadata(db, input.sessionId);
+    // Issue #149: a stale open/interrupted turn that the session already moved
+    // past is settled here as well, so an old session no longer being captured
+    // still heals before its fence is read.
+    settleStaleOpenExchanges(db, input.sessionId);
   const active = db.prepare(`
     SELECT t.*, j.job_id
     FROM extraction_targets t

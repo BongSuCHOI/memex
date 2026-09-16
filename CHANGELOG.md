@@ -2,6 +2,29 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.18 - 2026-09-16
+
+Fix for sessions found silently stuck on a second machine (#149).
+
+### Extraction
+
+- An open or interrupted turn the session has already moved past is settled
+  as closed (new generation) before the extraction fence is read — by the
+  lifecycle closure and by the target builder itself. A session that kept one
+  `interrupted` exchange in the middle had every later closed exchange hidden
+  from the target builder for ever, while the pending count kept including
+  them — five live sessions with 2–28 unextracted exchanges each, skipped on
+  every run without a line in any log. The fence itself is unchanged: a
+  trailing open turn still stops extraction.
+- An empty extraction target is reported (`no_eligible_exchanges`) by the
+  extractor and the backfill worker instead of returning silently.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change; the next extraction
+run (SessionStart maintenance or `memex backfill extract`) picks the hidden
+exchanges up.
+
 ## 0.7.17 - 2026-09-16
 
 Hotfixes for the two findings of the post-release review of 0.7.16.
