@@ -1516,9 +1516,12 @@ export function settleStaleOpenExchanges(db, sessionId) {
     const stale = db.prepare(`
     SELECT o.id AS id FROM exchanges o
     WHERE o.session_id = ? AND o.closure_state IN ('open','interrupted')
+      AND o.is_sidechain = 0
       AND EXISTS (
         SELECT 1 FROM exchanges l
         WHERE l.session_id = o.session_id
+          -- a sidechain (sub-agent) turn is not the main line moving on
+          AND l.is_sidechain = 0
           -- transcript order, not insertion order: ingestion may interleave
           AND (l.line_end > o.line_end
             OR (l.line_end = o.line_end AND l.exchange_seq > o.exchange_seq))
@@ -1565,10 +1568,16 @@ export function ensureExtractionTarget(db, input) {
         // extractors used sampling and seed/permanent markers, so it cannot prove
         // that every generation below it was presented. Only an exact current
         // exchange_extraction_state='processed' row is completion authority.
+        // Issue #149 (post-release review): the fence is a TRANSCRIPT position, not
+        // a rowid (the item snapshot itself stays in rowid order: its rowid range is
+        // the completion authority). Ingestion may insert a later turn before an earlier one, so a
+        // trailing open turn with a low rowid used to hide every closed turn that
+        // precedes it in the transcript — `no_eligible_exchanges` on every run.
         const firstOpen = db.prepare(`
-    SELECT MIN(rowid) AS rowid FROM exchanges
-    WHERE session_id = ? AND closure_state IN ('open','interrupted')
-  `).get(input.sessionId).rowid;
+    SELECT line_end, exchange_seq FROM exchanges
+    WHERE session_id = ? AND closure_state IN ('open','interrupted') AND is_sidechain = 0
+    ORDER BY line_end, exchange_seq, rowid LIMIT 1
+  `).get(input.sessionId);
         const items = db.prepare(`
     SELECT e.rowid AS exchange_rowid, e.id AS exchange_id,
            e.content_generation, e.content_hash
@@ -1579,10 +1588,10 @@ export function ensureExtractionTarget(db, input) {
      AND s.policy_version = ?
      AND s.state = 'processed'
     WHERE e.session_id = ? AND e.closure_state IN ('closed','final')
-      AND e.rowid < ?
+      AND (? IS NULL OR e.line_end < ? OR (e.line_end = ? AND e.exchange_seq < ?))
       AND s.exchange_id IS NULL
     ORDER BY e.rowid
-  `).all(policy, input.sessionId, firstOpen ?? Number.MAX_SAFE_INTEGER);
+  `).all(policy, input.sessionId, firstOpen ? 1 : null, firstOpen?.line_end ?? 0, firstOpen?.line_end ?? 0, firstOpen?.exchange_seq ?? 0);
         if (items.length === 0)
             return null;
         // The immutable item snapshot is the exact cursor authority. Keep the rowid

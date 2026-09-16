@@ -19,12 +19,12 @@ let db: Database.Database;
 const vector = new Array(384).fill(0.01);
 const SESSION = "session-fence";
 
-function put(id: string, closureState: "open" | "interrupted" | "closed" | "final", line: number): void {
+function put(id: string, closureState: "open" | "interrupted" | "closed" | "final", line: number, sidechain = false): void {
   insertExchange(db, {
     id, sessionId: SESSION, project: root, cwd: root, archivePath: path.join(root, "s.jsonl"),
     timestamp: new Date(Date.parse("2026-09-16T00:00:00Z") + line * 1000).toISOString(),
     userMessage: `question ${id}`, assistantMessage: `answer ${id}`, lineStart: line, lineEnd: line + 1,
-    closureState,
+    closureState, isSidechain: sidechain,
   }, vector);
 }
 
@@ -123,4 +123,54 @@ it("a historical interrupt checkpoint cannot re-open a turn the session moved pa
   const items = db.prepare("SELECT exchange_id FROM extraction_target_items WHERE target_id = ? ORDER BY ordinal")
     .all(target.targetId) as Array<{ exchange_id: string }>;
   expect(items.map((item) => item.exchange_id)).toEqual(["a", "b", "c"]);
+});
+
+it("a sidechain turn is not evidence that the main line moved on (post-release #149)", () => {
+  put("a", "closed", 1);
+  put("b", "open", 3);
+  put("side", "closed", 5, true);
+  expect(settleStaleOpenExchanges(db, SESSION)).toBe(0);
+  expect(db.prepare("SELECT closure_state FROM exchanges WHERE id = 'b'").get()).toEqual({ closure_state: "open" });
+  // the checkpoint label still applies to b: only sidechain turns follow it
+  db.prepare(`INSERT INTO checkpoints
+      (checkpoint_id, session_id, ordinal, kind, state, idempotency_key, created_at, closure_state, through_line)
+    VALUES ('cp-side', ?, 1, 'interrupt', 'captured', 'cp-side-key', ?, 'interrupted', 4)`)
+    .run(SESSION, new Date().toISOString());
+  expect(applyLatestLifecycleClosure(db, SESSION)).toBe(true);
+  expect(db.prepare("SELECT closure_state FROM exchanges WHERE id = 'b'").get()).toEqual({ closure_state: "interrupted" });
+  // a main-line turn behind it settles b as before
+  put("c", "closed", 7);
+  expect(settleStaleOpenExchanges(db, SESSION)).toBe(1);
+});
+
+it("the fence is a transcript position: a trailing open turn inserted first does not hide earlier closed turns (post-release #149)", () => {
+  put("c", "open", 7);      // trailing turn by transcript, lowest rowid
+  put("a", "closed", 1);
+  put("b", "closed", 3);
+  const target = ensureExtractionTarget(db, { sessionId: SESSION, project: root });
+  expect(target).not.toBeNull();
+  const items = db.prepare("SELECT exchange_id FROM extraction_target_items WHERE target_id = ? ORDER BY ordinal")
+    .all(target!.targetId) as Array<{ exchange_id: string }>;
+  expect(items.map((item) => item.exchange_id)).toEqual(["a", "b"]);
+  expect(db.prepare("SELECT closure_state FROM exchanges WHERE id = 'c'").get()).toEqual({ closure_state: "open" });
+});
+
+it("the checkpoint boundary is a main-line turn even when a sidechain turn is the last row within through_line", () => {
+  put("a", "closed", 1);
+  put("b", "open", 3);
+  put("side", "closed", 5, true);
+  db.prepare(`INSERT INTO checkpoints
+      (checkpoint_id, session_id, ordinal, kind, state, idempotency_key, created_at, closure_state, through_line)
+    VALUES ('cp-stop', ?, 1, 'stop', 'captured', 'cp-stop-key', ?, 'closed', 6)`)
+    .run(SESSION, new Date().toISOString());
+  expect(applyLatestLifecycleClosure(db, SESSION)).toBe(true);
+  expect(db.prepare("SELECT closure_state, content_generation FROM exchanges WHERE id = 'b'").get())
+    .toEqual({ closure_state: "closed", content_generation: 2 });
+  expect(db.prepare("SELECT closure_state, content_generation FROM exchanges WHERE id = 'side'").get())
+    .toEqual({ closure_state: "closed", content_generation: 1 });
+  // b is now closed and extractable; the sidechain turn was always an item (closed, no fence)
+  const target = ensureExtractionTarget(db, { sessionId: SESSION, project: root })!;
+  const items = db.prepare("SELECT exchange_id FROM extraction_target_items WHERE target_id = ? ORDER BY ordinal")
+    .all(target.targetId) as Array<{ exchange_id: string }>;
+  expect(items.map((item) => item.exchange_id)).toEqual(["a", "b", "side"]);
 });

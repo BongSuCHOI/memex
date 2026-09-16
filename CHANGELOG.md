@@ -2,6 +2,23 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.19 - 2026-09-16
+
+Hotfixes for the three findings of the post-release review of 0.7.18 (#149).
+
+### Extraction
+
+- The extraction fence is a transcript position (`line_end`, `exchange_seq`),
+  not a rowid: a trailing open turn that was ingested before earlier turns no
+  longer hides the closed turns that precede it in the transcript.
+- A sidechain (sub-agent) turn is never evidence that the main line moved on:
+  neither settlement nor the checkpoint's trailing-turn guard counts it as a
+  later turn, and the checkpoint boundary itself is always a main-line turn.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.18 - 2026-09-16
 
 Fix for sessions found silently stuck on a second machine (#149).
