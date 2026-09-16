@@ -2,6 +2,43 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.16 - 2026-09-16
+
+Budgets must never strand work. Fixes for #146 and #143, found on a second
+machine, plus the cooldown change they exposed.
+
+### Model work budgets
+
+- The pre-claim budget check resolves the same budget the model call will use.
+  An unbound extraction job under the `maintenance` wave used to pass the check
+  and then fail every window mid-run on a clock-dead run.
+- A budget deferral with no provider call leaves the job `pending` with its
+  attempt refunded and no backoff — also when the exhaustion arrived wrapped in
+  a call error, which used to hide the reason and land the job in a one-hour
+  retry.
+- The automatic maintenance cooldown applies to spend, not to time: a run that
+  ended because its deadline passed rolls over at the next wake; a run spent by
+  its attempt cap or the rolling window still waits. The first exhaustion
+  reason is persisted (`exhausted_reason`, additive column); rows from before
+  this release keep the cooldown.
+- A foreground `memex backfill extract` opens its own `backfill#n` run, moves
+  extraction jobs parked on spent budgets onto it (settling clock-dead budgets
+  first), stops once on exhaustion and prints one resume line instead of a
+  stack trace per window.
+
+### Continuity
+
+- The Capsule model is no longer shown the previous generation's source ids,
+  and ids it still carries over are removed from the patch (top level and every
+  claim) before validation instead of rejecting the whole answer. A foreign id
+  still rejects, and the error now names the offending ids. Size caps and the
+  truncation ledger are computed on the normalized patch.
+
+### Upgrade
+
+Run `memex update` and restart Codex. Additive schema change on
+`model_work_budgets` (`exhausted_reason`), applied automatically.
+
 ## 0.7.15 - 2026-09-16
 
 Fix for an extraction target found stuck on a second machine (#144).
