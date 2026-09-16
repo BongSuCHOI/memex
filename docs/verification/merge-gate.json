@@ -11,7 +11,7 @@
   "candidate": {
     "repository": "memex",
     "branch": "release/0.7.17",
-    "codeSha": "166904188cd1fe50d3291d5c8b734526425b3d29",
+    "codeSha": "38208e3253f26a05cbe5dc2477408cd959605372",
     "packageVersion": "0.7.17",
     "cleanBeforeGate": true,
     "cleanAfterGate": false,
@@ -272,7 +272,7 @@
     "liveLockContentionFix": "NOT_PROVEN: the #133 mechanism was reproduced in isolation; the live root will be checked at the next SessionStart-adjacent prompt.",
     "liveBudgetContinuation": "NOT_PROVEN: the second machine must run `memex backfill extract` under 0.7.17 and show extraction instead of a deferred run."
   },
-  "releaseConclusion": "Every gate in docs/VERIFICATION.md §2/§4 (eighteen) passes on the clean v0.7.17 candidate 16690418 on its first attempt.",
+  "releaseConclusion": "Every gate in docs/VERIFICATION.md §2/§4 (eighteen) passes on the clean v0.7.17 candidate 38208e32 on its first attempt.",
   "benchmark": {
     "record": "docs/verification/benchmark.json unchanged (contract re-checked on this candidate)",
     "verdict": "PASS",
