@@ -639,6 +639,16 @@ export declare function rebindSpentQueueJobsToBudget(db: Database.Database, inpu
     kind: string;
     now?: Date;
 }): string[];
+/**
+ * Issue #146 (post-release review): whether one session's budget exhaustion
+ * stops a backfill run's further dequeues. A foreground run has its own budget
+ * and keeps live bindings to other budgets alone; a session parked on one of
+ * THOSE must not halt sessions that would run on the foreground budget. With
+ * no run budget of its own (hook lineage) every session shares the wave's
+ * budget, so any exhaustion stops the run; an exhaustion of unknown origin is
+ * treated the same, conservatively.
+ */
+export declare function budgetStopApplies(runBudgetId: string | null, exhaustedBudgetId: string | null): boolean;
 /** Stable budget used by the SessionStart maintenance sibling wave. */
 export declare function getOrCreateMaintenanceModelBudget(db: Database.Database, input?: {
     parentWaveId?: string;

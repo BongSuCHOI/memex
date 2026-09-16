@@ -302,6 +302,20 @@ async function main() {
     // 남은 세션도 전부 같은 대답을 받는다 — 관측된 실패는 동일한 스택 9개였다.
     // 진행 중인 세션은 자기 이연을 끝내고, 안내는 마지막에 한 줄로만 찍는다.
     let budgetStop = null;
+    // The budget this run's own sessions resolve to: the foreground run, or a
+    // pinned budget; null for the hook lineage (every session shares the wave).
+    const runBudgetId = foreground
+      ? foreground.budget.budgetId
+      : (process.env.MEMEX_MODEL_BUDGET_ID || null);
+    let stopApplies = (run, exhausted) => run === null || exhausted === null || run === exhausted;
+    try {
+      const { budgetStopApplies } = await import('../dist/model-budget.js');
+      // older dist: the export is missing, the import still succeeds — keep the
+      // local rule above (same semantics) rather than an undefined callee.
+      if (typeof budgetStopApplies === 'function') stopApplies = budgetStopApplies;
+    } catch {
+      // older dist without the module shape: same local fallback
+    }
     const { isolated, notStarted } = await runPool(sessions, CONCURRENCY, async (next) => {
       // 🚨 sessionProject 도 try 안에서 부른다. 밖에 두면 SQLITE_BUSY 같은 **세션 단위**
       // DB 오류가 콜백을 reject 시켜 배치 전체가 중단되고, 요약줄·INTERNAL 경보까지
@@ -431,7 +445,9 @@ async function main() {
             // 모든 세션이 같은 예산을 가리키므로 N번 반복되는 안내는 노이즈였다 —
             // 마지막에 예산별로 한 줄씩만 찍는다.
             if (result.budgetId) budgetsToResume.add(result.budgetId);
-            if (!budgetStop) {
+            // Post-release review of #146: a session parked on ANOTHER live
+            // budget must not halt the sessions that run on this run's budget.
+            if (!budgetStop && stopApplies(runBudgetId, result.budgetId ?? null)) {
               budgetStop = {
                 budgetId: result.budgetId ?? null,
                 reason: result.budgetReason ?? null,
@@ -560,6 +576,14 @@ async function main() {
     // 관측된 실패는 세션마다 스택 트레이스 한 개씩(9개) + 세션마다 재개 명령이었고,
     // 정작 운영자가 알아야 할 것(어느 예산이, 왜, 몇 건을 세웠고, 무엇을 치면 되는지)은
     // 그 안에 묻혀 있었다.
+    if (!budgetStop && budgetsToResume.size > 0) {
+      // Sessions parked on other budgets did not stop this run; say so once.
+      const ids = [...budgetsToResume];
+      log(
+        `backfill-extract: ${buckets.budget_exhausted} session(s) deferred on other exhausted budget(s) — ` +
+          ids.map((id) => `memex model-work resume ${id} --new-run`).join(" · "),
+      );
+    }
     if (budgetStop) {
       const wave = budgetWaveName(db, budgetStop.budgetId);
       const deferred = buckets.budget_exhausted + notStarted;

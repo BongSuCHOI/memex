@@ -10412,6 +10412,7 @@ __export(model_budget_exports, {
   activeModelConfigHold: () => activeModelConfigHold,
   automaticMaintenanceWindow: () => automaticMaintenanceWindow,
   bindMemoryJobToBudget: () => bindMemoryJobToBudget,
+  budgetStopApplies: () => budgetStopApplies,
   claimMaintenanceWake: () => claimMaintenanceWake,
   clearJobHold: () => clearJobHold,
   clearModelConfigHold: () => clearModelConfigHold,
@@ -12134,6 +12135,9 @@ function rebindSpentQueueJobsToBudget(db, input) {
     return rebound;
   });
   return tx.immediate();
+}
+function budgetStopApplies(runBudgetId, exhaustedBudgetId) {
+  return runBudgetId === null || exhaustedBudgetId === null || runBudgetId === exhaustedBudgetId;
 }
 function getOrCreateMaintenanceModelBudget(db, input = {}) {
   return getOrCreateWaveModelBudget(db, {
@@ -33171,7 +33175,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.16"
+    version: "0.7.17"
   },
   {
     capabilities: {

@@ -297,6 +297,27 @@ it("a MAX-slot claim keeps its page ids when previous ids fill the leading slots
   expect(answer.length - capsule.originalChars!).toBeGreaterThan(150);
 });
 
+it("eight carried-over claims ahead of a page claim do not evict it (post-release #143)", async () => {
+  await seedGenerationOne(PREVIOUS_SOURCES);
+  const carried = Array.from({ length: 8 }, (_, i) => ({
+    text: `old hypothesis ${i}`, sourceExchangeIds: [PREVIOUS_SOURCES[0]],
+  }));
+  const results = await runContinuityWorker(db, {
+    maxJobs: 4,
+    model: async () => patch({
+      sourceExchangeIds: [PAGE_TWO[0], PAGE_TWO[1]],
+      hypotheses: [...carried, { text: "the page says so", sourceExchangeIds: [PAGE_TWO[1]] }],
+    }),
+  });
+  expect(results.every((result) => ["completed", "partial"].includes(result.state))).toBe(true);
+  const capsule = readWorkCapsule(db, workstream)!;
+  expect(capsule.generation).toBe(2);
+  expect(capsule.hypotheses).toEqual([{ text: "the page says so", sourceExchangeIds: [PAGE_TWO[1]] }]);
+  // Normalization removed the eight, not the item cap: nothing is reported dropped.
+  expect(capsule.truncated).toBe(false);
+  expect(capsuleJobs().some((job) => job.state === "retry")).toBe(false);
+});
+
 it("the model input no longer carries previousCapsule.sourceExchangeIds", async () => {
   await seedGenerationOne();
 

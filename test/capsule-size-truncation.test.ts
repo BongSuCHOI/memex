@@ -295,6 +295,22 @@ it("per-item validity is still enforced on the items that survive the cap", () =
   expect(() => validateWorkCapsulePatchWithTruncation(tail)).not.toThrow();
 });
 
+it("an evidence list over the cap is capped after parsing: invalid overflow is dropped, valid overflow counts (post-release #143)", () => {
+  const claims = (n: number) => Array.from({ length: n }, (_, i) => ({ text: `claim ${i}`, sourceExchangeIds: ["ex-1"] }));
+  const base = { ...overItemCountPatch(0), sourceExchangeIds: ["ex-1", "source"] };
+  // nine valid claims: eight kept, one reported dropped by the cap
+  const nine = validateWorkCapsulePatchWithTruncation({ ...base, hypotheses: claims(9) });
+  expect(nine.patch.hypotheses.length).toBe(8);
+  expect(nine.truncation.itemCaps.hypotheses).toEqual({ kept: 8, dropped: 1 });
+  // an invalid ninth claim is dropped, never thrown (issue #85)
+  const tail = { ...base, hypotheses: [...claims(8), { text: "", sourceExchangeIds: [] }] };
+  expect(() => validateWorkCapsulePatchWithTruncation(tail)).not.toThrow();
+  expect(validateWorkCapsulePatchWithTruncation(tail).truncation.itemCaps.hypotheses).toBeUndefined();
+  // an invalid claim inside the cap still throws
+  const inside = { ...base, hypotheses: [...claims(3), { text: "", sourceExchangeIds: [] }] };
+  expect(() => validateWorkCapsulePatchWithTruncation(inside)).toThrow(/hypotheses/);
+});
+
 it("an evidence list over the cap re-validates the sources of what survived", () => {
   const raw = {
     ...overItemCountPatch(0),
