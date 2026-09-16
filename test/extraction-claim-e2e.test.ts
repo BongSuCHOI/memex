@@ -598,7 +598,7 @@ describe('claim E2E', () => {
 
     // backfill worker 변형: settled + 워터마크 현재 → no-op 게이트에서 종료 (LLM 0회).
     const settled = await runFactExtraction(db, 'S1', '/tmp/p', { claimVariant: 'worker' });
-    expect(settled.skipped).toBeUndefined();
+    expect(settled.skipped).toBe('no_eligible_exchanges'); // #149: the no-op gate is named
     expect(calls).toBe(settledCalls);
     expect((db.prepare('SELECT COUNT(*) AS n FROM facts').get() as { n: number }).n).toBe(1);
 
@@ -629,7 +629,7 @@ describe('claim E2E', () => {
 
     // 같은 target은 이미 완료됐으므로 hook 재전달은 no-op이다.
     const hookRun = await runFactExtraction(db, 'S1', '/tmp/p');
-    expect(hookRun.skipped).toBeUndefined();
+    expect(hookRun.skipped).toBe('no_eligible_exchanges'); // #149
     expect(calls).toBe(settledCalls + 1);
   });
 
