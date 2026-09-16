@@ -10438,7 +10438,10 @@ __export(model_budget_exports, {
   listModelConfigHolds: () => listModelConfigHolds,
   modelBudgetErrorFromUnknown: () => modelBudgetErrorFromUnknown,
   modelBudgetLimitsFromEnv: () => modelBudgetLimitsFromEnv,
+  nextModelWorkRunWaveId: () => nextModelWorkRunWaveId,
+  peekResolvedModelBudget: () => peekResolvedModelBudget,
   rebindMemoryJobToBudget: () => rebindMemoryJobToBudget,
+  rebindSpentQueueJobsToBudget: () => rebindSpentQueueJobsToBudget,
   recordModelConfigHold: () => recordModelConfigHold,
   registerModelWorkTargets: () => registerModelWorkTargets,
   releaseExtractionClaimOnHold: () => releaseExtractionClaimOnHold,
@@ -10647,6 +10650,9 @@ function ensureModelBudgetSchema(db) {
     if (!budgetColumns.has("run_seq")) {
       db.exec("ALTER TABLE model_work_budgets ADD COLUMN run_seq INTEGER");
     }
+    if (!budgetColumns.has("exhausted_reason")) {
+      db.exec("ALTER TABLE model_work_budgets ADD COLUMN exhausted_reason TEXT");
+    }
     const legacyRows = db.prepare(
       `SELECT budget_id, parent_wave_id, root_wave_id, run_seq FROM model_work_budgets
          WHERE root_wave_id IS NULL OR run_seq IS NULL OR parent_wave_id LIKE '%:run:%'
@@ -10796,7 +10802,9 @@ function budgetFromRow(row) {
     deadlineAt: row.deadline_at == null ? null : String(row.deadline_at),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
-    automatic: row.automatic === 1
+    automatic: row.automatic === 1,
+    // Issue #146: additive column — a pre-0.7.16 row simply has no reason.
+    exhaustedReason: row.exhausted_reason == null ? null : String(row.exhausted_reason)
   };
 }
 function readBudgetById(db, budgetId) {
@@ -11216,15 +11224,14 @@ function startNewModelWorkRunForBudget(db, input) {
 function findExhaustedModelBudgetForClaim(db, input) {
   ensureModelBudgetSchema(db);
   const now = input.now ?? /* @__PURE__ */ new Date();
-  let budget = null;
-  const jobId = input.jobId?.trim();
-  if (jobId && tableExists2(db, "memory_jobs") && columnNames2(db, "memory_jobs").has("budget_id")) {
-    const row = db.prepare("SELECT budget_id FROM memory_jobs WHERE job_id = ?").get(jobId);
-    if (row?.budget_id) budget = readBudgetById(db, row.budget_id);
-  }
-  const requested = input.budgetId?.trim();
-  if (!budget && requested) budget = readBudgetById(db, requested);
-  if (!budget) return null;
+  const resolved = peekResolvedModelBudget(db, {
+    jobId: input.jobId,
+    budgetId: input.budgetId,
+    parentWaveId: input.parentWaveId,
+    stage: input.stage
+  });
+  if ("wouldCreate" in resolved) return null;
+  const budget = resolved.budget;
   const reason = resolveBudgetExhaustion(db, budget, now);
   if (!reason) return null;
   markModelBudgetExhausted(db, budget.budgetId, reason, now.toISOString());
@@ -11577,9 +11584,19 @@ function resolveBudgetExhaustion(db, budget, now) {
   return budgetExhaustion(budget, now.getTime()) ?? (budget.automatic && automaticMaintenanceWindow(db, now).remaining === 0 ? "window" : null);
 }
 function markModelBudgetExhausted(db, budgetId, reason, nowIso2) {
-  db.prepare(
-    "UPDATE model_work_budgets SET state = ?, updated_at = ? WHERE budget_id = ? AND state IN ('active','exhausted')"
-  ).run(reason === "cancelled" ? "cancelled" : "exhausted", nowIso2, budgetId);
+  const nextState = reason === "cancelled" ? "cancelled" : "exhausted";
+  const settled = db.prepare(
+    `UPDATE model_work_budgets
+     SET state = ?, exhausted_reason = ?, updated_at = ?
+     WHERE budget_id = ? AND state = 'active'`
+  ).run(nextState, reason, nowIso2, budgetId).changes;
+  if (settled === 0) {
+    db.prepare(
+      `UPDATE model_work_budgets
+       SET state = ?, updated_at = ?
+       WHERE budget_id = ? AND state = 'exhausted'`
+    ).run(nextState, nowIso2, budgetId);
+  }
 }
 function reserveModelAttempt(db, input) {
   ensureModelBudgetSchema(db);
@@ -11934,7 +11951,8 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
         return readBudgetById(db, latest.budgetId);
       }
       if (latest.state === "active") return latest;
-      if (window.remaining === 0 || now.getTime() < retryAt) return latest;
+      const clockOnlyStop = latest.exhaustedReason === "deadline";
+      if (window.remaining === 0 || !clockOnlyStop && now.getTime() < retryAt) return latest;
     }
     const nextWaveId = runWaveId(rootWaveId, nextRunSeq(db, rootWaveId));
     const next = latest?.state === "exhausted" ? startNewModelWorkRunForBudget(db, {
@@ -11953,37 +11971,39 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
   });
   return maintain.immediate();
 }
+function selectWaveModelBudget(db, input) {
+  const latest = latestMaintenanceBudget(db, input.parentWaveId);
+  if (!latest) return { kind: "create", latest: null };
+  const allPending = countPendingModelWork(db);
+  if (latest.state === "active" || latest.state === "exhausted") {
+    const linked = countPendingModelWork(db, latest.budgetId);
+    if (linked.pending > 0 || linked.reserved > 0 || allPending.unbound > 0) {
+      return { kind: "reuse", budget: latest };
+    }
+    return { kind: "retire", budget: latest };
+  }
+  if (input.reuseCompletedIfIdle && allPending.unbound === 0) {
+    return { kind: "reuse", budget: latest };
+  }
+  return { kind: "create", latest };
+}
 function getOrCreateWaveModelBudget(db, input) {
   ensureModelBudgetSchema(db);
   const parentWaveId = input.parentWaveId.trim();
   if (!parentWaveId) throw new Error("parentWaveId must not be empty");
+  const reuseCompletedIfIdle = input.reuseCompletedIfIdle ?? true;
   const maintain = db.transaction(() => {
-    let latest = latestMaintenanceBudget(db, parentWaveId);
-    const allPending = countPendingModelWork(db);
-    if (latest && latest.state === "active") {
-      const linked = countPendingModelWork(db, latest.budgetId);
-      if (linked.pending > 0 || linked.reserved > 0 || allPending.unbound > 0) {
-        return latest;
-      }
+    const selection = selectWaveModelBudget(db, { parentWaveId, reuseCompletedIfIdle });
+    if (selection.kind === "reuse") return selection.budget;
+    let latest = selection.kind === "retire" ? selection.budget : selection.latest;
+    if (selection.kind === "retire") {
       db.prepare(`
         UPDATE model_work_budgets
         SET state = 'completed', updated_at = ?
         WHERE budget_id = ? AND state IN ('active','exhausted')
-      `).run((/* @__PURE__ */ new Date()).toISOString(), latest.budgetId);
-      latest = readBudgetById(db, latest.budgetId);
-    }
-    if (latest && latest.state === "exhausted") {
-      const linked = countPendingModelWork(db, latest.budgetId);
-      if (linked.pending > 0 || linked.reserved > 0 || allPending.unbound > 0) return latest;
-      db.prepare(`
-        UPDATE model_work_budgets
-        SET state = 'completed', updated_at = ?
-        WHERE budget_id = ? AND state = 'exhausted'
-      `).run((/* @__PURE__ */ new Date()).toISOString(), latest.budgetId);
-      latest = readBudgetById(db, latest.budgetId);
-    }
-    if (latest && (latest.state === "completed" || latest.state === "cancelled") && (input.reuseCompletedIfIdle ?? true) && allPending.unbound === 0) {
-      return latest;
+      `).run((/* @__PURE__ */ new Date()).toISOString(), selection.budget.budgetId);
+      latest = readBudgetById(db, selection.budget.budgetId);
+      if (reuseCompletedIfIdle && latest) return latest;
     }
     const root = rootWaveIdOf(parentWaveId);
     const nextWave = latest ? runWaveId(root, nextRunSeq(db, root)) : parentWaveId;
@@ -12052,6 +12072,69 @@ function rolloverSpentWaveBudgets(db, input = {}) {
   });
   return tx.immediate();
 }
+function nextModelWorkRunWaveId(db, rootWaveId) {
+  ensureModelBudgetSchema(db);
+  const root = rootWaveIdOf(rootWaveId);
+  return runWaveId(root, nextRunSeq(db, root));
+}
+function rebindSpentQueueJobsToBudget(db, input) {
+  ensureModelBudgetSchema(db);
+  if (!tableExists2(db, "memory_jobs")) return [];
+  const columns = columnNames2(db, "memory_jobs");
+  if (!columns.has("budget_id")) return [];
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  const nowIso2 = now.toISOString();
+  const holdClause = columns.has("hold_reason") ? "AND j.hold_reason IS NULL" : "";
+  const movable = `j.kind = ? AND j.budget_id IS NOT NULL AND j.budget_id != ?
+        AND j.state IN ('pending','retry')
+        AND (j.lease_until IS NULL OR j.lease_until <= ?)
+        ${holdClause}`;
+  const tx = db.transaction(() => {
+    const target = readBudgetById(db, input.budgetId);
+    if (!target) throw new ModelBudgetNotFoundError(input.budgetId);
+    const boundBudgets = db.prepare(`
+      SELECT DISTINCT j.budget_id AS budget_id
+      FROM memory_jobs j
+      JOIN model_work_budgets b ON b.budget_id = j.budget_id
+      WHERE ${movable} AND b.state = 'active'
+    `).all(input.kind, target.budgetId, nowIso2);
+    for (const row of boundBudgets) {
+      const bound = readBudgetById(db, row.budget_id);
+      if (!bound || bound.state !== "active") continue;
+      const reason = resolveBudgetExhaustion(db, bound, now);
+      if (reason) markModelBudgetExhausted(db, bound.budgetId, reason, nowIso2);
+    }
+    const jobs = db.prepare(`
+      SELECT j.job_id AS job_id, j.budget_id AS budget_id
+      FROM memory_jobs j
+      JOIN model_work_budgets b ON b.budget_id = j.budget_id
+      WHERE ${movable} AND b.state IN ('exhausted','cancelled')
+      ORDER BY j.rowid
+    `).all(input.kind, target.budgetId, nowIso2);
+    const move = db.prepare(`
+      UPDATE memory_jobs
+      SET budget_id = ?, maintenance_wave_id = ?, state = 'pending', available_at = ?,
+          lease_owner = NULL, lease_until = NULL, updated_at = ?
+      WHERE job_id = ? AND budget_id = ? AND state IN ('pending','retry')
+        AND (lease_until IS NULL OR lease_until <= ?)
+    `);
+    const rebound = [];
+    for (const job of jobs) {
+      const changed = move.run(
+        target.budgetId,
+        target.parentWaveId,
+        nowIso2,
+        nowIso2,
+        job.job_id,
+        job.budget_id,
+        nowIso2
+      ).changes;
+      if (changed === 1) rebound.push(job.job_id);
+    }
+    return rebound;
+  });
+  return tx.immediate();
+}
 function getOrCreateMaintenanceModelBudget(db, input = {}) {
   return getOrCreateWaveModelBudget(db, {
     parentWaveId: input.parentWaveId?.trim() || "maintenance",
@@ -12072,6 +12155,37 @@ function getOrCreateWorkerModelBudget(db, input) {
     limits: input.limits,
     reuseCompletedIfIdle: false
   });
+}
+function peekResolvedModelBudget(db, input) {
+  ensureModelBudgetSchema(db);
+  const stage = input.stage?.trim() || "default";
+  let parentWaveId = input.parentWaveId?.trim() || void 0;
+  const jobId = input.jobId?.trim();
+  if (jobId && tableExists2(db, "memory_jobs")) {
+    const columns = columnNames2(db, "memory_jobs");
+    if (columns.has("budget_id")) {
+      const row = db.prepare(
+        `SELECT budget_id${columns.has("maintenance_wave_id") ? ", maintenance_wave_id" : ""}
+         FROM memory_jobs WHERE job_id = ?`
+      ).get(jobId);
+      if (row?.budget_id) {
+        const bound = readBudgetById(db, row.budget_id);
+        return bound ? { budget: bound } : { wouldCreate: true };
+      }
+      if (row?.maintenance_wave_id) parentWaveId = row.maintenance_wave_id;
+    }
+  }
+  const requestedBudgetId = input.budgetId?.trim() || process.env.MEMEX_MODEL_BUDGET_ID?.trim() || void 0;
+  if (requestedBudgetId) {
+    const requested = readBudgetById(db, requestedBudgetId);
+    return requested ? { budget: requested } : { wouldCreate: true };
+  }
+  const wave = parentWaveId || process.env.MEMEX_MAINTENANCE_WAVE_ID?.trim() || process.env.MEMEX_MODEL_PARENT_WAVE_ID?.trim() || `standalone:${stage}`;
+  const selection = selectWaveModelBudget(db, {
+    parentWaveId: wave,
+    reuseCompletedIfIdle: false
+  });
+  return selection.kind === "reuse" ? { budget: selection.budget } : { wouldCreate: true };
 }
 function getModelWorkDiagnostics(db, filter = {}) {
   if (!tableExists2(db, MODEL_BUDGET_TABLE)) {
@@ -33057,7 +33171,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.15"
+    version: "0.7.16"
   },
   {
     capabilities: {

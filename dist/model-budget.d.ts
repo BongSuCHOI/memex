@@ -68,6 +68,14 @@ export interface ModelWorkBudget {
     createdAt: string;
     updatedAt: string;
     automatic: boolean;
+    /**
+     * Issue #146: WHY this run stopped, persisted the first time it is settled.
+     * `resolveBudgetExhaustion` is a function of the clock, so a run that died of
+     * the rolling `window` re-reads as `deadline` once its own deadline passes —
+     * and the automatic cooldown has to tell those two apart. First reason wins;
+     * `null` means "pre-0.7.16 row, unknown" and is treated conservatively.
+     */
+    exhaustedReason: ModelBudgetExhaustionReason | null;
 }
 export interface ModelWorkContext {
     /** Reuse the caller's already initialized connection when available. */
@@ -322,14 +330,21 @@ export declare function startNewModelWorkRunForBudget(db: Database.Database, inp
  * left to run. Resolving the budget *before* the claim keeps a dead budget
  * from ever reaching the extractor.
  *
- * Resolution mirrors `withResolvedModelWorkContext`: a bound job's durable
- * budget wins over any explicitly requested/environment budget. Nothing is
- * created here — an unbound job with no explicit budget returns null and takes
- * the normal lazy-creation path.
+ * Resolution IS `withResolvedModelWorkContext`'s, via the shared pure
+ * `peekResolvedModelBudget`: a bound job's durable budget wins over any
+ * explicitly requested/environment budget, and an unbound job falls through to
+ * the wave's latest run (#146 — that fall-through is the whole point; without
+ * it an unbound job under a clock-dead wave passed this check and died inside
+ * the model call). Nothing is created here: when the resolver would open a new
+ * run this returns null and the normal lazy-creation path proceeds.
  */
 export declare function findExhaustedModelBudgetForClaim(db: Database.Database, input: {
     jobId?: string | null;
     budgetId?: string | null;
+    /** Issue #146: the wave the model call would resolve under when the job is
+     *  not yet bound. Without it an unbound job could not be checked at all. */
+    parentWaveId?: string | null;
+    stage?: string | null;
     now?: Date;
 }): {
     budgetId: string;
@@ -598,6 +613,32 @@ export declare function rolloverSpentWaveBudgets(db: Database.Database, input?: 
     now?: Date;
     limits?: Partial<ModelBudgetLimits>;
 }): SpentWaveRollover[];
+/**
+ * Issue #146: the name of the NEXT run of `rootWaveId`, without creating it.
+ *
+ * An operator command that opens its own run (foreground `memex backfill
+ * extract`) needs a fresh, bounded name in the same lineage — `backfill`,
+ * `backfill#2`, … — and the run-number rule already lives here. Exported so a
+ * script cannot invent a second naming convention for the same column.
+ */
+export declare function nextModelWorkRunWaveId(db: Database.Database, rootWaveId: string): string;
+/**
+ * Issue #146: move queue jobs stranded on a spent budget onto `budgetId`.
+ *
+ * An operator who types `memex backfill extract` has already said "run this
+ * now". Jobs bound to an exhausted/cancelled budget cannot run under it —
+ * `nextJob` will not claim them and the pre-claim check refuses them — so
+ * without this they sit until an automatic rollover or an explicit
+ * `model-work resume` per budget. The movable set is exactly #140's: only
+ * `pending`/`retry`, lease-free, hold-free jobs of one kind move, `attempts`
+ * is preserved (this is not a retry reset), and a job bound to a LIVE budget
+ * is never touched — its own run is still the right one.
+ */
+export declare function rebindSpentQueueJobsToBudget(db: Database.Database, input: {
+    budgetId: string;
+    kind: string;
+    now?: Date;
+}): string[];
 /** Stable budget used by the SessionStart maintenance sibling wave. */
 export declare function getOrCreateMaintenanceModelBudget(db: Database.Database, input?: {
     parentWaveId?: string;
@@ -610,6 +651,31 @@ export declare function getOrCreateWorkerModelBudget(db: Database.Database, inpu
     budgetId?: string;
     limits?: Partial<ModelBudgetLimits>;
 }): ModelWorkBudget;
+/**
+ * Issue #146 — "which budget will the model call use?", answered WITHOUT
+ * creating one.
+ *
+ * This is `withResolvedModelWorkContext`'s own selection, minus every write:
+ * the job's durable binding, then a legacy `maintenance_wave_id` marker, then
+ * an explicit/environment budget id, then the wave's latest run via the shared
+ * `selectWaveModelBudget`. `wouldCreate` means the resolver would open a run
+ * that does not exist yet — a run that cannot be spent, so no caller may treat
+ * it as a reason to refuse anything.
+ *
+ * Deliberately NOT mirrored here: the affinity throw. A peek answers a
+ * question; a mismatch between an explicit budget and a job's binding is the
+ * resolver's error to raise at the point where it would actually bind.
+ */
+export declare function peekResolvedModelBudget(db: Database.Database, input: {
+    jobId?: string | null;
+    parentWaveId?: string | null;
+    budgetId?: string | null;
+    stage?: string | null;
+}): {
+    budget: ModelWorkBudget;
+} | {
+    wouldCreate: true;
+};
 export interface ModelAttemptDiagnostic {
     attemptId: string;
     budgetId: string;

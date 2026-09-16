@@ -5,16 +5,44 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   ensureModelBudgetSchema,
+  exhaustModelBudget,
+  findExhaustedModelBudgetForClaim,
   finishModelAttempt,
   getModelWorkDiagnostics,
   getModelWorkBudget,
+  getOrCreateAutomaticMaintenanceModelBudget,
   getOrCreateMaintenanceModelBudget,
   getOrCreateModelWorkBudget,
   ModelBudgetExhaustedError,
+  nextModelWorkRunWaveId,
+  peekResolvedModelBudget,
+  rebindSpentQueueJobsToBudget,
   reserveModelAttempt,
   rolloverSpentWaveBudgets,
+  startNewModelWorkRun,
   startNewModelWorkRunForBudget,
+  type ModelBudgetExhaustionReason,
 } from "../src/model-budget.js";
+
+/** The queue columns every #146 test below needs; `memory_jobs` itself is
+ *  owned by ensureContinuitySchema, so the budget tests model it narrowly. */
+const MEMORY_JOBS_DDL = `
+  CREATE TABLE memory_jobs (
+    job_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL,
+    target_id TEXT,
+    checkpoint_id TEXT,
+    available_at TEXT NOT NULL,
+    lease_owner TEXT,
+    lease_until TEXT,
+    lease_generation INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    hold_reason TEXT,
+    updated_at TEXT NOT NULL
+  )
+`;
 
 describe("durable model work budget", () => {
   it("shares an atomic attempt cap across connections and keeps usage unknown honest", () => {
@@ -313,6 +341,308 @@ describe("durable model work budget", () => {
     expect(next.rootWaveId).toBe("maintenance");
     expect(next.runSeq).toBe(2);
     expect(next.state).toBe("active");
+    db.close();
+  });
+});
+
+describe("#146 — a budget stop must never strand queued work", () => {
+  const NOW = new Date("2026-09-16T08:11:00.000Z");
+  const insertJob = (
+    db: Database.Database,
+    jobId: string,
+    row: {
+      kind?: string;
+      state?: string;
+      budgetId?: string | null;
+      availableAt?: string;
+      leaseUntil?: string | null;
+      hold?: string | null;
+      attempts?: number;
+    } = {},
+  ) => {
+    db.prepare(`
+      INSERT INTO memory_jobs
+        (job_id, kind, state, available_at, lease_until, attempts, hold_reason, updated_at, budget_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      jobId,
+      row.kind ?? "fact_extract",
+      row.state ?? "pending",
+      row.availableAt ?? NOW.toISOString(),
+      row.leaseUntil ?? null,
+      row.attempts ?? 0,
+      row.hold ?? null,
+      NOW.toISOString(),
+      row.budgetId ?? null,
+    );
+  };
+
+  it("A1: resolves the run the model call would use, so an UNBOUND job is checked too", () => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    // maintenance#N as observed: still `active`, but its 15-minute deadline
+    // passed half an hour ago.
+    const dead = getOrCreateModelWorkBudget(db, {
+      parentWaveId: "maintenance",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() - 30 * 60_000).toISOString() },
+    });
+    insertJob(db, "job-unbound"); // never bound — the whole point
+
+    expect(peekResolvedModelBudget(db, { jobId: "job-unbound", parentWaveId: "maintenance" }))
+      .toEqual({ budget: expect.objectContaining({ budgetId: dead.budgetId }) });
+    expect(
+      findExhaustedModelBudgetForClaim(db, {
+        jobId: "job-unbound",
+        parentWaveId: "maintenance",
+        stage: "fact_extract",
+        now: NOW,
+      }),
+    ).toEqual({ budgetId: dead.budgetId, parentWaveId: "maintenance", reason: "deadline" });
+    // The refusal is durable, so `model-work resume --new-run` has something
+    // to resume and the reason survives the clock.
+    const settled = getModelWorkBudget(db, dead.budgetId);
+    expect(settled?.state).toBe("exhausted");
+    expect(settled?.exhaustedReason).toBe("deadline");
+    db.close();
+  });
+
+  it("A1: a wave whose run does not exist yet resolves to wouldCreate and never blocks", () => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    getOrCreateModelWorkBudget(db, {
+      parentWaveId: "maintenance",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() - 30 * 60_000).toISOString() },
+    });
+    insertJob(db, "job-unbound");
+
+    expect(peekResolvedModelBudget(db, { jobId: "job-unbound", parentWaveId: "extraction:fresh" }))
+      .toEqual({ wouldCreate: true });
+    expect(
+      findExhaustedModelBudgetForClaim(db, {
+        jobId: "job-unbound",
+        parentWaveId: "extraction:fresh",
+        stage: "fact_extract",
+        now: NOW,
+      }),
+    ).toBeNull();
+    db.close();
+  });
+
+  it("A1: a bound job keeps its own budget, whatever wave the caller names", () => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    const own = getOrCreateModelWorkBudget(db, {
+      parentWaveId: "backfill",
+      limits: { maxAttempts: 5, deadlineAt: null },
+    });
+    getOrCreateModelWorkBudget(db, {
+      parentWaveId: "maintenance",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() - 30 * 60_000).toISOString() },
+    });
+    insertJob(db, "job-bound", { budgetId: own.budgetId });
+
+    expect(peekResolvedModelBudget(db, { jobId: "job-bound", parentWaveId: "maintenance" }))
+      .toEqual({ budget: expect.objectContaining({ budgetId: own.budgetId }) });
+    expect(
+      findExhaustedModelBudgetForClaim(db, {
+        jobId: "job-bound",
+        parentWaveId: "maintenance",
+        now: NOW,
+      }),
+    ).toBeNull();
+    db.close();
+  });
+
+  const automaticRun = (reason: ModelBudgetExhaustionReason | null) => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    // Created 30 minutes ago: inside the 60-minute automatic cooldown.
+    const createdAt = new Date(NOW.getTime() - 30 * 60_000).toISOString();
+    const budget = getOrCreateModelWorkBudget(db, {
+      parentWaveId: "maintenance",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() - 15 * 60_000).toISOString() },
+    });
+    db.prepare(`
+      UPDATE model_work_budgets
+      SET automatic = 1, state = 'exhausted', exhausted_reason = ?, created_at = ?, updated_at = ?
+      WHERE budget_id = ?
+    `).run(reason, createdAt, createdAt, budget.budgetId);
+    insertJob(db, "job-waiting", { budgetId: budget.budgetId });
+    const next = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      now: NOW,
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() + 15 * 60_000).toISOString() },
+    });
+    const rolled = next.budgetId !== budget.budgetId;
+    db.close();
+    return rolled;
+  };
+
+  it("A3: a deadline-only stop rolls over immediately; a spent stop keeps the cooldown", () => {
+    // The clock killed it and nothing was spent — the operator's queue must not
+    // wait an hour for a failure that was not its own.
+    expect(automaticRun("deadline")).toBe(true);
+    // These really were spent (or, for NULL, are a pre-0.7.16 row we cannot
+    // vouch for), so the rolling cooldown still fences them.
+    expect(automaticRun("attempts")).toBe(false);
+    expect(automaticRun("window")).toBe(false);
+    expect(automaticRun(null)).toBe(false);
+  });
+
+  it("A3: the FIRST exhaustion reason is the one that persists", () => {
+    const db = new Database(":memory:");
+    ensureModelBudgetSchema(db);
+    const budget = getOrCreateModelWorkBudget(db, {
+      parentWaveId: "maintenance",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() + 60_000).toISOString() },
+    });
+    // Stopped by the rolling window while its own deadline was still ahead.
+    exhaustModelBudget(db, { budgetId: budget.budgetId, reason: "window", now: NOW });
+    expect(getModelWorkBudget(db, budget.budgetId)?.exhaustedReason).toBe("window");
+
+    // Later the deadline passes too; re-settling must not rewrite the reason,
+    // or a cap stop would masquerade as a clock stop and skip the cooldown.
+    const later = new Date(NOW.getTime() + 10 * 60_000);
+    expect(findExhaustedModelBudgetForClaim(db, { budgetId: budget.budgetId, now: later }))
+      .toEqual({ budgetId: budget.budgetId, parentWaveId: "maintenance", reason: "deadline" });
+    expect(getModelWorkBudget(db, budget.budgetId)?.exhaustedReason).toBe("window");
+    db.close();
+  });
+
+  it("A3: an already-exhausted legacy row keeps its NULL reason — and its cooldown", () => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    const createdAt = new Date(NOW.getTime() - 30 * 60_000).toISOString();
+    const budget = getOrCreateModelWorkBudget(db, {
+      parentWaveId: "maintenance",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() - 15 * 60_000).toISOString() },
+    });
+    // A pre-0.7.16 row: already settled, but nobody ever recorded WHY. It may
+    // well have been spent by its attempt cap.
+    db.prepare(`
+      UPDATE model_work_budgets
+      SET automatic = 1, state = 'exhausted', exhausted_reason = NULL,
+          created_at = ?, updated_at = ?
+      WHERE budget_id = ?
+    `).run(createdAt, createdAt, budget.budgetId);
+    insertJob(db, "job-waiting", { budgetId: budget.budgetId });
+
+    // The pre-claim check settles it again — and must not invent a reason. Its
+    // own answer is `deadline` only because the clock has moved on.
+    expect(findExhaustedModelBudgetForClaim(db, { jobId: "job-waiting", now: NOW })?.reason)
+      .toBe("deadline");
+    expect(getModelWorkBudget(db, budget.budgetId)?.exhaustedReason).toBeNull();
+
+    // Unknown is not `deadline`, so the automatic wake still waits out the hour.
+    const next = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      now: NOW,
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() + 15 * 60_000).toISOString() },
+    });
+    expect(next.budgetId).toBe(budget.budgetId);
+    db.close();
+  });
+
+  it("A4: settles a clock-dead `active` budget so its jobs are not left behind", () => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    // The row still says `active`; only its deadline says otherwise. Selecting
+    // on stored state alone left exactly these jobs stranded, and they are the
+    // ones that then stopped the foreground run on its first dequeue.
+    const clockDead = getOrCreateModelWorkBudget(db, {
+      parentWaveId: "maintenance",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() - 15 * 60_000).toISOString() },
+    });
+    expect(clockDead.state).toBe("active");
+    const live = getOrCreateModelWorkBudget(db, {
+      parentWaveId: "worker:live",
+      limits: { maxAttempts: 5, deadlineAt: new Date(NOW.getTime() + 60 * 60_000).toISOString() },
+    });
+    insertJob(db, "move-clock-dead", { budgetId: clockDead.budgetId });
+    insertJob(db, "keep-live", { budgetId: live.budgetId });
+
+    const target = startNewModelWorkRun(db, {
+      parentWaveId: nextModelWorkRunWaveId(db, "backfill"),
+      limits: { maxAttempts: 5, deadlineAt: null },
+    });
+    expect(
+      rebindSpentQueueJobsToBudget(db, {
+        budgetId: target.budgetId,
+        kind: "fact_extract",
+        now: NOW,
+      }),
+    ).toEqual(["move-clock-dead"]);
+    const jobBudget = (jobId: string) => (db
+      .prepare("SELECT budget_id FROM memory_jobs WHERE job_id = ?")
+      .get(jobId) as { budget_id: string }).budget_id;
+    expect(jobBudget("move-clock-dead")).toBe(target.budgetId);
+    // A budget with real time left keeps its work, as before.
+    expect(jobBudget("keep-live")).toBe(live.budgetId);
+    // The transition is durable, so `resume --new-run` and the diagnostics see
+    // the same thing this helper just acted on.
+    expect(getModelWorkBudget(db, clockDead.budgetId)).toMatchObject({
+      state: "exhausted", exhaustedReason: "deadline",
+    });
+    expect(getModelWorkBudget(db, live.budgetId)?.state).toBe("active");
+    db.close();
+  });
+
+  it("A4: rebinds only lease-free, hold-free queue jobs of one kind off a spent budget", () => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    const spentWave = (parentWaveId: string, state: string) => {
+      const budget = getOrCreateModelWorkBudget(db, {
+        parentWaveId,
+        limits: { maxAttempts: 3, deadlineAt: null },
+      });
+      db.prepare("UPDATE model_work_budgets SET state = ? WHERE budget_id = ?")
+        .run(state, budget.budgetId);
+      return budget.budgetId;
+    };
+    const spent = spentWave("maintenance", "exhausted");
+    const cancelled = spentWave("continuity:ws-1", "cancelled");
+    const live = spentWave("worker:other", "active");
+    const backoff = new Date(NOW.getTime() + 60 * 60_000).toISOString();
+
+    insertJob(db, "move-pending", { budgetId: spent, availableAt: backoff, attempts: 2 });
+    insertJob(db, "move-retry", { budgetId: cancelled, state: "retry", availableAt: backoff });
+    insertJob(db, "keep-live", { budgetId: live });
+    insertJob(db, "keep-kind", { budgetId: spent, kind: "capsule_update" });
+    insertJob(db, "keep-leased", { budgetId: spent, leaseUntil: backoff });
+    insertJob(db, "keep-held", { budgetId: spent, hold: "model_config_rejected" });
+    insertJob(db, "keep-running", { budgetId: spent, state: "running" });
+
+    const target = startNewModelWorkRun(db, {
+      parentWaveId: nextModelWorkRunWaveId(db, "backfill"),
+      limits: { maxAttempts: 3, deadlineAt: null },
+    });
+    expect(target.parentWaveId).toBe("backfill");
+    const rebound = rebindSpentQueueJobsToBudget(db, {
+      budgetId: target.budgetId,
+      kind: "fact_extract",
+      now: NOW,
+    });
+    expect(rebound.sort()).toEqual(["move-pending", "move-retry"]);
+
+    const job = (jobId: string) => db
+      .prepare("SELECT budget_id, state, available_at, attempts FROM memory_jobs WHERE job_id = ?")
+      .get(jobId) as { budget_id: string | null; state: string; available_at: string; attempts: number };
+    // The backoff was recorded for a budget stop, not for anything the session
+    // did, so it goes; `attempts` is history and stays.
+    expect(job("move-pending")).toEqual({
+      budget_id: target.budgetId, state: "pending", available_at: NOW.toISOString(), attempts: 2,
+    });
+    expect(job("move-retry").budget_id).toBe(target.budgetId);
+    expect(job("keep-live").budget_id).toBe(live);
+    expect(job("keep-kind").budget_id).toBe(spent);
+    expect(job("keep-leased").budget_id).toBe(spent);
+    expect(job("keep-held").budget_id).toBe(spent);
+    expect(job("keep-running").budget_id).toBe(spent);
     db.close();
   });
 });

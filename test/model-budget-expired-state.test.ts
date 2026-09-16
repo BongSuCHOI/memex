@@ -25,6 +25,7 @@ import {
   AUTOMATIC_MAINTENANCE_WINDOW_MS,
   bindMemoryJobToBudget,
   ensureModelBudgetSchema,
+  exhaustModelBudget,
   finishModelAttempt,
   findExhaustedModelBudgetForClaim,
   getOrCreateAutomaticMaintenanceModelBudget,
@@ -84,9 +85,15 @@ function exchange(sessionId: string, id: string, lineEnd: number): ConversationE
   };
 }
 
-function budgetRow(budgetId: string): { state: string; updated_at: string } {
+function budgetRow(budgetId: string): {
+  state: string;
+  updated_at: string;
+  exhausted_reason: string | null;
+} {
   return db
-    .prepare("SELECT state, updated_at FROM model_work_budgets WHERE budget_id = ?")
+    .prepare(
+      "SELECT state, updated_at, exhausted_reason FROM model_work_budgets WHERE budget_id = ?",
+    )
     .get(budgetId) as never;
 }
 
@@ -319,18 +326,49 @@ describe("issue #14 — the automatic wake exits the same state on its own", () 
     }
   });
 
-  it("honors the 1h cooldown: an early wake settles the budget but mints nothing", () => {
+  /**
+   * 🚨 Issue #146 replaced the old assertion here ("an early wake settles the
+   * budget but mints nothing"). The cooldown exists to fence SPEND, and a run
+   * that died of its own deadline spent nothing on the way out: making the
+   * queue wait out the remaining half hour is what let a foreground
+   * `memex backfill extract` join a clock-dead run and defer 8 sessions with
+   * zero provider calls. The cooldown still applies to every stop that WAS
+   * spent — see the test below.
+   */
+  it("#146: a deadline-only stop rolls over inside the cooldown", () => {
     const { budgetId, targets } = seedExpiredActiveBudget();
     // 14:34Z — deadline passed, but only 30 minutes since the budget was made.
+    const early = new Date(CREATED.getTime() + 30 * 60_000);
+    const fresh = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      now: early,
+    });
+    expect(fresh.budgetId).not.toBe(budgetId);
+    expect(fresh).toMatchObject({ state: "active", automatic: true });
+    // The durable transition is still owed — that is what keeps the operator's
+    // `resume --new-run` available — and it now records WHY.
+    expect(budgetRow(budgetId)).toMatchObject({
+      state: "exhausted",
+      exhausted_reason: "deadline",
+    });
+    expect(jobRow(targets[0].jobId).budget_id).toBe(fresh.budgetId);
+  });
+
+  it("#146: a stop that really was spent still honors the 1h cooldown", () => {
+    const { budgetId, targets } = seedExpiredActiveBudget();
+    // Same clock as above, but this run hit its attempt cap: the reason is
+    // recorded, so the wake must not open the next run yet.
+    exhaustModelBudget(db, { budgetId, reason: "attempts", now: CREATED });
     const early = new Date(CREATED.getTime() + 30 * 60_000);
     const same = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
       now: early,
     });
     expect(same.budgetId).toBe(budgetId);
-    // The wake still owes the durable transition — that is what makes the
-    // operator's `resume --new-run` available during the cooldown.
     expect(same.state).toBe("exhausted");
+    // A later clock stop must not rewrite the reason into `deadline` and let
+    // the next wake skip the cooldown.
+    expect(budgetRow(budgetId).exhausted_reason).toBe("attempts");
     expect(jobRow(targets[0].jobId).budget_id).toBe(budgetId);
     expect(
       db.prepare("SELECT COUNT(*) AS n FROM model_work_budgets").get(),

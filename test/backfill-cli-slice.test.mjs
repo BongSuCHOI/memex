@@ -169,11 +169,12 @@ describe("memex backfill CLI 계약", () => {
     }
   });
 
-  it("DEFERRED (budget_exhausted) prints the exact resume command with the budget id", async () => {
-    // 이슈 #14 의 관측 상태를 그대로 만든다: automatic 예산의 deadline 은 지났는데
-    // durable state 는 여전히 active 이고, pending 작업이 거기 묶여 있다. 사유만
-    // 찍고 예산 id 를 빼면 운영자는 진단 명령부터 다시 쳐야 한다 — 그리고 0.5.1
-    // 에서는 그렇게 찾아낸 resume 이 "still active" 로 거절당했다.
+  /**
+   * Shared fixture for the two budget cases below — issue #14's observed
+   * state: the automatic budget's deadline has passed, its durable state is
+   * still `active`, and pending extraction jobs are bound to it.
+   */
+  async function seedClockDeadAutomaticBudget() {
     await seedPendingExtraction();
     const dbPath = path.join(tmpRoot, "home", "conversation-index", "db.sqlite");
     const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));
@@ -196,6 +197,7 @@ describe("memex backfill CLI 계약", () => {
       "active",
       "the fixture must reproduce the issue's durable state, not its fix",
     );
+    const jobIds = [];
     for (const sessionId of ["pending-a", "pending-b"]) {
       const target = ensureExtractionTarget(db, {
         sessionId,
@@ -207,35 +209,100 @@ describe("memex backfill CLI 계약", () => {
         budgetId: budget.budgetId,
         parentWaveId: budget.parentWaveId,
       });
+      jobIds.push(target.jobId);
     }
     db.close();
+    return { budget, jobIds, dbPath };
+  }
+
+  function readBudgetState(dbPath, jobIds, budgetId) {
+    // Read-only look at the durable outcome; better-sqlite3 via dist is fine here.
+    return import(path.join(ROOT, "dist", "db.js")).then(({ initDatabase }) => {
+      const db = initDatabase({ dbPath });
+      try {
+        const old = db
+          .prepare("SELECT state, exhausted_reason FROM model_work_budgets WHERE budget_id = ?")
+          .get(budgetId);
+        const jobs = jobIds.map((jobId) =>
+          db
+            .prepare(
+              `SELECT j.budget_id AS budget_id, b.root_wave_id AS root_wave_id, b.state AS state
+               FROM memory_jobs j LEFT JOIN model_work_budgets b ON b.budget_id = j.budget_id
+               WHERE j.job_id = ?`,
+            )
+            .get(jobId),
+        );
+        return { old, jobs };
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  it("a foreground run settles a clock-dead automatic budget and moves its jobs onto its own backfill run (#146)", async () => {
+    const { budget, jobIds, dbPath } = await seedClockDeadAutomaticBudget();
+
+    // The provider is absent in this harness, so extraction itself defers as
+    // transient — what this case proves is that the operator's command no
+    // longer stops on the hook lineage's spent run.
+    let stdout = "";
+    try {
+      stdout = runMemex(["backfill", "extract"]);
+    } catch (err) {
+      assert.equal(err.status, 2, err.stderr);
+      stdout = err.stdout;
+    }
+    assert.match(
+      stdout,
+      /backfill-extract: 이 실행 전용 model run backfill(?:#\d+)? \([0-9a-f-]+\) — 소진된 예산에 묶여 있던 job 2건을 이 run 으로 이관/,
+    );
+    assert.doesNotMatch(stdout, /DEFERRED \(budget_exhausted/);
+    assert.doesNotMatch(stdout, /model-work resume/);
+
+    const after = await readBudgetState(dbPath, jobIds, budget.budgetId);
+    assert.deepEqual(after.old, { state: "exhausted", exhausted_reason: "deadline" });
+    for (const job of after.jobs) {
+      assert.notEqual(job.budget_id, budget.budgetId);
+      assert.equal(job.root_wave_id, "backfill");
+    }
+
+    // The explicit resume still works on the settled budget; nothing is left on it.
+    const resumed = runMemex(["model-work", "resume", budget.budgetId, "--new-run"]);
+    assert.match(resumed, new RegExp(`Previous budget: ${budget.budgetId} \\(exhausted\\)`));
+    assert.match(resumed, /Rebound lease-free jobs: 0/);
+  });
+
+  it("a pinned budget is not redirected: sessions defer and ONE line names the exact resume command (#14, #146)", async () => {
+    const { budget, jobIds, dbPath } = await seedClockDeadAutomaticBudget();
 
     let stdout = "";
     try {
-      runMemex(["backfill", "extract"]);
+      runMemex(["backfill", "extract"], { MEMEX_MODEL_BUDGET_ID: budget.budgetId });
       assert.fail("expected deferred-work exit code");
     } catch (err) {
-      assert.equal(err.status, 2);
+      assert.equal(err.status, 2, err.stderr);
       stdout = err.stdout;
     }
+    assert.doesNotMatch(stdout, /이 실행 전용 model run/);
+    assert.match(stdout, /session pending-[ab]: DEFERRED \(budget_exhausted: deadline\)/);
+    assert.match(stdout, /budget-exhausted \d+ —/);
     const resume = `memex model-work resume ${budget.budgetId} --new-run`;
-    for (const sessionId of ["pending-a", "pending-b"]) {
-      assert.match(
-        stdout,
-        new RegExp(
-          `session ${sessionId}: DEFERRED \\(budget_exhausted: deadline\\)[^\\n]*${resume.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
-        ),
-      );
-    }
-    assert.match(stdout, /budget-exhausted 2 —/);
+    const escaped = resume.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(
+      stdout,
+      new RegExp(
+        `backfill-extract: model work budget ${budget.budgetId}(?: \\([^)]+\\))? is exhausted \\(deadline\\); 2 session\\(s\\) deferred — resume: ${escaped}`,
+      ),
+    );
+    // Issue #146: the guidance is printed exactly once, not per session.
+    assert.equal(stdout.split(resume).length - 1, 1);
 
-    // 그리고 그 명령이 실제로 통해야 한다 — 이것이 이슈 #14 그 자체다.
-    const resumed = runMemex([
-      "model-work",
-      "resume",
-      budget.budgetId,
-      "--new-run",
-    ]);
+    const after = await readBudgetState(dbPath, jobIds, budget.budgetId);
+    assert.equal(after.old.state, "exhausted");
+    for (const job of after.jobs) assert.equal(job.budget_id, budget.budgetId);
+
+    // And that command must actually work — this is issue #14 itself.
+    const resumed = runMemex(["model-work", "resume", budget.budgetId, "--new-run"]);
     assert.match(resumed, new RegExp(`Previous budget: ${budget.budgetId} \\(exhausted\\)`));
     assert.match(resumed, /Rebound lease-free jobs: 2/);
   });
