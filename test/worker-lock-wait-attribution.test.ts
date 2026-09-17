@@ -28,7 +28,11 @@ import {
   scheduleCapsuleBacklog,
 } from "../src/continuity-core.js";
 import { appendSessionEvidence } from "../src/continuity-evidence.js";
-import { runContinuityWorker, workerTransactionLogPath } from "../src/continuity-worker.js";
+import {
+  runContinuityWorker,
+  timeWorkerTransaction,
+  workerTransactionLogPath,
+} from "../src/continuity-worker.js";
 
 const require_ = createRequire(import.meta.url);
 const SESSION = "session-lock-attribution";
@@ -51,8 +55,8 @@ let root: string;
 let dbPath: string;
 let db: Database.Database;
 
-function transcript(): string {
-  return path.join(root, `${SESSION}.jsonl`);
+function transcript(session = SESSION): string {
+  return path.join(root, `${session}.jsonl`);
 }
 
 function rows(): Array<{ label: string; wait_ms: number; held_ms: number; pid: number }> {
@@ -61,15 +65,15 @@ function rows(): Array<{ label: string; wait_ms: number; held_ms: number; pid: n
   return fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-function put(id: string): void {
+function put(id: string, session = SESSION, project = root): void {
   insertExchange(
     db,
     {
       id,
-      sessionId: SESSION,
-      project: root,
-      cwd: root,
-      archivePath: transcript(),
+      sessionId: session,
+      project,
+      cwd: project,
+      archivePath: transcript(session),
       timestamp: new Date().toISOString(),
       userMessage: id,
       assistantMessage: "",
@@ -80,15 +84,15 @@ function put(id: string): void {
   );
 }
 
-function capture(): void {
+function capture(session = SESSION, project = root): void {
   fs.appendFileSync(
-    transcript(),
+    transcript(session),
     JSON.stringify({ type: "event_msg", payload: { type: "note", text: "x" } }) + "\n",
   );
   captureTranscriptPrefix(db, {
-    sessionId: SESSION,
-    project: root,
-    transcriptPath: transcript(),
+    sessionId: session,
+    project,
+    transcriptPath: transcript(session),
     kind: "final",
   });
   // P0 ingestion is covered elsewhere; the rows above stand in for it so the
@@ -201,7 +205,9 @@ for (const site of ["completeEmptyCapsuleCheckpoint", "scheduleCapsuleBacklog"] 
             leaseGeneration: 1,
             onTransactionStart,
           })
-        : scheduleCapsuleBacklog(db, { onTransactionStart });
+        : scheduleCapsuleBacklog(db, {
+            timeTransaction: (_label, run) => run(onTransactionStart),
+          });
 
     if (site === "scheduleCapsuleBacklog") {
       // scheduleCapsuleBacklog opens a transaction only when there IS a
@@ -228,3 +234,73 @@ for (const site of ["completeEmptyCapsuleCheckpoint", "scheduleCapsuleBacklog"] 
     expect(inTransaction).toBe(true);
   }, 30_000);
 }
+
+/**
+ * A backlog is several transactions, one per workstream. Timing them under ONE
+ * span makes every wait after the first one look like held time — the second
+ * transaction blocked by a lock was logged `wait_ms: 1, held_ms: 535`, and
+ * doctor reads held_ms as "held the write lock".
+ *
+ * The lock is taken between the two inner transactions through the SAME seam
+ * the worker uses (`timeTransaction`), because that is the only instant a test
+ * can reach: everything from `runContinuityWorker`'s entry to the end of the
+ * backlog is synchronous.
+ */
+it("times each backlog transaction separately, so a blocked one logs wait", async () => {
+  const second = "session-lock-attribution-2";
+  // A SECOND project, so the two sessions land on two workstreams and the
+  // backlog really is two transactions rather than one.
+  const secondProject = path.join(root, "project-2");
+  fs.mkdirSync(secondProject, { recursive: true });
+  for (const [session, id, project] of [
+    [SESSION, "source-1", root],
+    [second, "source-2", secondProject],
+  ] as const) {
+    if (session !== SESSION) {
+      ensureSessionMemoryState(db, { sessionId: session, project });
+      fs.writeFileSync(
+        transcript(session),
+        JSON.stringify({ type: "session_meta", payload: { id: session, cwd: project } }) + "\n",
+      );
+    }
+    put(id, session, project);
+    capture(session, project);
+    appendSessionEvidence(db, session);
+  }
+  // Evidence past each frontier with no live capsule job = two schedulable
+  // streams, so the backlog opens two transactions.
+  db.prepare("UPDATE memory_jobs SET state = 'completed' WHERE kind = 'capsule_update'").run();
+  fs.rmSync(workerTransactionLogPath(), { force: true });
+  db.pragma("busy_timeout = 1200");
+
+  let lock: { marker: string; done: Promise<void> } | null = null;
+  const labels: string[] = [];
+  expect(() =>
+    scheduleCapsuleBacklog(db, {
+      timeTransaction: (label, run) => {
+        labels.push(label);
+        const value = timeWorkerTransaction(label, run);
+        // After the FIRST transaction commits, a real second writer takes the
+        // lock and keeps it for longer than this connection will wait.
+        if (labels.length === 1) {
+          lock = holdWriteLock(2_500);
+          const deadline = Date.now() + 15_000;
+          while (!fs.existsSync((lock as { marker: string }).marker)) {
+            if (Date.now() > deadline) throw new Error("the lock holder never started");
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+          }
+        }
+        return value;
+      },
+    }),
+  ).toThrow(/SQLITE_BUSY|database is locked/i);
+  if (lock) await (lock as { done: Promise<void> }).done;
+
+  expect(labels).toHaveLength(2);
+  expect(new Set(labels).size).toBe(2);
+  const blocked = rows().filter((row) => row.label.startsWith("scheduleCapsuleBacklog"));
+  expect(blocked).toHaveLength(1);
+  expect(blocked[0].label).not.toBe("scheduleCapsuleBacklog");
+  expect(blocked[0].wait_ms).toBeGreaterThan(1_000);
+  expect(blocked[0].held_ms).toBeLessThan(200);
+}, 30_000);

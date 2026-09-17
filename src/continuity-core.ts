@@ -684,14 +684,21 @@ export function scheduleCapsuleForCheckpoint(
 }
 
 /**
- * `onTransactionStart` (#162 review) fires as the first statement of the FIRST
- * transaction this call actually opens — the instant the write lock was
- * granted. It stays silent when the backlog is empty, because then no lock was
- * ever taken, and it never fires when the lock could not be acquired at all.
+ * A backlog is SEVERAL transactions, one per workstream, so `timeTransaction`
+ * wraps each of them individually (#162 review 5). Timing the whole call as one
+ * span charged every wait after the first transaction to held time — a second
+ * transaction blocked by another writer was logged `wait_ms: 1, held_ms: 535`,
+ * and doctor reads held_ms as "held the write lock for N ms".
+ *
+ * The callback it receives is the same `markStart` contract as everywhere else:
+ * fired as the first statement of that transaction's body, silent when the
+ * transaction was never entered.
  */
 export function scheduleCapsuleBacklog(
   db: Database.Database,
-  options: { onTransactionStart?: () => void } = {},
+  options: {
+    timeTransaction?: <T>(label: string, run: (markStart: () => void) => T) => T;
+  } = {},
 ): void {
   const streams = db.prepare(`
     SELECT f.workstream_id, f.revision, f.through_seq,
@@ -705,16 +712,18 @@ export function scheduleCapsuleBacklog(
         AND j.kind = 'capsule_update' AND j.state IN ('pending','running','retry','dead'))
     ORDER BY f.workstream_id LIMIT 32
   `).all() as Array<{ checkpoint_id: string | null; revision: number; through_seq: number; has_capsule: number }>;
-  let announced = false;
-  const onTransactionStart = () => {
-    if (announced) return;
-    announced = true;
-    options.onTransactionStart?.();
-  };
+  let index = 0;
   for (const stream of streams) {
-    if (stream.checkpoint_id) scheduleCapsuleForCheckpoint(db, stream.checkpoint_id, undefined,
-      stream.through_seq === 0 && (stream.revision > 0 || !!stream.has_capsule),
-      { onTransactionStart });
+    const checkpointId = stream.checkpoint_id;
+    if (!checkpointId) continue;
+    const force = stream.through_seq === 0 && (stream.revision > 0 || !!stream.has_capsule);
+    const run = (markStart: () => void) =>
+      scheduleCapsuleForCheckpoint(db, checkpointId, undefined, force, {
+        onTransactionStart: markStart,
+      });
+    index++;
+    if (options.timeTransaction) options.timeTransaction(`scheduleCapsuleBacklog#${index}`, run);
+    else run(() => { /* untimed */ });
   }
 }
 
@@ -1220,10 +1229,13 @@ export function advanceContextEpoch(
      * true.
      */
     markerId?: string | null;
+    /** First statement of the real transaction body — see #162. */
+    onTransactionStart?: () => void;
   },
 ): number {
   const now = input.now ?? new Date().toISOString();
   const apply = () => {
+  input.onTransactionStart?.();
   const state = db.prepare(`
     SELECT context_epoch, epoch_token, latest_checkpoint_id,
            resident_fact_revisions_json, carry_fact_revisions_json
@@ -2757,7 +2769,7 @@ export function applyPendingEpochAdvance(
         // longer means "never applied". Retire it instead of guessing, which is
         // what re-advanced a month-old epoch and reset residency (#162 rev 4).
         const ts = Date.parse(marker.ts);
-        if (!Number.isFinite(ts) || ts < expiredBefore) {
+        if (!Number.isFinite(ts) || ts <= expiredBefore) {
           deleteCaptureGapMarker(file);
           continue;
         }
@@ -3046,14 +3058,21 @@ function runContinuityHook(
       canonicalProject = existing.project;
     }
     options.enterPhase(true);
-    ensureSessionMemoryState(db, {
-      sessionId: payload.sessionId,
-      project: canonicalProject,
-      explicitWorkstreamId: payload.workstreamId,
-      prompt: payload.hookEventName === "UserPromptSubmit" ? payload.prompt : null,
-      branch: canonicalBranch,
-      source: payload.source ?? payload.hookEventName,
-    });
+    // Issue #162 (review 5): these phases are write phases too, and a lock that
+    // killed the hook here reported db_wait_ms 0 — the number that was supposed
+    // to name the cause. They have no body-start callback to offer (single
+    // autocommit statements), so the whole attempt counts: it over-states a
+    // successful phase by its own small work, and it is the only way a phase
+    // that never acquired the lock contributes at all.
+    options.measureAttempt(() =>
+      ensureSessionMemoryState(db, {
+        sessionId: payload.sessionId,
+        project: canonicalProject,
+        explicitWorkstreamId: payload.workstreamId,
+        prompt: payload.hookEventName === "UserPromptSubmit" ? payload.prompt : null,
+        branch: canonicalBranch,
+        source: payload.source ?? payload.hookEventName,
+      }));
     if (payload.hookEventName === "SessionStart") {
       const source = payload.source as LifecycleSource | null;
       if (!source || !["startup", "resume", "clear", "compact"].includes(source)) {
@@ -3064,10 +3083,11 @@ function runContinuityHook(
       // them looked at the clock, so a SessionStart(clear) whose budget had
       // expired 10 s earlier still advanced the epoch and reported `ok`.
       options.enterPhase(true);
-      const recoveryWarning = recoverContinuitySession(db, payload.sessionId);
+      const recoveryWarning = options.measureAttempt(() =>
+        recoverContinuitySession(db, payload.sessionId));
       if (source === "clear" || source === "compact") {
         options.enterPhase(true);
-        advanceContextEpoch(db, {
+        options.measureAttempt((onTransactionStart) => advanceContextEpoch(db, {
           sessionId: payload.sessionId,
           source,
           // The invocation id, not `now`, is the fallback token (#162 review).
@@ -3076,7 +3096,8 @@ function runContinuityHook(
           // the marker this invocation left behind cannot make ANY later
           // injection advance again (#162 review 2/3).
           markerId: options.invocationId,
-        });
+          onTransactionStart,
+        }));
       }
       if (source === "resume" || source === "compact") {
         options.enterPhase(false);

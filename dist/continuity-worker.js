@@ -648,9 +648,10 @@ export async function runContinuityWorker(db, options = {}) {
         console.error("continuity-worker: capsule updates held on a model setting; capture continues (memex models show)");
     }
     for (let index = 0; index < maxJobs; index++) {
-        timeWorkerTransaction("scheduleCapsuleBacklog", (markStart) => {
-            scheduleCapsuleBacklog(db, { onTransactionStart: markStart });
-        });
+        // One timing span per inner transaction, not one for the whole backlog
+        // (#162 review 5): a span covering several transactions charges every wait
+        // after the first one to held time, which names this worker as the holder.
+        scheduleCapsuleBacklog(db, { timeTransaction: timeWorkerTransaction });
         const now = options.now ?? new Date();
         const capture = nextJob(db, "capture_index", now.toISOString());
         if (capture) {

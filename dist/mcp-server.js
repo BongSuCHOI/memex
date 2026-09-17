@@ -28937,6 +28937,7 @@ function ensureSessionMemoryState(db, input) {
 function advanceContextEpoch(db, input) {
   const now = input.now ?? (/* @__PURE__ */ new Date()).toISOString();
   const apply = () => {
+    input.onTransactionStart?.();
     const state = db.prepare(`
     SELECT context_epoch, epoch_token, latest_checkpoint_id,
            resident_fact_revisions_json, carry_fact_revisions_json
@@ -29130,7 +29131,7 @@ function applyPendingEpochAdvance(db, sessionId) {
     for (const { file, marker } of listEpochAdvanceMarkers(sessionId)) {
       try {
         const ts = Date.parse(marker.ts);
-        if (!Number.isFinite(ts) || ts < expiredBefore) {
+        if (!Number.isFinite(ts) || ts <= expiredBefore) {
           deleteCaptureGapMarker(file);
           continue;
         }

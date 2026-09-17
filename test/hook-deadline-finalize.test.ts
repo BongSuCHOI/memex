@@ -624,6 +624,35 @@ describe("db_wait_ms counts waits that never got the lock (#162 review 2)", () =
   }, 30_000);
 });
 
+describe("SessionStart write phases are measured too (#162 review 5)", () => {
+  it("counts the wait a lock imposed on the session-state write", async () => {
+    // The session row exists before the lock: the hook's own write is then the
+    // FIRST thing the lock blocks, which is the shape the incident had.
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    const lock = holdWriteLock(60_000);
+    await awaitLock(lock);
+    try {
+      const startedAt = Date.now();
+      const result = handleContinuityHook(payload("SessionStart", { source: "startup" }), {
+        db,
+        budgetMs: 2_500,
+      });
+      const elapsed = Date.now() - startedAt;
+
+      expect(result.stdout).toBe("");
+      const done = doneRows();
+      expect(done).toHaveLength(1);
+      expect(["busy", "deadline"]).toContain(done[0].outcome);
+      // SessionStart is not a capture, so nothing else could have contributed:
+      // this number is the blocked session-state write or it is zero.
+      expect(Number(done[0].db_wait_ms)).toBeGreaterThanOrEqual(Math.round(elapsed * 0.9));
+    } finally {
+      lock.release();
+      await lock.done;
+    }
+  }, 30_000);
+});
+
 describe("marker lookup never loses the target session (#162 review 2)", () => {
   it("finds every epoch marker of one session behind hundreds of foreign ones", () => {
     const ts = new Date().toISOString();

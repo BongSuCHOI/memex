@@ -221,7 +221,9 @@ capture 실패는 `outcome: "error"`와 200자로 자른 `error` 문구를 `hook
 (capture gap row는 어느 경로에서도 **정확히 한 번** 씁니다). `db_wait_ms`는 연결과 gap 기록만이
 아니라 **실제로 잠금을 기다린 모든 구간**을 합산한 값입니다 — 각 획득 시도를 호출 시점부터
 트랜잭션 본문이 시작되는 순간까지 재고, 본문에 끝내 들어가지 못한 시도(SQLITE_BUSY·예산 초과)는
-**시도 전체**를 대기로 셉니다. 성공한 대기만 세던 때에는 1,825 ms 동안 막힌 훅이 920만 보고했습니다.
+**시도 전체**를 대기로 셉니다. SessionStart의 세션 상태 기록·recovery·epoch 전진도 같은 write
+phase이므로 함께 셉니다 — 빠져 있던 동안에는 918 ms를 잠금에 막혀 죽은 훅이 `db_wait_ms: 0`을
+남겼습니다. 성공한 대기만 세던 때에는 1,825 ms 동안 막힌 훅이 920만 보고했습니다.
 UserPromptSubmit(inject) done row도 daemon·cold 양쪽에서 같은 규칙의 값을 싣습니다. 30일이 지난
 marker는 성공 경로에서 정리합니다.
 
@@ -657,7 +659,7 @@ marker가 있을 때만 추가되어 최대 22개입니다.
 | `lifecycle-observed` | 모든 event를 최소 1회 관측했으면 ok, 아니면 warn |
 | `inject-output` | 최근 20줄의 마지막 상태. `error`/`receipt-failed`면 fail, 창 안에 `receipt-failed`가 섞이면 warn |
 | `capture-gap` (0.7.24, #162) | `<data root>/continuity/gaps/`의 marker 목록. 없으면 ok. 있으면 warn이며 marker마다 `capture skipped at <event> <ts> (<bytes> uncaptured bytes); continuity/extraction of the tail is pending #163`를 그대로 적습니다 — "내용은 절대 유실되지 않는다"는 표현은 쓰지 않습니다([§5](#5-lifecycle-hooks)) |
-| `hook-latency` (0.7.24, #162) | `hook-events.jsonl` 마지막 200줄을 `invocation_id`로 start/done 짝지어 봅니다. done이 없는 start가 `예산 + 10초`를 넘었고 같은 pid의 이후 행도 없으면 **호스트가 죽인 것**(`killed by host`)으로 warn하고 marker 수를 함께 적습니다. `db_wait_ms > 1,000`인 done row가 있으면 `hooks waited on the database`로 warn. `<data root>/logs/worker-transactions.jsonl`이 있으면 최근 100행에서 `held_ms`가 가장 큰 행을 "held the write lock for N ms"로 덧붙입니다(`wait_ms`는 잠금을 **기다린** 쪽이므로 절대 이 문장에 쓰지 않습니다). UserPromptSubmit에는 host timeout이 없으므로 그 이벤트에는 절대 timeout을 주장하지 않습니다 |
+| `hook-latency` (0.7.24, #162) | `hook-events.jsonl` 마지막 200줄을 `invocation_id`로 start/done 짝지어 봅니다. done이 없는 start가 `예산 + 10초`를 넘었고 같은 pid의 이후 행도 없으면 **호스트가 죽인 것**(`killed by host`)으로 warn하고 marker 수를 함께 적습니다. `db_wait_ms > 1,000`인 done row가 있으면 `hooks waited on the database`로 warn. `<data root>/logs/worker-transactions.jsonl`이 있으면 최근 100행에서 `held_ms`가 가장 큰 행을 "held the write lock for N ms"로 덧붙입니다(backlog는 workstream마다 트랜잭션이 하나이므로 `scheduleCapsuleBacklog#<n>`처럼 각각 한 행입니다 — 여러 트랜잭션을 한 구간으로 재면 첫 트랜잭션 이후의 대기가 전부 held로 잡힙니다)(`wait_ms`는 잠금을 **기다린** 쪽이므로 절대 이 문장에 쓰지 않습니다). UserPromptSubmit에는 host timeout이 없으므로 그 이벤트에는 절대 timeout을 주장하지 않습니다 |
 | `recall-provenance` (0.6.0) | 발행 건수와 `recall_events` 행 수 비교. 발행이 있는데 영수증이 0이면 fail, 모자라면 warn |
 | `injection-yield` (0.6.0) | fact 0개 주입이 8회 이상 연속이고 창의 주입 합이 0이면 warn. 리터럴 레인이 죽어도 warn |
 | `llm-model` (0.7.0, #31) | 해석된 모델·추론 강도와 **그 출처**(`env`/`file`/`default`/`explicit`). 내 설정 지문에 활성 HOLD가 있으면 warn + provider 원문·최초 관측·관측 횟수와 `memex models show → set → test` 안내. 다른 선택의 HOLD만 있으면 ok(막지 않음을 명시). HOLD가 없는데 다른 사유로 대기 중인 작업이 있으면 warn. 자세한 내용은 [§21](#21-모델-선택-070-31) |

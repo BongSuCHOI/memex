@@ -93,9 +93,12 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   `db_wait_ms`, bounded `error`). `db_wait_ms` is the time actually spent
   BLOCKED: every lock acquisition is measured from the call until its
   transaction body starts, and an attempt that never reaches a body — SQLITE_BUSY
-  or the budget — counts in full. Counting only the waits that succeeded is how a
-  hook blocked for 1,825 ms by a persistent lock reported 920: the attempt that
-  timed out, which is the whole incident, contributed nothing. The inject hook
+  or the budget — counts in full, on every write phase including SessionStart's
+  session-state write, recovery and epoch advance. Counting only the waits that
+  succeeded is how a hook blocked for 1,825 ms by a persistent lock reported 920,
+  and leaving the SessionStart phases out is how one that died after 918 ms
+  reported 0: the attempt that timed out, which is the whole incident,
+  contributed nothing. The inject hook
   reports the same pair, including `db_wait_ms`, on both the daemon path (the
   daemon measures its own bundle-commit wait and reports it back) and the cold
   fallback, and its commit reports the wait from inside `commitInjectionBundle`
@@ -133,7 +136,11 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   used) and the worker hands them its marker. Timing them from the CALL instead
   logged a transaction that never got the lock and died on SQLITE_BUSY as
   `wait_ms: 0, held_ms: 477` — and doctor reads `held_ms` as "held the write
-  lock", so it named the victim as the holder.
+  lock", so it named the victim as the holder. `scheduleCapsuleBacklog` opens one
+  transaction per workstream, so each is timed on its own and logged as
+  `scheduleCapsuleBacklog#<n>`; a single span over all of them charged every wait
+  after the first transaction to held time (`wait_ms: 1, held_ms: 535`), which is
+  the same misattribution one level up.
 - `continuity-worker.js` takes `--mode=hook|foreground` (default `foreground`,
   so existing callers are unchanged). Both hook spawners — the continuity hook
   and the SessionStart maintenance hook — pass `--mode=hook`, which waits

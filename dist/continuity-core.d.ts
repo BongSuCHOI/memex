@@ -232,13 +232,18 @@ export declare function scheduleCapsuleForCheckpoint(db: Database.Database, chec
     onTransactionStart?: () => void;
 }): void;
 /**
- * `onTransactionStart` (#162 review) fires as the first statement of the FIRST
- * transaction this call actually opens — the instant the write lock was
- * granted. It stays silent when the backlog is empty, because then no lock was
- * ever taken, and it never fires when the lock could not be acquired at all.
+ * A backlog is SEVERAL transactions, one per workstream, so `timeTransaction`
+ * wraps each of them individually (#162 review 5). Timing the whole call as one
+ * span charged every wait after the first transaction to held time — a second
+ * transaction blocked by another writer was logged `wait_ms: 1, held_ms: 535`,
+ * and doctor reads held_ms as "held the write lock for N ms".
+ *
+ * The callback it receives is the same `markStart` contract as everywhere else:
+ * fired as the first statement of that transaction's body, silent when the
+ * transaction was never entered.
  */
 export declare function scheduleCapsuleBacklog(db: Database.Database, options?: {
-    onTransactionStart?: () => void;
+    timeTransaction?: <T>(label: string, run: (markStart: () => void) => T) => T;
 }): void;
 export declare function captureTranscriptPrefix(db: Database.Database, input: {
     sessionId: string;
@@ -288,6 +293,8 @@ export declare function advanceContextEpoch(db: Database.Database, input: {
      * true.
      */
     markerId?: string | null;
+    /** First statement of the real transaction body — see #162. */
+    onTransactionStart?: () => void;
 }): number;
 /**
  * How much longer than a marker file the applied-marker history is kept.
