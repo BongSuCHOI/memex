@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -358,6 +358,47 @@ it("the worker continues a spent continuity wave and claims the job it had froze
     { state: string; budget_id: string; last_error: string | null };
   expect(row.budget_id).not.toBe(spent.budgetId);
   expect(row.last_error).toBe(DEAD_ERROR);
+  expect(db.prepare("SELECT state, run_seq FROM model_work_budgets WHERE budget_id = ?").get(row.budget_id))
+    .toMatchObject({ state: "active", run_seq: 2 });
+});
+
+it("the worker continues a clock-dead continuity wave on its FIRST run, not the second (#160)", async () => {
+  put("session-A", "clock-dead-source");
+  capture("session-A");
+  const jobId = (db.prepare("SELECT job_id FROM memory_jobs WHERE kind = 'capsule_update'")
+    .get() as { job_id: string }).job_id;
+  const past = new Date(Date.now() - 60 * 60_000).toISOString();
+  // The window ran out while the wave was idle, so the row is still `active`:
+  // before #160 the rollover skipped it, the pre-claim check settled it and
+  // deferred the job, and this whole run did nothing.
+  const clockDead = getOrCreateModelWorkBudget(db, {
+    parentWaveId: `continuity:${workstream}`, limits: { maxAttempts: 3, deadlineAt: past },
+  });
+  expect(db.prepare("SELECT state FROM model_work_budgets WHERE budget_id = ?").get(clockDead.budgetId))
+    .toEqual({ state: "active" });
+  db.prepare("UPDATE memory_jobs SET state = 'pending', budget_id = ?, maintenance_wave_id = ?, available_at = ? WHERE job_id = ?")
+    .run(clockDead.budgetId, clockDead.parentWaveId, past, jobId);
+  const stderr: string[] = [];
+  const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    stderr.push(args.map(String).join(" "));
+  });
+  let calls = 0;
+  let results;
+  try {
+    results = await runContinuityWorker(db, {
+      maxJobs: 1,
+      model: async () => { calls++; throw new Error(DEAD_ERROR); },
+    });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(stderr.some((line) => line.includes("continued after its window"))).toBe(true);
+  expect(results.map((result) => result.state)).not.toContain("deferred");
+  expect(calls).toBe(1);
+  const row = db.prepare("SELECT budget_id FROM memory_jobs WHERE job_id = ?").get(jobId) as { budget_id: string };
+  expect(row.budget_id).not.toBe(clockDead.budgetId);
+  expect(db.prepare("SELECT state, exhausted_reason FROM model_work_budgets WHERE budget_id = ?").get(clockDead.budgetId))
+    .toEqual({ state: "exhausted", exhausted_reason: "deadline" });
   expect(db.prepare("SELECT state, run_seq FROM model_work_budgets WHERE budget_id = ?").get(row.budget_id))
     .toMatchObject({ state: "active", run_seq: 2 });
 });
