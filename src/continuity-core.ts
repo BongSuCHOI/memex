@@ -2872,15 +2872,14 @@ export function handleContinuityHook(
     // markers are how a skipped capture stays visible, so they expire slowly.
     pruneCaptureGapMarkers();
   };
+  const openedAt = Date.now();
   try {
-    const openedAt = Date.now();
-    try {
-      db = options.db ??
-        initDatabase({ busyTimeoutMs: busyTimeoutForRemaining(deadlineAt - openedAt) });
-    } finally {
-      if (ownDb) dbWaitMs = Date.now() - openedAt;
-    }
+    db = options.db ??
+      initDatabase({ busyTimeoutMs: busyTimeoutForRemaining(deadlineAt - openedAt) });
   } catch (error) {
+    // The open includes the whole migration pass, which is work, not waiting —
+    // so it counts only when it ended blocked (#162 review 7).
+    if (isSqliteBusyError(error)) dbWaitMs += Date.now() - openedAt;
     const outcome = boundedSkipOutcome(error);
     // The marker is NEVER deleted on a failure path — that is the whole point
     // of writing it before the database was touched.
@@ -2913,15 +2912,23 @@ export function handleContinuityHook(
     }
   };
   /**
-   * Measure ONE lock acquisition attempt: from the call until either the
-   * transaction body starts (the wait ended, the rest is work) or the attempt
-   * ends without ever starting (SQLITE_BUSY, the budget) — in which case the
-   * WHOLE attempt was wait.
+   * Measure ONE lock acquisition attempt. `db_wait_ms` means time spent WAITING
+   * FOR A LOCK and nothing else, so exactly two things count (#162 review 7):
    *
-   * db_wait_ms used to count only the connection open and the gap write, and
-   * then only the waits that succeeded. A hook blocked for 1,825 ms by a
-   * persistent lock reported 920: the attempt that timed out — the one the
-   * incident is about — contributed nothing (#162 review 2).
+   *  - a phase that can say when its transaction body began: call -> body start
+   *    is the wait, everything after it is work;
+   *  - a phase with no such instant (an autocommit statement, a migration pass)
+   *    ONLY when it ended blocked — SQLITE_BUSY or the budget expiring on the
+   *    wait. Then the whole span was the wait.
+   *
+   * A slow but UNCONTENDED phase therefore contributes ZERO. Charging it
+   * anything made a 1.2 s migration pass or marker scan read as "hooks waited
+   * on the database" in `memex doctor`, which points at the wrong fix entirely.
+   *
+   * The cost of that honesty: on a SUCCESSFUL hook `db_wait_ms` is a LOWER
+   * BOUND — an autocommit statement that waited 300 ms and then got the lock
+   * has no instant to report, so its wait is invisible. On a busy/deadline
+   * outcome it is the blocked time.
    */
   const measureAttempt = <T>(run: (onTransactionStart: () => void) => T): T => {
     const calledAt = Date.now();
@@ -2933,8 +2940,9 @@ export function handleContinuityHook(
     };
     try {
       return run(settle);
-    } finally {
-      settle();
+    } catch (error) {
+      if (isSqliteBusyError(error) || error instanceof HookDeadlineExceeded) settle();
+      throw error;
     }
   };
 
@@ -2962,10 +2970,10 @@ export function handleContinuityHook(
           eventKind: kind,
           reason: cause instanceof Error ? cause.message : String(cause),
         });
-      } catch {
+      } catch (gapError) {
         /* the marker already records the skip durably */
+        if (isSqliteBusyError(gapError)) dbWaitMs += Date.now() - gapStartedAt;
       }
-      dbWaitMs += Date.now() - gapStartedAt;
     }
     // Failure of ANY kind keeps the marker: a capture that did not happen is
     // not an `ok` hook, which is what deleting it here used to claim.

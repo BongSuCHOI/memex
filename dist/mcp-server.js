@@ -29383,6 +29383,7 @@ async function commitInjectionBundle(db, commit, options = {}) {
   const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
   const calledAt = Date.now();
   let waitReported = false;
+  let bodyStarted = false;
   const reportWait = () => {
     if (waitReported) return;
     waitReported = true;
@@ -29390,6 +29391,7 @@ async function commitInjectionBundle(db, commit, options = {}) {
   };
   const body = () => {
     options.onTransactionStart?.();
+    bodyStarted = true;
     reportWait();
     commit();
   };
@@ -29421,8 +29423,9 @@ async function commitInjectionBundle(db, commit, options = {}) {
         if (Date.now() + retryBusyMs > deadlineAt) throw error2;
       }
     }
-  } finally {
-    reportWait();
+  } catch (error2) {
+    if (!bodyStarted && isSqliteBusy(error2)) reportWait();
+    throw error2;
   }
 }
 function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
@@ -29447,8 +29450,9 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     const calledAt = Date.now();
     try {
       return run();
-    } finally {
-      dbWaitMs += Date.now() - calledAt;
+    } catch (error2) {
+      if (isSqliteBusy(error2)) dbWaitMs += Date.now() - calledAt;
+      throw error2;
     }
   };
   if (!sessionId) {

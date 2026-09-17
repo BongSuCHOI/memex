@@ -192,6 +192,7 @@ export async function commitInjectionBundle(db, commit, options = {}) {
     const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
     const calledAt = Date.now();
     let waitReported = false;
+    let bodyStarted = false;
     const reportWait = () => {
         if (waitReported)
             return;
@@ -200,6 +201,7 @@ export async function commitInjectionBundle(db, commit, options = {}) {
     };
     const body = () => {
         options.onTransactionStart?.();
+        bodyStarted = true;
         reportWait();
         commit();
     };
@@ -246,9 +248,12 @@ export async function commitInjectionBundle(db, commit, options = {}) {
             }
         }
     }
-    finally {
-        // An attempt that never reached the body spent ALL of its time waiting.
-        reportWait();
+    catch (error) {
+        // An attempt that never reached the body AND ended blocked spent all of its
+        // time waiting. Any other failure was not a wait at all (#162 review 7).
+        if (!bodyStarted && isSqliteBusy(error))
+            reportWait();
+        throw error;
     }
 }
 function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
@@ -297,14 +302,26 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         }
         catch { /* observability only */ }
     };
-    /** One acquisition attempt: the wait ends at the body, or the attempt is all wait. */
+    /**
+     * One acquisition attempt. `db_wait_ms` means time spent WAITING FOR A LOCK,
+     * so a phase with no "body started" instant to report — an autocommit
+     * statement, the connection's migration pass, the marker scan — counts ONLY
+     * when it ended blocked (#162 review 7). A slow but uncontended phase
+     * contributes zero; charging it anything made a cold migration pass read as
+     * "hooks waited on the database" in `memex doctor`.
+     *
+     * The trade: on a successful call this total is a LOWER BOUND, because an
+     * autocommit wait that then succeeded has no instant to report.
+     */
     const measureAttempt = (run) => {
         const calledAt = Date.now();
         try {
             return run();
         }
-        finally {
-            dbWaitMs += Date.now() - calledAt;
+        catch (error) {
+            if (isSqliteBusy(error))
+                dbWaitMs += Date.now() - calledAt;
+            throw error;
         }
     };
     if (!sessionId) {

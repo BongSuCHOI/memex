@@ -396,6 +396,7 @@ export async function commitInjectionBundle(
   const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
   const calledAt = Date.now();
   let waitReported = false;
+  let bodyStarted = false;
   const reportWait = () => {
     if (waitReported) return;
     waitReported = true;
@@ -403,6 +404,7 @@ export async function commitInjectionBundle(
   };
   const body = () => {
     options.onTransactionStart?.();
+    bodyStarted = true;
     reportWait();
     commit();
   };
@@ -438,9 +440,11 @@ export async function commitInjectionBundle(
       if (Date.now() + retryBusyMs > deadlineAt) throw error;
     }
   }
-  } finally {
-    // An attempt that never reached the body spent ALL of its time waiting.
-    reportWait();
+  } catch (error) {
+    // An attempt that never reached the body AND ended blocked spent all of its
+    // time waiting. Any other failure was not a wait at all (#162 review 7).
+    if (!bodyStarted && isSqliteBusy(error)) reportWait();
+    throw error;
   }
 }
 
@@ -493,13 +497,24 @@ export async function computeInjectContext(
     waitReported = true;
     try { options.onDbWaitMs?.(dbWaitMs); } catch { /* observability only */ }
   };
-  /** One acquisition attempt: the wait ends at the body, or the attempt is all wait. */
+  /**
+   * One acquisition attempt. `db_wait_ms` means time spent WAITING FOR A LOCK,
+   * so a phase with no "body started" instant to report — an autocommit
+   * statement, the connection's migration pass, the marker scan — counts ONLY
+   * when it ended blocked (#162 review 7). A slow but uncontended phase
+   * contributes zero; charging it anything made a cold migration pass read as
+   * "hooks waited on the database" in `memex doctor`.
+   *
+   * The trade: on a successful call this total is a LOWER BOUND, because an
+   * autocommit wait that then succeeded has no instant to report.
+   */
   const measureAttempt = <T>(run: () => T): T => {
     const calledAt = Date.now();
     try {
       return run();
-    } finally {
-      dbWaitMs += Date.now() - calledAt;
+    } catch (error) {
+      if (isSqliteBusy(error)) dbWaitMs += Date.now() - calledAt;
+      throw error;
     }
   };
   if (!sessionId) {

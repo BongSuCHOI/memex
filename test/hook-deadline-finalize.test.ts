@@ -31,6 +31,7 @@ import {
   listEpochAdvanceMarkers,
   writeCaptureGapMarker,
 } from "../src/capture-gap-markers.js";
+import { hookLatencyCheck } from "../src/lifecycle.js";
 
 const require_ = createRequire(import.meta.url);
 const SESSION = "session-hook-deadline-1";
@@ -650,6 +651,45 @@ describe("SessionStart write phases are measured too (#162 review 5)", () => {
       lock.release();
       await lock.done;
     }
+  }, 30_000);
+});
+
+describe("db_wait_ms is lock wait, not phase duration (#162 review 7)", () => {
+  it("does not charge a slow but UNCONTENDED write phase to the database wait", () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    // A slow session-state write with no contention at all: a cold migration
+    // pass, a workspace check, a big marker directory all look like this. It is
+    // not a lock wait, so doctor must not read it as one.
+    const realPrepare = db.prepare.bind(db);
+    let slept = false;
+    const prepare = vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (!slept && typeof sql === "string" && /UPDATE session_memory_state/i.test(sql)) {
+        slept = true;
+        spinUntil(Date.now() + 1_200);
+      }
+      return realPrepare(sql);
+    }) as never);
+    let result;
+    try {
+      result = handleContinuityHook(payload("SessionStart", { source: "startup" }), {
+        db,
+        budgetMs: 60_000,
+      });
+    } finally {
+      prepare.mockRestore();
+    }
+    result.finalize?.();
+
+    expect(slept).toBe(true);
+    const done = doneRows();
+    expect(done).toHaveLength(1);
+    expect(done[0].outcome).toBe("ok");
+    expect(Number(done[0].duration_ms)).toBeGreaterThan(1_000);
+    expect(Number(done[0].db_wait_ms)).toBeLessThan(100);
+
+    // …and doctor stays quiet about a wait that never happened.
+    const check = hookLatencyCheck();
+    expect(check.detail).not.toContain("waited on the database");
   }, 30_000);
 });
 

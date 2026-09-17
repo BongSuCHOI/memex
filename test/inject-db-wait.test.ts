@@ -22,6 +22,8 @@ import type Database from "better-sqlite3";
 import { initDatabase } from "../src/db.js";
 import { commitInjectionBundle } from "../src/inject-core.js";
 import { hookLatencyCheck } from "../src/lifecycle.js";
+import { ensureSessionMemoryState } from "../src/continuity-core.js";
+import { writeCaptureGapMarker } from "../src/capture-gap-markers.js";
 
 const require_ = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -254,4 +256,42 @@ it("reports every database wait of a cold inject that never got the lock", async
   const check = hookLatencyCheck();
   expect(check.status).toBe("warn");
   expect(check.detail).toContain("waited on the database");
+}, 60_000);
+
+it("does not charge a slow but UNCONTENDED inject phase to the database wait", async () => {
+  const db = initDatabase();
+  ensureSessionMemoryState(db, { sessionId: "s-inject-slow", project: "/project" });
+  db.close();
+  // A pile of pending epoch markers: the replay phase then does hundreds of
+  // real, uncontended write transactions plus the directory scan. Slow, but not
+  // one millisecond of it is spent waiting for a lock.
+  const padding = "p".repeat(16 * 1024);
+  for (let i = 0; i < 500; i++) {
+    writeCaptureGapMarker({
+      invocationId: `inv-slow-${i}`, event: "SessionStart", source: "compact",
+      sessionId: "s-inject-slow", cwd: padding, transcriptPath: null,
+      transcriptBytes: null, turnId: null, ts: new Date().toISOString(),
+    });
+  }
+
+  const child = spawn(process.execPath, [HOOK], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, MEMEX_HOME: root, MEMEX_DB_PATH: dbPath },
+  });
+  child.stdin.end(
+    JSON.stringify({ prompt: "왜 Redis?", cwd: "/project", session_id: "s-inject-slow" }),
+  );
+  const status = await new Promise<number>((resolve) =>
+    child.on("exit", (code) => resolve(code ?? -1)),
+  );
+
+  expect(status).toBe(0);
+  const done = hookEventRows().find(
+    (row) => row.event === "UserPromptSubmit" && row.phase === "done",
+  );
+  expect(done).toBeTruthy();
+  expect(done!.outcome).toBe("fallback");
+  expect(Number(done!.db_wait_ms)).toBeLessThan(100);
+  const check = hookLatencyCheck();
+  expect(check.detail ?? "").not.toContain("waited on the database");
 }, 60_000);

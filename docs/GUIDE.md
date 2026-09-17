@@ -218,12 +218,16 @@ kill이 성공으로 보이고, 실패한 SessionStart 출력도 `ok`로 남습�
 실패했거나). 실패는 종류를 가리지 않고 marker를 남깁니다: BUSY·예산 초과·oversize는 exit 0 + 빈
 stdout으로 끝나면서 `outcome`(`busy`\|`oversize`\|`deadline`)을, transcript 불일치 같은 평범한
 capture 실패는 `outcome: "error"`와 200자로 자른 `error` 문구를 `hook-events.jsonl`에 남깁니다
-(capture gap row는 어느 경로에서도 **정확히 한 번** 씁니다). `db_wait_ms`는 연결과 gap 기록만이
-아니라 **실제로 잠금을 기다린 모든 구간**을 합산한 값입니다 — 각 획득 시도를 호출 시점부터
-트랜잭션 본문이 시작되는 순간까지 재고, 본문에 끝내 들어가지 못한 시도(SQLITE_BUSY·예산 초과)는
-**시도 전체**를 대기로 셉니다. SessionStart의 세션 상태 기록·recovery·epoch 전진도 같은 write
-phase이므로 함께 셉니다 — 빠져 있던 동안에는 918 ms를 잠금에 막혀 죽은 훅이 `db_wait_ms: 0`을
-남겼습니다. 성공한 대기만 세던 때에는 1,825 ms 동안 막힌 훅이 920만 보고했습니다.
+(capture gap row는 어느 경로에서도 **정확히 한 번** 씁니다). `db_wait_ms`는 **잠금을 기다린
+시간만** 셉니다 — 트랜잭션 본문 시작 시각을 알릴 수 있는 국면은 `호출 → 본문 시작`을, 그런 시각이
+없는 국면(autocommit 문장, 연결의 migration pass)은 **막힌 채 끝났을 때만**(SQLITE_BUSY·예산 초과)
+구간 전체를 셉니다. 경합이 없는데 느리기만 한 국면은 0입니다 — 1.2초짜리 migration/marker 스캔을
+"hooks waited on the database"로 읽으면 엉뚱한 곳을 고치게 됩니다. 대가는 숨기지 않고 적습니다:
+**성공한 훅의 `db_wait_ms`는 하한선**입니다(기다렸다가 잠금을 얻은 autocommit 문장은 알릴 시각이
+없어 보이지 않습니다). busy/deadline로 끝난 훅에서는 실제로 막혀 있던 시간입니다. SessionStart의
+세션 상태 기록·recovery·epoch 전진도 같은 write phase이므로 함께 셉니다 — 빠져 있던 동안에는
+918 ms를 잠금에 막혀 죽은 훅이 `db_wait_ms: 0`을 남겼고, 성공한 대기만 세던 때에는 1,825 ms 동안
+막힌 훅이 920만 보고했습니다.
 UserPromptSubmit(inject) done row도 daemon·cold 양쪽에서 같은 규칙의 값을 싣습니다 — 연결/마이그레이션,
 epoch 재적용, 세션 상태 기록, bundle commit의 대기를 모두 합산하고, **성공·실패 양쪽**에서 보고합니다.
 주입 계산은 프롬프트를 방해하지 않으려고 절대 throw 하지 않으므로, 실패는 done row가 유일한 흔적입니다:

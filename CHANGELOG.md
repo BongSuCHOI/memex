@@ -90,10 +90,17 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   then the session's own Interrupt markers.
 - `hook-events.jsonl` gains a start row written before any database access
   (`invocation_id`, `pid`) and a matching done row (`outcome`, `duration_ms`,
-  `db_wait_ms`, bounded `error`). `db_wait_ms` is the time actually spent
-  BLOCKED: every lock acquisition is measured from the call until its
-  transaction body starts, and an attempt that never reaches a body — SQLITE_BUSY
-  or the budget — counts in full, on every write phase including SessionStart's
+  `db_wait_ms`, bounded `error`). `db_wait_ms` is time spent WAITING FOR A LOCK
+  and nothing else: a phase that can report when its transaction body began
+  contributes call → body start, and a phase with no such instant (an autocommit
+  statement, the connection's migration pass) contributes its span ONLY when it
+  ended blocked — SQLITE_BUSY, or the budget expiring on the wait. A slow but
+  uncontended phase contributes zero; charging it its duration made a 1.2 s
+  migration pass or marker scan read as "hooks waited on the database" and point
+  at the wrong fix. The consequence is stated rather than hidden: on a
+  SUCCESSFUL hook this number is a LOWER BOUND, because an autocommit wait that
+  then got the lock has no instant to report; on a busy/deadline outcome it is
+  the blocked time. Every write phase is covered, including SessionStart's
   session-state write, recovery and epoch advance. Counting only the waits that
   succeeded is how a hook blocked for 1,825 ms by a persistent lock reported 920,
   and leaving the SessionStart phases out is how one that died after 918 ms
