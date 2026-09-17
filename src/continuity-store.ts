@@ -1775,11 +1775,20 @@ export function readJobFailureToClear(
  * auto-retry that succeeds leaves no other trace: a capsule validation error
  * raised AFTER a completed model call is not in the model-attempt log either.
  *
+ * `clearedBy` distinguishes the two automatic clearers: `'success'` (an attempt
+ * succeeded) and `'reopen'` (a completed job was re-queued for the next page,
+ * which on rows written before 0.7.22 is where a stale failure surfaces).
+ *
  * No-op when there was nothing to clear, so a clean success appends nothing.
  */
 export function recordClearedJobFailure(
   db: Database.Database,
-  input: { jobId: string; cleared: ClearedJobFailure | null; now: string },
+  input: {
+    jobId: string;
+    cleared: ClearedJobFailure | null;
+    now: string;
+    clearedBy?: "success" | "reopen";
+  },
 ): void {
   if (!input.cleared) return;
   const row = db.prepare("SELECT retry_history FROM memory_jobs WHERE job_id = ?")
@@ -1794,13 +1803,14 @@ export function recordClearedJobFailure(
       history = [];
     }
   }
+  const clearedBy = input.clearedBy ?? "success";
   history.push({
     at: input.now,
     fromState: input.cleared.state,
     attempts: input.cleared.attempts,
     lastError: input.cleared.lastError,
-    action: "success",
-    clearedBy: "success",
+    action: clearedBy,
+    clearedBy,
   });
   db.prepare("UPDATE memory_jobs SET retry_history = ? WHERE job_id = ?")
     .run(JSON.stringify(history.slice(-32)), input.jobId);

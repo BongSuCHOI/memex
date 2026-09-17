@@ -198,6 +198,36 @@ it("a succeeding capsule page clears the previous attempt's last_error, and the 
   expect(checkpointState?.last_error ?? null).toBeNull();
 });
 
+it("reopening a job completed by an older version preserves its stale failure (#157)", async () => {
+  put("source-1");
+  capture();
+
+  // The pre-0.7.22 durable state: the page completed, but the failure text it
+  // followed was left on the row (that version cleared nothing on success).
+  const seeded = capsuleJob();
+  db.prepare(
+    "UPDATE memory_jobs SET state = 'completed', attempts = 2, last_error = ? WHERE job_id = ?",
+  ).run("capsule evidence sources must be declared in sourceExchangeIds", seeded.job_id);
+
+  // Evidence past the frontier re-queues it for the next page.
+  scheduleCapsuleBacklog(db);
+
+  const reopened = capsuleJob();
+  expect(reopened.job_id).toBe(seeded.job_id);
+  expect(reopened.state).toBe("pending");
+  expect(reopened.attempts).toBe(0);
+  expect(reopened.last_error).toBeNull();
+  const preserved = history(reopened.retry_history);
+  expect(preserved).toHaveLength(1);
+  expect(preserved[0].lastError).toContain(
+    "capsule evidence sources must be declared in sourceExchangeIds",
+  );
+  expect(preserved[0].action).toBe("reopen");
+  expect(preserved[0].clearedBy).toBe("reopen");
+  expect(preserved[0].fromState).toBe("completed");
+  expect(preserved[0].attempts).toBe(2);
+});
+
 it("a success with no prior failure appends nothing to retry_history (#157)", async () => {
   put("source-1");
   capture();

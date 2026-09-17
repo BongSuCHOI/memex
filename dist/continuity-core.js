@@ -402,6 +402,11 @@ export function scheduleCapsuleForCheckpoint(db, checkpointId, now = new Date().
             // A migrated or invalidated projection can require a new bounded drain
             // even when its last trigger checkpoint already completed. Dead jobs stay
             // failed-visible; this is not an unbounded retry path.
+            // Issue #157: a row completed by a version older than 0.7.22 can still
+            // carry a `last_error`, and this reopen is the only thing that clears it.
+            // Read it before the UPDATE so the text moves to `retry_history` instead
+            // of vanishing into a clean-looking `pending` row.
+            const staleFailure = readJobFailureToClear(db, capsuleJobId);
             const reopened = db.prepare(`UPDATE memory_jobs
         SET state = 'pending', attempts = 0, last_error = NULL,
             available_at = ?, updated_at = ?
@@ -409,10 +414,17 @@ export function scheduleCapsuleForCheckpoint(db, checkpointId, now = new Date().
           SELECT 1 FROM workstream_evidence e JOIN capsule_frontiers f USING(workstream_id)
           WHERE e.workstream_id = ? AND e.seq > f.through_seq
         )`).run(now, now, capsuleJobId, checkpoint.workstream_id);
-            if (reopened.changes)
+            if (reopened.changes) {
+                recordClearedJobFailure(db, {
+                    jobId: capsuleJobId,
+                    cleared: staleFailure,
+                    now,
+                    clearedBy: "reopen",
+                });
                 db.prepare(`UPDATE capsule_checkpoint_state
-        SET state = 'pending', target_seq = NULL, target_revision = NULL, updated_at = ?
-        WHERE checkpoint_id = ?`).run(now, checkpointId);
+          SET state = 'pending', target_seq = NULL, target_revision = NULL, updated_at = ?
+          WHERE checkpoint_id = ?`).run(now, checkpointId);
+            }
         }
     });
     db.inTransaction ? tx() : tx.immediate();

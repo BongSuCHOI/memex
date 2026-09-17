@@ -34,8 +34,11 @@ have (#156).
   `capsule_checkpoint_state`. The cleared text is appended to `retry_history`
   as an `action: "success"` entry — with the attempts count and a timestamp —
   and `memex jobs show` prints it as `retryHistory`, so an auto-retry that
-  succeeds no longer erases the failure it recovered from. A success with no
-  prior error appends nothing, and a failing attempt still records its error.
+  succeeds no longer erases the failure it recovered from. Re-queueing a
+  completed job for its next page does the same under `action: "reopen"`,
+  which is where a stale failure on a row completed by an older version is
+  preserved. A success with no prior error appends nothing, and a failing
+  attempt still records its error.
 
 ### Upgrade
 

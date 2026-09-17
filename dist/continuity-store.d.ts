@@ -144,12 +144,17 @@ export declare function readJobFailureToClear(db: Database.Database, jobId: stri
  * auto-retry that succeeds leaves no other trace: a capsule validation error
  * raised AFTER a completed model call is not in the model-attempt log either.
  *
+ * `clearedBy` distinguishes the two automatic clearers: `'success'` (an attempt
+ * succeeded) and `'reopen'` (a completed job was re-queued for the next page,
+ * which on rows written before 0.7.22 is where a stale failure surfaces).
+ *
  * No-op when there was nothing to clear, so a clean success appends nothing.
  */
 export declare function recordClearedJobFailure(db: Database.Database, input: {
     jobId: string;
     cleared: ClearedJobFailure | null;
     now: string;
+    clearedBy?: "success" | "reopen";
 }): void;
 export declare function completeMemoryJob(db: Database.Database, input: {
     jobId: string;
