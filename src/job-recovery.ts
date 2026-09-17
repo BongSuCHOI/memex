@@ -55,8 +55,18 @@ export interface RetryHistoryEntry {
   fromState: string;
   attempts: number;
   lastError: string | null;
-  /** 'retry' (operator re-queued) or 'dismiss'. */
-  action: "retry" | "dismiss";
+  /**
+   * 'retry' (operator re-queued) or 'dismiss' — both operator actions — and
+   * the two automatic clearers of issue #157, which append the failure they
+   * cleared instead of letting it disappear:
+   *   'success' — an attempt succeeded and cleared `last_error`.
+   *   'reopen'  — a completed job was re-queued for its next page. Rows
+   *               completed before 0.7.22 can still carry a `last_error`, and
+   *               that is the entry preserving it.
+   * `clearedBy` carries the same value on those two.
+   */
+  action: "retry" | "dismiss" | "success" | "reopen";
+  clearedBy?: "success" | "reopen";
 }
 
 export interface MemoryJobDetail extends MemoryJobSummary {

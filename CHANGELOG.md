@@ -2,6 +2,48 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.22 - 2026-09-17
+
+Fix for a recovery hint that named a command the supported install does not
+have (#156).
+
+### Jobs
+
+- `memex jobs drain [--max <n>] [--json]` runs the Continuity worker in the
+  foreground from the installed root. `--max` takes an integer ≥ 1 (a missing,
+  non-numeric, non-integer or smaller value is a usage error, exit 2) and is
+  clamped to the worker's ceiling of 32. With `--json`, stdout is exactly one
+  JSON array of per-job results and every human line stays on stderr.
+- `memex recover`, `memex jobs retry` and `memex model-work resume` now point
+  at `memex jobs drain` instead of `memex-continuity-worker`. That bin exists
+  only under `node_modules/.bin` of an npm install; the supported install
+  (Codex plugin cache + the `memex` shim) exposes only `memex`, so the hint was
+  `command not found` exactly when a job needed draining. The bin itself is
+  unchanged for npm installs.
+
+- `memex jobs drain` refuses any argument it does not implement instead of
+  ignoring it: `memex jobs drain --dry-run` used to run the real worker — model
+  calls and durable state changes — from a command that reads as a preview.
+
+### Jobs display
+
+- A successful capsule page clears `memory_jobs.last_error` and preserves the
+  cleared failure in `retry_history` (#157). A job that succeeded a page and was
+  reopened for the next one kept showing the previous attempt's failure on a
+  healthy `pending`, `attempts = 0` row, contradicting its own
+  `capsule_checkpoint_state`. The cleared text is appended to `retry_history`
+  as an `action: "success"` entry — with the attempts count and a timestamp —
+  and `memex jobs show` prints it as `retryHistory`, so an auto-retry that
+  succeeds no longer erases the failure it recovered from. Re-queueing a
+  completed job for its next page does the same under `action: "reopen"`,
+  which is where a stale failure on a row completed by an older version is
+  preserved. A success with no prior error appends nothing, and a failing
+  attempt still records its error.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.21 - 2026-09-17
 
 Hotfix for the finding of the post-release review of 0.7.20 (#153).

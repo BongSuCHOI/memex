@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-17T06:11:58+00:00",
+  "recordedAt": "2026-09-17T02:30:07+00:00",
   "environment": {
     "codexCli": "codex-cli 0.153.4",
     "node": "v26.7.0",
@@ -10,36 +10,36 @@
   },
   "candidate": {
     "repository": "memex",
-    "branch": "release/0.7.22",
-    "codeSha": "9417df35aef1098a400aa10fc3d93db659c658de",
-    "packageVersion": "0.7.22",
+    "branch": "release/0.7.21",
+    "codeSha": "a0f608fcfc06ba8469d5fde415b92852980b07ad",
+    "packageVersion": "0.7.21",
     "cleanBeforeGate": true,
-    "cleanAfterGate": true,
+    "cleanAfterGate": false,
     "sameHead": true,
-    "note": "v0.7.22 fixes the recovery hint that named the npm-only memex-continuity-worker bin (#156, new `memex jobs drain`) and the stale last_error on a reopened capsule job (#157). Implemented by an Opus subagent from a Codex-reviewed plan; three Codex diff-review rounds (5 P2 findings, all fixed) and a fourth confirming pass. Gates start only after hook-spawned workers exit and no Codex session is alive."
+    "note": "v0.7.21 hotfix for the post-release Codex review finding of v0.7.20 (#153): relation memberships follow the work only onto a run that will process them. Implemented by the orchestrator directly with a test; Codex diff review no findings. Eighteen gates on the first attempt; no Codex session alive and no hook-spawned worker on the real root during the gates."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
     {
       "name": "real-root-snapshot",
-      "command": "node scripts/check-real-root-untouched.mjs snapshot --out /tmp/memex-real-root-before-0722.json",
+      "command": "node scripts/check-real-root-untouched.mjs snapshot --out /tmp/memex-real-root-before-0721.json",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:08:00+00:00",
+      "startedAt": "2026-09-17T02:26:24+00:00",
       "durationSeconds": 1,
-      "logPath": "/private/tmp/memex-0.7.22-gates/real-root-snapshot.log",
-      "logSha256": "a3470ee6b9ce68d7bf881745a693dceffc08696f2a5ca68fa580c4ba987ca49e",
-      "observed": "read-only baseline: 245 files."
+      "logPath": "/private/tmp/memex-0.7.21-gates/real-root-snapshot.log",
+      "logSha256": "9043c3b0a5f327c4d28b8680ccc4599efe48898a5b4dc9640d5c3b8d8a5f147a",
+      "observed": "read-only baseline: 243 files."
     },
     {
       "name": "typecheck",
       "command": "npm run typecheck",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:08:01+00:00",
+      "startedAt": "2026-09-17T02:26:25+00:00",
       "durationSeconds": 3,
-      "logPath": "/private/tmp/memex-0.7.22-gates/typecheck.log",
-      "logSha256": "fefcda7a7fdab8494c2277412c374723d6631bff6b57e29e2de1704fd63b0b06",
+      "logPath": "/private/tmp/memex-0.7.21-gates/typecheck.log",
+      "logSha256": "711d55652cbf1b2725ea56303ce3780c1f575ac55688dcf6a808ab3a17aa4298",
       "observed": "clean"
     },
     {
@@ -47,10 +47,10 @@
       "command": "npm run build",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:08:04+00:00",
+      "startedAt": "2026-09-17T02:26:28+00:00",
       "durationSeconds": 5,
-      "logPath": "/private/tmp/memex-0.7.22-gates/build.log",
-      "logSha256": "3d79c8d8314e7ae74d78500490696a6ab6b55445fe330a12522c1bf3cad929ac",
+      "logPath": "/private/tmp/memex-0.7.21-gates/build.log",
+      "logSha256": "d8821e40f7248fbc9efb65a69daa67f8e8602df9f12b9d631543944feb8247f4",
       "observed": "reproducible."
     },
     {
@@ -58,32 +58,32 @@
       "command": "npm test",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:08:09+00:00",
-      "durationSeconds": 29,
-      "logPath": "/private/tmp/memex-0.7.22-gates/vitest.log",
-      "logSha256": "b1fb704c6feef6089c4f3b668d0a0b9bf9d2dd3d5d6a5847bc929d9bfa29b53a",
-      "observed": "159 files / 1754 Vitest tests."
+      "startedAt": "2026-09-17T02:26:33+00:00",
+      "durationSeconds": 28,
+      "logPath": "/private/tmp/memex-0.7.21-gates/vitest.log",
+      "logSha256": "4a5d2c1d9173bc1f58d37c5f8d3efdfe74020b0ee3df592a233d978eae6ee155",
+      "observed": "158 files / 1749 Vitest tests."
     },
     {
       "name": "mjs-tests",
       "command": "sh -c node --test test/*.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:08:38+00:00",
-      "durationSeconds": 48,
-      "logPath": "/private/tmp/memex-0.7.22-gates/node-test-mjs.log",
-      "logSha256": "5fa817d9b0dbf40ef69f31ac9237ea18a6ade27f28454352f5c5db421e20bd3a",
-      "observed": "335, 0 failures."
+      "startedAt": "2026-09-17T02:27:01+00:00",
+      "durationSeconds": 46,
+      "logPath": "/private/tmp/memex-0.7.21-gates/node-test-mjs.log",
+      "logSha256": "3f6df1a41cb3ef88079a4935e2ac466e2c2a0219cedd0f58fcefb9611fc38daa",
+      "observed": "317, 0 failures."
     },
     {
       "name": "install-e2e",
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:09:26+00:00",
+      "startedAt": "2026-09-17T02:27:47+00:00",
       "durationSeconds": 7,
-      "logPath": "/private/tmp/memex-0.7.22-gates/install-e2e.log",
-      "logSha256": "ad8a0ff5f24fa2d605cdc66000869a891d89e97006961cb47ac067e85b194c66",
+      "logPath": "/private/tmp/memex-0.7.21-gates/install-e2e.log",
+      "logSha256": "69a2199f09552953e6519e8434d6f969092d4f96b35645ff2061bf2ed782f69a",
       "observed": "PASS."
     },
     {
@@ -91,10 +91,10 @@
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:09:33+00:00",
-      "durationSeconds": 1,
-      "logPath": "/private/tmp/memex-0.7.22-gates/marketplace-e2e.log",
-      "logSha256": "11839e2d65f17dff2271350f3df038b41997408b94db401f45e23440d695e03f",
+      "startedAt": "2026-09-17T02:27:54+00:00",
+      "durationSeconds": 0,
+      "logPath": "/private/tmp/memex-0.7.21-gates/marketplace-e2e.log",
+      "logSha256": "d2758179f3e5ec23725172c75ae3747cd3056bb4214dab4e7e543537b76af31c",
       "observed": "PASS."
     },
     {
@@ -102,21 +102,21 @@
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:09:34+00:00",
-      "durationSeconds": 14,
-      "logPath": "/private/tmp/memex-0.7.22-gates/package-runtime-e2e.log",
-      "logSha256": "9bf43d803e0f13065d032f4840c85bc81e8381dd1c9721e0eb728bb35d2bbb34",
-      "observed": "{ \"status\": \"PASS\", \"artifact\": \"memex-0.7.22.tgz\", \"packedBytes\": 2088736, \"unpackedBytes\": 7850161, \"files\": 404, \"mcpTools\": 9, \"onboarding\": [ \"setup --dry-run\", \"sync\", \"backfill all\", \"status\" ]"
+      "startedAt": "2026-09-17T02:27:54+00:00",
+      "durationSeconds": 16,
+      "logPath": "/private/tmp/memex-0.7.21-gates/package-runtime-e2e.log",
+      "logSha256": "ffe79f601a81de39937cf3d02856351d41099dfd6802ecb7a57aab2d08c5c801",
+      "observed": "{ \"status\": \"PASS\", \"artifact\": \"memex-0.7.21.tgz\", \"packedBytes\": 2083446, \"unpackedBytes\": 7833081, \"files\": 404, \"mcpTools\": 9, \"onboarding\": [ \"setup --dry-run\", \"sync\", \"backfill all\", \"status\" ]"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:09:48+00:00",
-      "durationSeconds": 7,
-      "logPath": "/private/tmp/memex-0.7.22-gates/lifecycle-e2e.log",
-      "logSha256": "7835523391615fefd514ee4234d91509dcf38f8ac52c2eb591104c46e1f791b9",
+      "startedAt": "2026-09-17T02:28:10+00:00",
+      "durationSeconds": 6,
+      "logPath": "/private/tmp/memex-0.7.21-gates/lifecycle-e2e.log",
+      "logSha256": "772a5449d0a799714b61838ebb1e103e4290f1d5d1dabe4a8229ccbddd8b00b2",
       "observed": "9/9."
     },
     {
@@ -124,10 +124,10 @@
       "command": "sh -c node --test ui/test/*.test.cjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:09:55+00:00",
+      "startedAt": "2026-09-17T02:28:16+00:00",
       "durationSeconds": 1,
-      "logPath": "/private/tmp/memex-0.7.22-gates/ui-tests.log",
-      "logSha256": "830657f02e9a76d36d52c5d4c76b42d26e9cb1a6f55bbe29a6f3105a67487fb0",
+      "logPath": "/private/tmp/memex-0.7.21-gates/ui-tests.log",
+      "logSha256": "0d23f991e1fb19088e2640a940d03f273c539e3a53ac88ed352bcaa1273b216f",
       "observed": "298, 0 failures."
     },
     {
@@ -135,10 +135,10 @@
       "command": "node scripts/web-ui-browser-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:09:56+00:00",
-      "durationSeconds": 48,
-      "logPath": "/private/tmp/memex-0.7.22-gates/web-ui-browser-e2e.log",
-      "logSha256": "7f4244341cb58c010c4a84e847823430d245e46688c3853ade747664dbcda09d",
+      "startedAt": "2026-09-17T02:28:17+00:00",
+      "durationSeconds": 45,
+      "logPath": "/private/tmp/memex-0.7.21-gates/web-ui-browser-e2e.log",
+      "logSha256": "2d8d0338701d4364874610c47c12bb0b28d7a2fe40046e2d1ebd76fa9b678107",
       "observed": "27 probes (en) PASS."
     },
     {
@@ -146,10 +146,10 @@
       "command": "node scripts/web-ui-browser-e2e.mjs --lang ko",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:10:44+00:00",
-      "durationSeconds": 48,
-      "logPath": "/private/tmp/memex-0.7.22-gates/web-ui-browser-e2e-ko.log",
-      "logSha256": "3375dc6cbd2533c41d21e0c82b574931a74bcc79c218f1fccc32d14af4d9bc21",
+      "startedAt": "2026-09-17T02:29:02+00:00",
+      "durationSeconds": 46,
+      "logPath": "/private/tmp/memex-0.7.21-gates/web-ui-browser-e2e-ko.log",
+      "logSha256": "4f5eadabbcc21a0e8c35f4029a76e60c5812dd3f276855024042aab281a2e626",
       "observed": "27 probes (ko) PASS."
     },
     {
@@ -157,9 +157,9 @@
       "command": "node scripts/i18n-extract.mjs --lint",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:11:32+00:00",
+      "startedAt": "2026-09-17T02:29:48+00:00",
       "durationSeconds": 0,
-      "logPath": "/private/tmp/memex-0.7.22-gates/i18n-lint.log",
+      "logPath": "/private/tmp/memex-0.7.21-gates/i18n-lint.log",
       "logSha256": "eef5c6009f41145dd6879c313fca5641d9b002502dfc3c33cb097fa01b7b768d",
       "observed": "clean."
     },
@@ -168,9 +168,9 @@
       "command": "node scripts/i18n-extract.mjs --keys",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:11:32+00:00",
+      "startedAt": "2026-09-17T02:29:48+00:00",
       "durationSeconds": 0,
-      "logPath": "/private/tmp/memex-0.7.22-gates/i18n-keys.log",
+      "logPath": "/private/tmp/memex-0.7.21-gates/i18n-keys.log",
       "logSha256": "2cf3f2b23632699db551e3e247fd258aab61476a9b6a843bc92998bef3b87abb",
       "observed": "ok."
     },
@@ -179,10 +179,10 @@
       "command": "node scripts/validate-plugin.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:11:32+00:00",
-      "durationSeconds": 6,
-      "logPath": "/private/tmp/memex-0.7.22-gates/validate-plugin.log",
-      "logSha256": "2c6f23822bc99c794976b737ecce47f3943376d3aa92b0b8e24ba03f9f01fe4c",
+      "startedAt": "2026-09-17T02:29:48+00:00",
+      "durationSeconds": 5,
+      "logPath": "/private/tmp/memex-0.7.21-gates/validate-plugin.log",
+      "logSha256": "792b282daea6867027b8f6e3c6432e03bdb1bb6f6ae1ff6a5560fecbc3c5efb1",
       "observed": "PASS (isolated substitute)."
     },
     {
@@ -190,9 +190,9 @@
       "command": "node scripts/benchmark-contract.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:11:38+00:00",
+      "startedAt": "2026-09-17T02:29:53+00:00",
       "durationSeconds": 0,
-      "logPath": "/private/tmp/memex-0.7.22-gates/benchmark-contract.log",
+      "logPath": "/private/tmp/memex-0.7.21-gates/benchmark-contract.log",
       "logSha256": "5d1671c4a0525f1b05e0584f3bd25b9c50429d7ae69ee379b694c62713e501cd",
       "observed": "benchmark contract satisfied: docs/verification/benchmark.json"
     },
@@ -201,26 +201,26 @@
       "command": "npm pack --dry-run",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:11:38+00:00",
+      "startedAt": "2026-09-17T02:29:53+00:00",
       "durationSeconds": 1,
-      "logPath": "/private/tmp/memex-0.7.22-gates/pack-dry-run.log",
-      "logSha256": "6d75312923097969289792afbe6b4c014de82e8be67096d26868088d2c0ddec9",
+      "logPath": "/private/tmp/memex-0.7.21-gates/pack-dry-run.log",
+      "logSha256": "578440270c2a4dbb150ccca4cc9979789bf548840d48e3ef3db91306f41c9e14",
       "observed": "404 files."
     },
     {
       "name": "real-root-compare",
-      "command": "node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-root-before-0722.json",
+      "command": "node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-root-before-0721.json",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-17T06:11:39+00:00",
+      "startedAt": "2026-09-17T02:29:54+00:00",
       "durationSeconds": 0,
-      "logPath": "/private/tmp/memex-0.7.22-gates/real-root-compare.log",
-      "logSha256": "3d7c57da84370c255128eaded37aac96d0c1088802da087140b5d3e656028a1e",
-      "observed": "OK — 245 file(s) identical"
+      "logPath": "/private/tmp/memex-0.7.21-gates/real-root-compare.log",
+      "logSha256": "bd32f9537d9d2aa9765bb96eddb76d6e1d737cf60cf153af4c1536e42cafd94e",
+      "observed": "OK — 243 file(s) identical"
     }
   ],
   "packageRuntime": {
-    "artifact": "memex-0.7.22.tgz",
+    "artifact": "memex-0.7.21.tgz",
     "files": 404,
     "mcpTools": 9
   },
@@ -243,15 +243,14 @@
     "observation": "Clean on this run; gates start only after hook-spawned workers exit and lsof on the real DB is empty."
   },
   "reviewRemediation": {
-    "source": "Codex plan review (4 findings, accepted) + diff reviews of fix/jobs-drain (P2: --dry-run ran the worker; P2: repeated --max bypassed validation; P2: success-clear lost failure history; P2: reopen path lost history) — all fixed with regression tests",
+    "source": "post-release Codex review (gpt-6-astra, low) of git diff v0.7.18..v0.7.20 — 1 P2 (extract-only run took relation memberships), fixed; diff review no findings",
     "fixed": {
-      "#156": "memex jobs drain with strict argument contract; hints re-pointed in CLI and GUIDE",
-      "#157": "last_error cleared on every capsule success path with the cleared failure appended to retry_history"
+      "#153": "openForegroundBackfillRun migrates model_work_targets only when migrateTargets is set (ontology stage, backfill all)"
     }
   },
   "realRootIsolation": {
-    "snapshotFiles": 245,
-    "compareResult": "245 files identical"
+    "snapshotFiles": 243,
+    "compareResult": "243 files identical"
   },
   "priorEvidence": "Receipts for 0.5.0–0.6.5 are archived as docs/verification/merge-gate-pre-<version>.json; their live proofs (tier migration, daemon takeover, re-acquisition, warm start) are not repeated here.",
   "priorLiveEvidence": {
@@ -270,9 +269,9 @@
     "liveKoreanFacts": "PROVEN on the second machine (SOLT-bs, 0.7.10): 52 of 53 facts created 2026-09-14 are Korean (sync export reviewed 2026-09-15). Still NOT_PROVEN on the primary root.",
     "liveTwoDeviceRoundTrip": "NOT_PROVEN: user-run two-Mac archive round trip (#48).",
     "liveLockContentionFix": "NOT_PROVEN: the #133 mechanism was reproduced in isolation; the live root will be checked at the next SessionStart-adjacent prompt.",
-    "liveBudgetContinuation": "PROVEN on the second machine (SOLT-bs, 0.7.21, 2026-09-17): `memex backfill ontology` opened its own run backfill#3, migrated 16 pending relation memberships and classified 9/9; `memex status` graph-ready YES. #143 also observed: the previously failing capsule job advanced 8 pages (generation 160→167)."
+    "liveBudgetContinuation": "NOT_PROVEN: the second machine must run `memex backfill extract` under 0.7.21 and show extraction instead of a deferred run."
   },
-  "releaseConclusion": "Every gate in docs/VERIFICATION.md §2/§4 (eighteen) passes on the clean v0.7.22 candidate 9417df35 on its first attempt.",
+  "releaseConclusion": "Every gate in docs/VERIFICATION.md §2/§4 (eighteen) passes on the clean v0.7.21 candidate a0f608fc on its first attempt.",
   "benchmark": {
     "record": "docs/verification/benchmark.json unchanged (contract re-checked on this candidate)",
     "verdict": "PASS",

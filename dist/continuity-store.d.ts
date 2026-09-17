@@ -123,6 +123,39 @@ export declare function renewMemoryJobLease(db: Database.Database, input: {
     now?: Date;
     leaseMs?: number;
 }): boolean;
+/**
+ * The failure a success is about to clear (issue #157).
+ *
+ * Read INSIDE the completing transaction and BEFORE the clearing UPDATE; hand
+ * it to `recordClearedJobFailure` once that UPDATE has actually matched.
+ */
+export interface ClearedJobFailure {
+    state: string;
+    attempts: number;
+    lastError: string | null;
+}
+export declare function readJobFailureToClear(db: Database.Database, jobId: string): ClearedJobFailure | null;
+/**
+ * Issue #157: a success clears `last_error`, and the failure it cleared must
+ * not disappear with it. `retry_history` is the place that already exists for
+ * exactly this — `memex jobs retry`/`dismiss` append to it (job-recovery.ts)
+ * and `memex jobs show` prints it as `retryHistory`. Same JSON shape, same
+ * 32-entry cap; `action`/`clearedBy` name what cleared it, because an
+ * auto-retry that succeeds leaves no other trace: a capsule validation error
+ * raised AFTER a completed model call is not in the model-attempt log either.
+ *
+ * `clearedBy` distinguishes the two automatic clearers: `'success'` (an attempt
+ * succeeded) and `'reopen'` (a completed job was re-queued for the next page,
+ * which on rows written before 0.7.22 is where a stale failure surfaces).
+ *
+ * No-op when there was nothing to clear, so a clean success appends nothing.
+ */
+export declare function recordClearedJobFailure(db: Database.Database, input: {
+    jobId: string;
+    cleared: ClearedJobFailure | null;
+    now: string;
+    clearedBy?: "success" | "reopen";
+}): void;
 export declare function completeMemoryJob(db: Database.Database, input: {
     jobId: string;
     owner: string;

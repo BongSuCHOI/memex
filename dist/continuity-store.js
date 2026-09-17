@@ -1429,15 +1429,76 @@ export function renewMemoryJobLease(db, input) {
       AND lease_generation = ? AND lease_until > ?
   `).run(until, now.toISOString(), input.jobId, input.owner, input.leaseGeneration, now.toISOString()).changes === 1;
 }
+export function readJobFailureToClear(db, jobId) {
+    const row = db.prepare("SELECT state, attempts, last_error FROM memory_jobs WHERE job_id = ?").get(jobId);
+    if (!row || row.last_error == null)
+        return null;
+    return { state: String(row.state), attempts: Number(row.attempts), lastError: String(row.last_error) };
+}
+/**
+ * Issue #157: a success clears `last_error`, and the failure it cleared must
+ * not disappear with it. `retry_history` is the place that already exists for
+ * exactly this — `memex jobs retry`/`dismiss` append to it (job-recovery.ts)
+ * and `memex jobs show` prints it as `retryHistory`. Same JSON shape, same
+ * 32-entry cap; `action`/`clearedBy` name what cleared it, because an
+ * auto-retry that succeeds leaves no other trace: a capsule validation error
+ * raised AFTER a completed model call is not in the model-attempt log either.
+ *
+ * `clearedBy` distinguishes the two automatic clearers: `'success'` (an attempt
+ * succeeded) and `'reopen'` (a completed job was re-queued for the next page,
+ * which on rows written before 0.7.22 is where a stale failure surfaces).
+ *
+ * No-op when there was nothing to clear, so a clean success appends nothing.
+ */
+export function recordClearedJobFailure(db, input) {
+    if (!input.cleared)
+        return;
+    const row = db.prepare("SELECT retry_history FROM memory_jobs WHERE job_id = ?")
+        .get(input.jobId);
+    if (!row)
+        return;
+    let history = [];
+    if (typeof row.retry_history === "string" && row.retry_history.trim()) {
+        try {
+            const parsed = JSON.parse(row.retry_history);
+            if (Array.isArray(parsed))
+                history = parsed;
+        }
+        catch {
+            history = [];
+        }
+    }
+    const clearedBy = input.clearedBy ?? "success";
+    history.push({
+        at: input.now,
+        fromState: input.cleared.state,
+        attempts: input.cleared.attempts,
+        lastError: input.cleared.lastError,
+        action: clearedBy,
+        clearedBy,
+    });
+    db.prepare("UPDATE memory_jobs SET retry_history = ? WHERE job_id = ?")
+        .run(JSON.stringify(history.slice(-32)), input.jobId);
+}
 export function completeMemoryJob(db, input) {
     const now = input.now ?? new Date();
     const nowIso = now.toISOString();
-    return db.prepare(`
+    // Issue #157: a success ends the failure it followed. `last_error` used to
+    // survive here, so a capsule job that completed a page and was reopened for
+    // the next one kept displaying the previous attempt's message on a healthy
+    // `pending` row — contradicting its own checkpoint state. The text is not
+    // lost: it moves to `retry_history` below.
+    const cleared = readJobFailureToClear(db, input.jobId);
+    const completed = db.prepare(`
     UPDATE memory_jobs
-    SET state = 'completed', lease_owner = NULL, lease_until = NULL, updated_at = ?
+    SET state = 'completed', lease_owner = NULL, lease_until = NULL,
+        last_error = NULL, updated_at = ?
     WHERE job_id = ? AND state = 'running' AND lease_owner = ?
       AND lease_generation = ? AND lease_until > ?
   `).run(nowIso, input.jobId, input.owner, input.leaseGeneration, nowIso).changes === 1;
+    if (completed)
+        recordClearedJobFailure(db, { jobId: input.jobId, cleared, now: nowIso });
+    return completed;
 }
 export function failMemoryJob(db, input) {
     const now = input.now ?? new Date();

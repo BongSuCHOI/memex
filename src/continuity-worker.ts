@@ -4,6 +4,8 @@ import type Database from "better-sqlite3";
 import {
   claimMemoryJobById,
   failMemoryJob,
+  readJobFailureToClear,
+  recordClearedJobFailure,
 } from "./continuity-store.js";
 import {
   applyLatestLifecycleClosure,
@@ -200,9 +202,12 @@ function completeCaptureIndexJob(
   input: { jobId: string; checkpointId: string; owner: string; leaseGeneration: number; now: string },
 ): boolean {
   const tx = db.transaction(() => {
+    // Issue #157: the text this success clears moves to `retry_history`.
+    const cleared = readJobFailureToClear(db, input.jobId);
     const completed = db.prepare(`
       UPDATE memory_jobs
-      SET state = 'completed', lease_owner = NULL, lease_until = NULL, updated_at = ?
+      SET state = 'completed', lease_owner = NULL, lease_until = NULL,
+          last_error = NULL, updated_at = ?
       WHERE job_id = ? AND kind = 'capture_index' AND checkpoint_id = ?
         AND state = 'running' AND lease_owner = ? AND lease_generation = ?
         AND lease_until > ?
@@ -215,6 +220,7 @@ function completeCaptureIndexJob(
       input.now,
     );
     if (completed.changes !== 1) return false;
+    recordClearedJobFailure(db, { jobId: input.jobId, cleared, now: input.now });
     const capsulePending = db.prepare(`
       SELECT 1 FROM memory_jobs
       WHERE checkpoint_id = ? AND kind = 'capsule_update'

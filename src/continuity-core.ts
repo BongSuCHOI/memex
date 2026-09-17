@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { settleStaleOpenExchanges } from "./continuity-store.js";
+import {
+  readJobFailureToClear,
+  recordClearedJobFailure,
+  settleStaleOpenExchanges,
+} from "./continuity-store.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -600,15 +604,29 @@ export function scheduleCapsuleForCheckpoint(
       // A migrated or invalidated projection can require a new bounded drain
       // even when its last trigger checkpoint already completed. Dead jobs stay
       // failed-visible; this is not an unbounded retry path.
+      // Issue #157: a row completed by a version older than 0.7.22 can still
+      // carry a `last_error`, and this reopen is the only thing that clears it.
+      // Read it before the UPDATE so the text moves to `retry_history` instead
+      // of vanishing into a clean-looking `pending` row.
+      const staleFailure = readJobFailureToClear(db, capsuleJobId);
       const reopened = db.prepare(`UPDATE memory_jobs
-        SET state = 'pending', attempts = 0, available_at = ?, updated_at = ?
+        SET state = 'pending', attempts = 0, last_error = NULL,
+            available_at = ?, updated_at = ?
         WHERE job_id = ? AND state = 'completed' AND EXISTS (
           SELECT 1 FROM workstream_evidence e JOIN capsule_frontiers f USING(workstream_id)
           WHERE e.workstream_id = ? AND e.seq > f.through_seq
         )`).run(now, now, capsuleJobId, checkpoint.workstream_id);
-      if (reopened.changes) db.prepare(`UPDATE capsule_checkpoint_state
-        SET state = 'pending', target_seq = NULL, target_revision = NULL, updated_at = ?
-        WHERE checkpoint_id = ?`).run(now, checkpointId);
+      if (reopened.changes) {
+        recordClearedJobFailure(db, {
+          jobId: capsuleJobId,
+          cleared: staleFailure,
+          now,
+          clearedBy: "reopen",
+        });
+        db.prepare(`UPDATE capsule_checkpoint_state
+          SET state = 'pending', target_seq = NULL, target_revision = NULL, updated_at = ?
+          WHERE checkpoint_id = ?`).run(now, checkpointId);
+      }
     }
   });
   db.inTransaction ? tx() : tx.immediate();
@@ -1876,9 +1894,19 @@ export function applyWorkCapsulePatch(
       WHERE checkpoint_id = ?
     `).run(drained ? "processed" : "pending", now, input.throughCheckpointId);
     if (input.jobLease) {
+      // Issue #157: this is the page-success path, and a success ends the
+      // failure it followed. `last_error` used to survive it, so a partial page
+      // left the job `pending` with `attempts = 0` while still displaying the
+      // previous attempt's message — contradicting its own checkpoint state,
+      // which this same transaction clears. The text is not lost: it moves to
+      // `retry_history`, which is where `memex jobs show` prints it. Nothing
+      // else records it — a capsule validation error raised after a completed
+      // model call is not in the model-attempt log either.
+      const cleared = readJobFailureToClear(db, input.jobLease.jobId);
       const completed = db.prepare(`
         UPDATE memory_jobs
         SET state = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?,
+            last_error = NULL,
             attempts = CASE WHEN ? THEN attempts ELSE 0 END
         WHERE job_id = ? AND state = 'running' AND lease_owner = ?
           AND lease_generation = ? AND lease_until > ?
@@ -1894,6 +1922,7 @@ export function applyWorkCapsulePatch(
       if (completed.changes !== 1) {
         throw new Error("capsule job lease changed during atomic completion");
       }
+      recordClearedJobFailure(db, { jobId: input.jobLease.jobId, cleared, now });
       db.prepare(`
         UPDATE checkpoints SET state = ? WHERE checkpoint_id = ?
       `).run(drained ? "processed" : "processing", input.throughCheckpointId);
@@ -1940,9 +1969,12 @@ export function completeEmptyCapsuleCheckpoint(
     const workstream = db.prepare("SELECT workstream_id FROM capsule_checkpoint_state WHERE checkpoint_id = ?")
       .get(input.checkpointId) as { workstream_id: string } | undefined;
     if (input.evidencePage && (!workstream || !capsulePageIsCurrent(db, workstream.workstream_id, input.evidencePage))) return false;
+    // Issue #157: the text this success clears moves to `retry_history`.
+    const cleared = readJobFailureToClear(db, input.jobId);
     const completed = db.prepare(`
       UPDATE memory_jobs
-      SET state = 'completed', lease_owner = NULL, lease_until = NULL, updated_at = ?
+      SET state = 'completed', lease_owner = NULL, lease_until = NULL,
+          last_error = NULL, updated_at = ?
       WHERE job_id = ? AND kind = 'capsule_update' AND checkpoint_id = ?
         AND state = 'running' AND lease_owner = ? AND lease_generation = ?
         AND lease_until > ?
@@ -1955,6 +1987,7 @@ export function completeEmptyCapsuleCheckpoint(
       now,
     );
     if (completed.changes !== 1) return false;
+    recordClearedJobFailure(db, { jobId: input.jobId, cleared, now });
     if (input.evidencePage && !commitCapsulePage(db, workstream!.workstream_id, input.evidencePage)) {
       throw new Error("empty Capsule frontier changed during atomic completion");
     }
