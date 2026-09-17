@@ -649,6 +649,29 @@ export declare function rebindSpentQueueJobsToBudget(db: Database.Database, inpu
  * treated the same, conservatively.
  */
 export declare function budgetStopApplies(runBudgetId: string | null, exhaustedBudgetId: string | null): boolean;
+/**
+ * Issue #153 (#146 follow-up): the run a FOREGROUND backfill stage works under.
+ *
+ * A terminal `memex backfill <stage>` must not join the automatic maintenance
+ * lineage — its latest run may be spent and its rollover waits for a wake that
+ * never comes while the host is closed (observed: `backfill ontology` did no
+ * work on `maintenance#21`, spent 18 hours earlier). When the environment pins
+ * nothing (no MEMEX_MAINTENANCE_WAVE_ID / MEMEX_MODEL_BUDGET_ID — a hook-spawned
+ * or explicitly pinned worker keeps its lineage), the stage opens the next run
+ * of the `backfill` root and moves queued jobs of the given kinds that are
+ * parked on a spent budget onto it (settling clock-dead budgets first).
+ * Returns null when pinned.
+ */
+export declare function openForegroundBackfillRun(db: Database.Database, input?: {
+    kinds?: string[];
+    env?: NodeJS.ProcessEnv;
+    limits?: Partial<ModelBudgetLimits>;
+    now?: Date;
+}): {
+    budget: ModelWorkBudget;
+    reboundJobIds: string[];
+    reboundTargets: number;
+} | null;
 /** Stable budget used by the SessionStart maintenance sibling wave. */
 export declare function getOrCreateMaintenanceModelBudget(db: Database.Database, input?: {
     parentWaveId?: string;

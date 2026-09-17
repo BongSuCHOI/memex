@@ -101,12 +101,21 @@ async function main() {
     }
     // Queue membership is stored with each fact. Historical created_at never
     // controls local processing order, so late sync imports cannot be skipped.
-    const result = await consolidateAllPending(db, {
-      modelContext: {
-        parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || 'maintenance',
-        budgetId: process.env.MEMEX_MODEL_BUDGET_ID || undefined,
-      },
-    });
+    // Issue #153: a terminal run works under its own `backfill#n` run (see
+    // openForegroundBackfillRun); hook-spawned / pinned invocations keep theirs.
+    let modelContext = {
+      parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || 'maintenance',
+      budgetId: process.env.MEMEX_MODEL_BUDGET_ID || undefined,
+    };
+    try {
+      const { openForegroundBackfillRun } = await import('../dist/model-budget.js');
+      const run = typeof openForegroundBackfillRun === 'function' ? openForegroundBackfillRun(db, {}) : null;
+      if (run) {
+        modelContext = { parentWaveId: run.budget.parentWaveId, budgetId: run.budget.budgetId };
+        log(`fact-consolidate: 이 실행 전용 model run ${run.budget.parentWaveId} (${run.budget.budgetId})`);
+      }
+    } catch { /* older dist: keep the lineage context */ }
+    const result = await consolidateAllPending(db, { modelContext });
     if (result.processed > 0 || result.llmCalls > 0) {
       log(`worker: processed=${result.processed} llmCalls=${result.llmCalls} merged=${result.merged} contradictions=${result.contradictions} evolutions=${result.evolutions} remaining=${result.remaining}`);
     }

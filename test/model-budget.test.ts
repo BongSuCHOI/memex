@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import {
   budgetStopApplies,
   ensureModelBudgetSchema,
+  openForegroundBackfillRun,
   exhaustModelBudget,
   findExhaustedModelBudgetForClaim,
   finishModelAttempt,
@@ -311,6 +312,64 @@ describe("durable model work budget", () => {
     expect(budgetStopApplies("run-1", null)).toBe(true);
     expect(budgetStopApplies(null, "other")).toBe(true);
     expect(budgetStopApplies("run-1", "other")).toBe(false);
+  });
+
+  it("openForegroundBackfillRun: a terminal stage gets its own backfill run unless the environment pins one (#153)", () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE memory_jobs (
+        job_id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, target_id TEXT, checkpoint_id TEXT,
+        available_at TEXT NOT NULL, lease_owner TEXT, lease_until TEXT, lease_generation INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, hold_reason TEXT, updated_at TEXT NOT NULL
+      )
+    `);
+    ensureModelBudgetSchema(db);
+    expect(openForegroundBackfillRun(db, { env: { MEMEX_MAINTENANCE_WAVE_ID: "maintenance#3" } as NodeJS.ProcessEnv })).toBeNull();
+    expect(openForegroundBackfillRun(db, { env: { MEMEX_MODEL_BUDGET_ID: "b" } as NodeJS.ProcessEnv })).toBeNull();
+    const now = new Date("2026-09-17T02:00:00.000Z");
+    const past = new Date(now.getTime() - 60 * 60_000).toISOString();
+    const spent = getOrCreateModelWorkBudget(db, { parentWaveId: "maintenance", limits: { maxAttempts: 3, deadlineAt: past } });
+    db.prepare("UPDATE model_work_budgets SET state = 'exhausted', automatic = 1 WHERE budget_id = ?").run(spent.budgetId);
+    db.prepare(`INSERT INTO memory_jobs (job_id, kind, state, available_at, updated_at, budget_id)
+      VALUES ('parked', 'fact_extract', 'pending', ?, ?, ?)`).run(past, past, spent.budgetId);
+    const first = openForegroundBackfillRun(db, { env: {} as NodeJS.ProcessEnv, kinds: ["fact_extract"], now })!;
+    expect(first.budget).toMatchObject({ rootWaveId: "backfill", runSeq: 1, state: "active", automatic: false });
+    expect(first.reboundJobIds).toEqual(["parked"]);
+    expect(db.prepare("SELECT budget_id FROM memory_jobs WHERE job_id = 'parked'").get()).toEqual({ budget_id: first.budget.budgetId });
+    // a stage with no queue kinds (ontology, consolidation) still gets a fresh run
+    const second = openForegroundBackfillRun(db, { env: {} as NodeJS.ProcessEnv, now })!;
+    expect(second.budget).toMatchObject({ rootWaveId: "backfill", runSeq: 2, state: "active" });
+    expect(second.reboundJobIds).toEqual([]);
+    // `backfill all`: the shared run id reuses the run instead of minting a third one,
+    // and pending relation memberships parked on the spent budget follow the work
+    db.prepare(`INSERT INTO model_work_targets (membership_id, budget_id, stage, target_id, state, created_at, updated_at)
+      VALUES ('m-1', ?, 'relation', 'fact-1', 'pending', ?, ?), ('m-2', ?, 'relation', 'fact-2', 'completed', ?, ?)`)
+      .run(spent.budgetId, past, past, spent.budgetId, past, past);
+    const shared = openForegroundBackfillRun(db, {
+      env: { MEMEX_BACKFILL_RUN_BUDGET_ID: second.budget.budgetId } as NodeJS.ProcessEnv, now,
+    })!;
+    expect(shared.budget.budgetId).toBe(second.budget.budgetId);
+    expect(shared.reboundTargets).toBe(1);
+    expect(db.prepare("SELECT budget_id, state FROM model_work_targets WHERE membership_id = 'm-1'").get())
+      .toEqual({ budget_id: second.budget.budgetId, state: "pending" });
+    expect(db.prepare("SELECT budget_id FROM model_work_targets WHERE membership_id = 'm-2'").get())
+      .toEqual({ budget_id: spent.budgetId });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM model_work_budgets WHERE root_wave_id = 'backfill'").get()).toEqual({ n: 2 });
+    // a clock-dead budget still stored `active` is settled before its pending
+    // memberships follow the work (review of #153)
+    const clockDead = getOrCreateModelWorkBudget(db, { parentWaveId: "maintenance#9", limits: { maxAttempts: 3, deadlineAt: past } });
+    db.prepare("UPDATE model_work_budgets SET state = 'active' WHERE budget_id = ?").run(clockDead.budgetId);
+    db.prepare(`INSERT INTO model_work_targets (membership_id, budget_id, stage, target_id, state, created_at, updated_at)
+      VALUES ('m-3', ?, 'relation', 'fact-3', 'pending', ?, ?)`).run(clockDead.budgetId, past, past);
+    const third = openForegroundBackfillRun(db, {
+      env: { MEMEX_BACKFILL_RUN_BUDGET_ID: second.budget.budgetId } as NodeJS.ProcessEnv, now,
+    })!;
+    expect(third.reboundTargets).toBe(1);
+    expect(db.prepare("SELECT budget_id FROM model_work_targets WHERE membership_id = 'm-3'").get())
+      .toEqual({ budget_id: second.budget.budgetId });
+    expect(db.prepare("SELECT state, exhausted_reason FROM model_work_budgets WHERE budget_id = ?").get(clockDead.budgetId))
+      .toEqual({ state: "exhausted", exhausted_reason: "deadline" });
+    db.close();
   });
 
   it("closes an idle maintenance wave and creates a new wave for later work", () => {
