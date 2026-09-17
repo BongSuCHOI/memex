@@ -197,7 +197,9 @@ node scripts/translate-facts.mjs
 트랜잭션이 모두 그 안에서 끝나야 합니다. 예산은 연결할 때 한 번만 보는 것이 아니라 **국면
 (phase)마다 다시 읽습니다**: capture, 세션 상태 기록, recovery, epoch 전진, rehydration commit은
 각각 들어가기 전에 남은 시간을 확인하고 거기서 잠금 대기를 다시 계산합니다(한 번의 잠금 대기는
-최대 800 ms). 남은 시간이 150 ms 미만이면 그 국면은 **시작하지 않고** `outcome: "deadline"`으로
+최대 800 ms). capture와 rehydration은 **트랜잭션 본문 안에서도** 예산을 다시 봅니다 — 본문은 잠금을
+쥔 채 도는 구간이라, 예산을 넘긴 채 commit 하면 아무도 그 사실을 알 수 없습니다. 본문에서 예산이
+끝나면 전체가 roll back 되고 `outcome: "deadline"`이 됩니다. 남은 시간이 150 ms 미만이면 그 국면은 **시작하지 않고** `outcome: "deadline"`으로
 건너뜁니다 — 예산이 이미 끝난 SessionStart(clear)가 epoch을 올리고 `ok`를 남기는 일은 없습니다.
 0.7.23까지는 훅 연결이 sqlite 기본값 5초를 기다렸고, 호스트는 3초에 훅을 죽였습니다 — 그것이
 `Hook failed — hook timed out after 3s`의 정체입니다.
@@ -217,8 +219,10 @@ kill이 성공으로 보이고, 실패한 SessionStart 출력도 `ok`로 남습�
 stdout으로 끝나면서 `outcome`(`busy`\|`oversize`\|`deadline`)을, transcript 불일치 같은 평범한
 capture 실패는 `outcome: "error"`와 200자로 자른 `error` 문구를 `hook-events.jsonl`에 남깁니다
 (capture gap row는 어느 경로에서도 **정확히 한 번** 씁니다). `db_wait_ms`는 연결과 gap 기록만이
-아니라 **실제로 잠금을 기다린 구간**(capture·rehydration 트랜잭션이 시작되기 전까지)을 합산한
-값이고, UserPromptSubmit(inject) done row도 daemon·cold 양쪽에서 같은 값을 싣습니다. 30일이 지난
+아니라 **실제로 잠금을 기다린 모든 구간**을 합산한 값입니다 — 각 획득 시도를 호출 시점부터
+트랜잭션 본문이 시작되는 순간까지 재고, 본문에 끝내 들어가지 못한 시도(SQLITE_BUSY·예산 초과)는
+**시도 전체**를 대기로 셉니다. 성공한 대기만 세던 때에는 1,825 ms 동안 막힌 훅이 920만 보고했습니다.
+UserPromptSubmit(inject) done row도 daemon·cold 양쪽에서 같은 규칙의 값을 싣습니다. 30일이 지난
 marker는 성공 경로에서 정리합니다.
 
 **건너뛴 capture가 실제로 무엇을 잃는가(정확한 표현):** 같은 세션의 **이후 capture가 성공할 때만**
@@ -230,10 +234,13 @@ open/interrupted 턴은 추출에서 제외된 채 남습니다(#149의 stale-op
 
 `clear`/`compact` SessionStart를 건너뛴 경우만은 스스로 낫지 않습니다(epoch이 오르지 않아 이전
 residency가 같은 fact를 계속 억제합니다). 그래서 다음 주입이 marker를 보고 `advanceContextEpoch`를
-대신 수행한 뒤 marker를 지웁니다 — daemon·cold fallback 모두 같은 진입점을 씁니다. 훅이 직접
-전진시킬 때도 `epoch_token`을 marker와 **같은 규칙**(turn id가 없으면 invocation id)으로 만들기
-때문에, 전진에 성공하고 marker를 지우기 전에 죽은 훅의 전진이 다음 주입에서 한 번 더 적용되는 일은
-없습니다.
+대신 수행한 뒤 marker를 지웁니다 — daemon·cold fallback 모두 같은 진입점을 씁니다. 이 재적용은
+`session_memory_state.epoch_marker_id`로 **durable하게 한 번만** 일어납니다: 전진을 만든 marker의
+invocation id가 epoch과 같은 UPDATE에 기록되고, 같은 id를 들고 온 재적용은 no-op입니다. `epoch_token`
+만으로는 안 됩니다 — `compact` 토큰은 `latest_checkpoint_id`에서 나오는데 이후 Stop이 그 값을 바꾸면
+이미 적용된 marker가 미적용처럼 보여 epoch이 한 번 더 올랐습니다. 또한 marker 조회는 **세션으로 먼저
+좁힌 뒤** 상한을 적용합니다. 디렉터리를 먼저 500개로 자르고 나중에 세션을 거르면, 다른 세션의
+marker 수백 개만으로 정작 필요한 marker가 영원히 보이지 않게 됩니다.
 
 Capture가 만든 durable queue의 우선순위는 `capture_index`(P0) → `capsule_update`(P1) → fact extraction(이후)입니다. Stop/Interrupt boundary 6개 또는 8KiB, PreCompact, SessionEnd에서 Capsule job을 coalesce합니다. Capture hook은 commit 뒤 detached worker를 깨우지만 완료를 기다리지 않으며, wake 실패나 expired lease는 다음 startup/resume에서 복구합니다.
 

@@ -80,7 +80,9 @@ function fakeDaemon(dbWaitMs: number): Promise<void> {
   });
 }
 
-function holdWriteLock(holdMs: number): { marker: string; done: Promise<void> } {
+function holdWriteLock(holdMs: number): {
+  marker: string; done: Promise<void>; release: () => void;
+} {
   const script = path.join(root, "hold.cjs");
   const marker = path.join(root, "locked");
   fs.writeFileSync(
@@ -96,7 +98,11 @@ setTimeout(() => { db.exec("COMMIT"); db.close(); }, ${holdMs});
 `,
   );
   const child = spawn(process.execPath, [script], { stdio: "inherit" });
-  return { marker, done: new Promise<void>((resolve) => child.on("exit", () => resolve())) };
+  return {
+    marker,
+    done: new Promise<void>((resolve) => child.on("exit", () => resolve())),
+    release: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } },
+  };
 }
 
 beforeEach(() => {
@@ -138,7 +144,7 @@ it("the inject done row carries the wait the daemon paid", async () => {
   expect(done!.db_wait_ms).toBe(137);
 }, 30_000);
 
-it("commitInjectionBundle reports the wait, and reports nothing when it never got the lock", async () => {
+it("commitInjectionBundle marks the instant the lock was granted, and never claims one it did not get", async () => {
   const db: Database.Database = initDatabase();
   try {
     const lock = holdWriteLock(700);
@@ -169,6 +175,38 @@ it("commitInjectionBundle reports the wait, and reports nothing when it never go
     });
     await lock.done;
     expect(waitMs).toBeGreaterThan(100);
+  } finally {
+    db.close();
+  }
+}, 30_000);
+
+it("reports the inject wait even when the lock was never granted", async () => {
+  const db: Database.Database = initDatabase();
+  try {
+    const lock = holdWriteLock(60_000);
+    const deadline = Date.now() + 10_000;
+    while (!fs.existsSync(lock.marker)) {
+      if (Date.now() > deadline) throw new Error("the lock holder never started");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    // A commit that times out is the case the incident logs recorded as
+    // "database is locked ... 5.2 s", and it is precisely the wait that used to
+    // be reported as nothing at all.
+    db.pragma("busy_timeout = 600");
+    let reported = -1;
+    const startedAt = Date.now();
+    await expect(
+      commitInjectionBundle(db, () => { /* never reached */ }, {
+        retries: 0,
+        onDbWaitMs: (ms) => { reported = ms; },
+      }),
+    ).rejects.toThrow(/SQLITE_BUSY|database is locked/i);
+    const elapsed = Date.now() - startedAt;
+
+    expect(reported).toBeGreaterThanOrEqual(Math.round(elapsed * 0.9));
+    lock.release();
+    await lock.done;
   } finally {
     db.close();
   }

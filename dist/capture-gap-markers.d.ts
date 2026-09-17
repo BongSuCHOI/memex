@@ -24,8 +24,20 @@ export declare function captureGapMarkerPath(event: string, sessionId: string, i
  */
 export declare function writeCaptureGapMarker(marker: CaptureGapMarker): string | null;
 export declare function deleteCaptureGapMarker(file: string | null | undefined): boolean;
-/** Oldest-first by `ts`; malformed files are skipped, never thrown on. */
-export declare function listCaptureGapMarkers(): LoadedCaptureGapMarker[];
+/**
+ * Oldest-first by `ts`; malformed files are skipped, never thrown on.
+ *
+ * `sessionId` narrows the scan to ONE session, and it narrows it on the FILE
+ * NAME — which carries the session id — before the bound is applied. Capping
+ * the directory listing first and filtering afterwards is how a session's
+ * epoch-repair marker could be lost for ever: a few hundred Interrupt markers
+ * from other sessions were enough to push the one marker that mattered out of
+ * the window, and the inject replay reads this same list (#162 review 2).
+ */
+export declare function listCaptureGapMarkers(options?: {
+    sessionId?: string;
+    limit?: number;
+}): LoadedCaptureGapMarker[];
 /**
  * Markers of THIS session whose SessionStart source was `clear` or `compact`.
  *

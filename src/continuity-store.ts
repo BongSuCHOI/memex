@@ -823,6 +823,12 @@ export function ensureContinuitySchema(
       ["hot_evidence_cursor", "INTEGER NOT NULL DEFAULT 0"],
       ["resident_bundle_hash", "TEXT NOT NULL DEFAULT ''"],
       ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"],
+      // Issue #162 (review 2): which capture-gap marker's transition the
+      // current epoch came from. `epoch_token` cannot answer that — for
+      // `compact` it is derived from `latest_checkpoint_id`, so a later Stop
+      // moved it and made an already-applied marker look unapplied, and the
+      // next injection advanced the epoch a second time.
+      ["epoch_marker_id", "TEXT"],
     ];
     const sessionColumns = columnNames(db, "session_memory_state");
     for (const [name, type] of gateColumns) {

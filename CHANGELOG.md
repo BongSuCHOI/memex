@@ -57,24 +57,39 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   complete JSONL line (a multi-megabyte incomplete record makes that scan itself
   unbounded) and as the LAST statement of the commit body, so an overrun while
   the checkpoint and job rows are written rolls the capture back instead of
-  committing it. A partial capture is never committed.
+  committing it. A partial capture is never committed. The SessionStart
+  rehydration bundle is bounded the same way — at the body's first statement and
+  immediately before it commits — because it too writes the receipt, the
+  residency and the cursor while holding the lock: checking only in front of the
+  transaction let a hook run ten seconds past a two-second budget and still
+  commit, reporting `ok`.
 - A `clear`/`compact` SessionStart skipped on a busy database is the one
   transition that does not heal itself: the epoch never advanced, so residency
   from the old context kept suppressing exactly the facts the clear dropped. The
   inject path — one shared entry for the warm daemon and the cold fallback —
   now applies the pending advance from the marker before it computes anything,
-  and deletes the marker. The hook derives its own `epoch_token` from the same
-  rule the marker replay uses (the turn id, or the invocation id when there is
-  none), so an advance that committed before the hook was killed cannot be
-  applied a second time by the next injection.
+  and deletes the marker. That replay is idempotent through a durable
+  `session_memory_state.epoch_marker_id`: the invocation id of the marker an
+  advance came from is written in the same UPDATE as the epoch, and a replay
+  carrying that id is a no-op. `epoch_token` alone could not do it — the
+  `compact` token is derived from `latest_checkpoint_id`, so any later Stop made
+  an already-applied marker look unapplied and the epoch advanced again (1 → 2).
+  Marker lookup is also narrowed to the session BEFORE the scan bound is
+  applied; capping the directory listing first and filtering afterwards meant a
+  few hundred markers from other sessions could hide the one that mattered for
+  ever.
 - `hook-events.jsonl` gains a start row written before any database access
   (`invocation_id`, `pid`) and a matching done row (`outcome`, `duration_ms`,
   `db_wait_ms`, bounded `error`). `db_wait_ms` is the time actually spent
-  BLOCKED: each write transaction reports the instant its body started, so the
-  connection open, the capture, the rehydration commit and the gap write are all
-  counted — not just the two that never wait. The inject hook reports the same
-  pair, including `db_wait_ms`, on both the daemon path (the daemon measures its
-  own bundle-commit wait and reports it back) and the cold fallback.
+  BLOCKED: every lock acquisition is measured from the call until its
+  transaction body starts, and an attempt that never reaches a body — SQLITE_BUSY
+  or the budget — counts in full. Counting only the waits that succeeded is how a
+  hook blocked for 1,825 ms by a persistent lock reported 920: the attempt that
+  timed out, which is the whole incident, contributed nothing. The inject hook
+  reports the same pair, including `db_wait_ms`, on both the daemon path (the
+  daemon measures its own bundle-commit wait and reports it back) and the cold
+  fallback, and its commit reports the wait from inside `commitInjectionBundle`
+  so a commit that gave up on the lock is accounted for too.
 - `memex doctor` gains `capture-gap` (the markers, with the loss statement
   above, verbatim) and `hook-latency` (start/done pairing over the last 200
   rows: an unpaired start past budget + 10 s with no later row from the same pid

@@ -371,14 +371,30 @@ export async function commitInjectionBundle(
      * and it is the number `db_wait_ms` has to report.
      */
     onTransactionStart?: () => void;
+    /**
+     * Issue #162 (review 2): the wait this call actually paid, reported
+     * EXACTLY once — when the body started, or, if it never did, when the
+     * attempt gave up. Reporting only after a successful commit is why a
+     * commit that timed out ("database is locked … 5.2 s", the line the whole
+     * incident turns on) contributed nothing to `db_wait_ms`.
+     */
+    onDbWaitMs?: (ms: number) => void;
   } = {},
 ): Promise<void> {
   const retries = options.retries ?? INJECT_COMMIT_BUSY_RETRIES;
   const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
   const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
   const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
+  const calledAt = Date.now();
+  let waitReported = false;
+  const reportWait = () => {
+    if (waitReported) return;
+    waitReported = true;
+    options.onDbWaitMs?.(Date.now() - calledAt);
+  };
   const body = () => {
     options.onTransactionStart?.();
+    reportWait();
     commit();
   };
   const run = () => {
@@ -387,6 +403,7 @@ export async function commitInjectionBundle(
       db.inTransaction ? tx() : tx.immediate();
     } else body();
   };
+  try {
   for (let attempt = 0; ; attempt++) {
     try {
       if (attempt === 0 || typeof db.pragma !== "function") {
@@ -411,6 +428,10 @@ export async function commitInjectionBundle(
       // The event loop may have been held up during the pause; re-check.
       if (Date.now() + retryBusyMs > deadlineAt) throw error;
     }
+  }
+  } finally {
+    // An attempt that never reached the body spent ALL of its time waiting.
+    reportWait();
   }
 }
 
@@ -1032,13 +1053,12 @@ export async function computeInjectContext(
     // Receipt, fact residency, Hot Evidence prefix and gate state either commit
     // together or remain retryable when this transaction fails. Delivery on
     // stdout happens afterwards; it is not an exactly-once transport.
-    const commitCalledAt = Date.now();
-    let commitWaitMs = 0;
     await commitInjectionBundle(db as CommitDb, commitBundle, {
       deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS,
-      onTransactionStart: () => { commitWaitMs = Date.now() - commitCalledAt; },
+      // Reported from inside, so a commit that timed out still accounts for
+      // the whole wait it paid (#162 review 2).
+      onDbWaitMs: options.onDbWaitMs,
     });
-    options.onDbWaitMs?.(commitWaitMs);
     // The receipt is durable at this point. The transport can now carry its
     // exact id and mark only this delivery after stdout succeeds.
     if (preparedReceiptId && options.onPreparedReceipt) {

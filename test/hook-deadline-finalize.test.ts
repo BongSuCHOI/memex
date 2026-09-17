@@ -20,12 +20,17 @@ import type Database from "better-sqlite3";
 
 import { initDatabase } from "../src/db.js";
 import {
+  applyPendingEpochAdvance,
   captureTranscriptPrefix,
   ensureSessionMemoryState,
   handleContinuityHook,
   HookDeadlineExceeded,
 } from "../src/continuity-core.js";
-import { captureGapDir } from "../src/capture-gap-markers.js";
+import {
+  captureGapDir,
+  listEpochAdvanceMarkers,
+  writeCaptureGapMarker,
+} from "../src/capture-gap-markers.js";
 
 const require_ = createRequire(import.meta.url);
 const SESSION = "session-hook-deadline-1";
@@ -106,10 +111,15 @@ function contextEpoch(): number {
   ).context_epoch;
 }
 
+/**
+ * Let the wall clock pass the deadline the way a slow fsync-bound write does,
+ * blocking this thread WITHOUT burning a core — a busy loop here starves the
+ * sibling vitest workers and makes their timing assertions flake.
+ */
 function spinUntil(untilMs: number): void {
-  while (Date.now() <= untilMs) {
-    /* burn the budget the way a slow fsync-bound write does */
-  }
+  const remaining = untilMs - Date.now();
+  if (remaining <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, remaining);
 }
 
 /**
@@ -117,7 +127,9 @@ function spinUntil(untilMs: number): void {
  * waiting side blocks its thread inside SQLite, so a timer in this process
  * could never fire to release the lock.
  */
-function holdWriteLock(holdMs: number): { marker: string; done: Promise<void> } {
+function holdWriteLock(holdMs: number): {
+  marker: string; done: Promise<void>; release: () => void;
+} {
   const script = path.join(root, "hold-lock.cjs");
   const marker = path.join(root, "locked");
   fs.writeFileSync(
@@ -133,7 +145,11 @@ setTimeout(() => { db.exec("COMMIT"); db.close(); }, ${holdMs});
 `,
   );
   const child = spawn(process.execPath, [script], { stdio: "inherit" });
-  return { marker, done: new Promise<void>((resolve) => child.on("exit", () => resolve())) };
+  return {
+    marker,
+    done: new Promise<void>((resolve) => child.on("exit", () => resolve())),
+    release: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } },
+  };
 }
 
 async function awaitLock(lock: { marker: string }): Promise<void> {
@@ -208,7 +224,7 @@ describe("the hook deadline binds every phase (issue #162 review P1)", () => {
 describe("the capture commit is bounded too (issue #162 review P2)", () => {
   it("rolls back when the deadline passes while the checkpoint rows are written", () => {
     ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
-    const deadlineAt = Date.now() + 5_000;
+    const deadlineAt = Date.now() + 600;
 
     expect(() =>
       captureTranscriptPrefix(db, {
@@ -238,7 +254,7 @@ describe("the capture commit is bounded too (issue #162 review P2)", () => {
     // > one 4 MiB scan buffer of trailing bytes with no newline, so the reverse
     // scan for the last complete JSONL line takes more than one iteration.
     fs.appendFileSync(transcript, "x".repeat(5 * 1024 * 1024));
-    const deadlineAt = Date.now() + 1_000;
+    const deadlineAt = Date.now() + 800;
     let copiedChunks = 0;
     const realRead = fs.readSync;
     let burned = false;
@@ -353,4 +369,148 @@ describe("db_wait_ms counts the real lock waits (issue #162 review P2)", () => {
     expect(done[0].outcome).toBe("ok");
     expect(Number(done[0].db_wait_ms)).toBeGreaterThan(250);
   }, 20_000);
+});
+
+describe("the epoch replay is idempotent against a moving checkpoint (#162 review 2)", () => {
+  it("cannot advance the epoch a second time from a marker whose advance committed", () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    const before = contextEpoch();
+
+    // The hook advances the epoch and is then killed: no finalize(), so its
+    // marker survives exactly as a host kill leaves it.
+    handleContinuityHook(payload("SessionStart", { source: "compact" }), { db });
+    expect(contextEpoch()).toBe(before + 1);
+    expect(markerFiles()).toHaveLength(1);
+
+    // A later Stop moves latest_checkpoint_id, which is what the compact epoch
+    // token used to be derived from — so the marker's transition suddenly
+    // looked unapplied.
+    const stop = handleContinuityHook(payload("Stop"), { db });
+    stop.finalize?.();
+    expect(stop.capture?.created).toBe(true);
+    expect(markerFiles()).toHaveLength(1);
+
+    // The next injection replays the SAME marker.
+    applyPendingEpochAdvance(db, SESSION);
+    expect(contextEpoch()).toBe(before + 1);
+    expect(markerFiles()).toHaveLength(0);
+  });
+
+  it("still repairs a marker whose advance never happened", () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    const before = contextEpoch();
+    writeCaptureGapMarker({
+      invocationId: "inv-never-applied",
+      event: "SessionStart",
+      source: "compact",
+      sessionId: SESSION,
+      cwd: "/project",
+      transcriptPath: transcript,
+      transcriptBytes: fs.statSync(transcript).size,
+      turnId: null,
+      ts: new Date().toISOString(),
+    });
+    applyPendingEpochAdvance(db, SESSION);
+    expect(contextEpoch()).toBe(before + 1);
+    expect(markerFiles()).toHaveLength(0);
+  });
+});
+
+describe("the rehydration commit is bounded inside its body (#162 review 2)", () => {
+  it("rolls back and reports deadline when the budget dies mid-transaction", () => {
+    const scope = ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    db.prepare(
+      `INSERT INTO work_capsules
+         (workstream_id, generation, objective, current_state, next_actions_json, updated_at)
+       VALUES (?, 1, ?, ?, ?, ?)`,
+    ).run(
+      scope.workstreamId,
+      "Bound the rehydration commit",
+      "Captured work",
+      JSON.stringify(["Check the deadline inside the body"]),
+      new Date().toISOString(),
+    );
+
+    // The clock jumps 10 s the moment the transaction body writes the recall
+    // receipt — i.e. INSIDE the transaction, past a 2 s budget.
+    const realNow = Date.now.bind(Date);
+    let offset = 0;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offset);
+    const realPrepare = db.prepare.bind(db);
+    const prepare = vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (typeof sql === "string" && /INTO recall_events/i.test(sql)) offset += 10_000;
+      return realPrepare(sql);
+    }) as never);
+    let result;
+    try {
+      result = handleContinuityHook(payload("SessionStart", { source: "resume" }), {
+        db,
+        budgetMs: 2_000,
+      });
+    } finally {
+      prepare.mockRestore();
+      now.mockRestore();
+    }
+
+    expect(result.stdout).toBe("");
+    const done = doneRows();
+    expect(done).toHaveLength(1);
+    expect(done[0].outcome).toBe("deadline");
+    // Nothing from the rolled-back bundle survives.
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM recall_events").get() as { n: number }).n,
+    ).toBe(0);
+    expect(
+      (db
+        .prepare("SELECT resident_fact_revisions_json AS j FROM session_memory_state WHERE session_id = ?")
+        .get(SESSION) as { j: string }).j,
+    ).toBe("[]");
+  });
+});
+
+describe("db_wait_ms counts waits that never got the lock (#162 review 2)", () => {
+  it("accounts for the whole time a persistent lock blocked the hook", async () => {
+    const lock = holdWriteLock(60_000);
+    await awaitLock(lock);
+    try {
+      const startedAt = Date.now();
+      const result = handleContinuityHook(payload("Stop"), { db, budgetMs: 2_500 });
+      const elapsed = Date.now() - startedAt;
+
+      expect(result.capture).toBeUndefined();
+      const done = doneRows();
+      expect(done).toHaveLength(1);
+      expect(done[0].outcome).toBe("busy");
+      // Every acquisition attempt is a wait, whether or not it succeeded: the
+      // capture's 800 ms AND the capture-gap row's, not just the one that ran.
+      expect(Number(done[0].db_wait_ms)).toBeGreaterThanOrEqual(Math.round(elapsed * 0.9));
+    } finally {
+      lock.release();
+      await lock.done;
+    }
+  }, 30_000);
+});
+
+describe("marker lookup never loses the target session (#162 review 2)", () => {
+  it("finds every epoch marker of one session behind hundreds of foreign ones", () => {
+    const ts = new Date().toISOString();
+    for (let i = 0; i < 600; i++) {
+      writeCaptureGapMarker({
+        invocationId: `inv-foreign-${i}`, event: "Interrupt", source: null,
+        sessionId: `other-session-${i}`, cwd: "/project", transcriptPath: null,
+        transcriptBytes: null, turnId: null, ts,
+      });
+    }
+    for (let i = 0; i < 40; i++) {
+      writeCaptureGapMarker({
+        invocationId: `inv-target-${i}`, event: "SessionStart", source: "compact",
+        sessionId: SESSION, cwd: "/project", transcriptPath: null,
+        transcriptBytes: null, turnId: null, ts,
+      });
+    }
+
+    const found = listEpochAdvanceMarkers(SESSION);
+    expect(found).toHaveLength(40);
+    expect(found.every(({ marker }) => marker.sessionId === SESSION)).toBe(true);
+  });
 });

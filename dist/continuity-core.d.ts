@@ -273,6 +273,20 @@ export declare function advanceContextEpoch(db: Database.Database, input: {
     source: "compact" | "clear";
     turnId?: string | null;
     now?: string;
+    /**
+     * Issue #162 (review 2): the IMMUTABLE identity of this transition — the
+     * capture-gap marker's invocation id. It is recorded with the epoch in the
+     * same UPDATE, and an advance whose marker id is already the recorded one
+     * is a no-op.
+     *
+     * `epoch_token` alone cannot do this. For `compact` it is derived from
+     * `latest_checkpoint_id`, which a later Stop moves, so a marker whose
+     * advance HAD committed looked unapplied to the inject replay and the epoch
+     * advanced a second time (1 -> 2). The token still owns "the same
+     * transition arriving twice"; this owns "this exact invocation's advance
+     * already happened".
+     */
+    markerId?: string | null;
 }): number;
 export declare function readResidentFactRevisions(db: Database.Database, sessionId: string): {
     contextEpoch: number;

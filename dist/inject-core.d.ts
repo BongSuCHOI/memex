@@ -115,6 +115,14 @@ export declare function commitInjectionBundle(db: CommitDb, commit: () => void, 
      * and it is the number `db_wait_ms` has to report.
      */
     onTransactionStart?: () => void;
+    /**
+     * Issue #162 (review 2): the wait this call actually paid, reported
+     * EXACTLY once — when the body started, or, if it never did, when the
+     * attempt gave up. Reporting only after a successful commit is why a
+     * commit that timed out ("database is locked … 5.2 s", the line the whole
+     * incident turns on) contributed nothing to `db_wait_ms`.
+     */
+    onDbWaitMs?: (ms: number) => void;
 }): Promise<void>;
 /**
  * Compute the UserPromptSubmit context block for a prompt.

@@ -1204,15 +1204,32 @@ export function advanceContextEpoch(
     source: "compact" | "clear";
     turnId?: string | null;
     now?: string;
+    /**
+     * Issue #162 (review 2): the IMMUTABLE identity of this transition — the
+     * capture-gap marker's invocation id. It is recorded with the epoch in the
+     * same UPDATE, and an advance whose marker id is already the recorded one
+     * is a no-op.
+     *
+     * `epoch_token` alone cannot do this. For `compact` it is derived from
+     * `latest_checkpoint_id`, which a later Stop moves, so a marker whose
+     * advance HAD committed looked unapplied to the inject replay and the epoch
+     * advanced a second time (1 -> 2). The token still owns "the same
+     * transition arriving twice"; this owns "this exact invocation's advance
+     * already happened".
+     */
+    markerId?: string | null;
   },
 ): number {
   const now = input.now ?? new Date().toISOString();
   const state = db.prepare(`
-    SELECT context_epoch, epoch_token, latest_checkpoint_id,
+    SELECT context_epoch, epoch_token, epoch_marker_id, latest_checkpoint_id,
            resident_fact_revisions_json, carry_fact_revisions_json
     FROM session_memory_state WHERE session_id = ?
   `).get(input.sessionId) as Record<string, unknown> | undefined;
   if (!state) throw new Error("session memory state is missing");
+  if (input.markerId && String(state.epoch_marker_id ?? "") === input.markerId) {
+    return Number(state.context_epoch);
+  }
   const token = input.source === "compact"
     ? `compact:${String(state.latest_checkpoint_id ?? input.turnId ?? "unknown")}`
     : `clear:${input.turnId ?? now}`;
@@ -1220,7 +1237,7 @@ export function advanceContextEpoch(
   const next = Number(state.context_epoch) + 1;
   db.prepare(`
     UPDATE session_memory_state
-    SET context_epoch = ?, epoch_token = ?,
+    SET context_epoch = ?, epoch_token = ?, epoch_marker_id = ?,
         carry_fact_revisions_json = CASE WHEN ? = 'compact'
           THEN CASE WHEN carry_fact_revisions_json = '[]'
             THEN resident_fact_revisions_json ELSE carry_fact_revisions_json END
@@ -1231,7 +1248,10 @@ export function advanceContextEpoch(
         hot_evidence_cursor = 0,
         last_source = ?, updated_at = ?
     WHERE session_id = ? AND context_epoch = ?
-  `).run(next, token, input.source, input.source, now, input.sessionId, state.context_epoch);
+  `).run(
+    next, token, input.markerId ?? null,
+    input.source, input.source, now, input.sessionId, state.context_epoch,
+  );
   return next;
 }
 
@@ -2689,12 +2709,16 @@ export function applyPendingEpochAdvance(
         // No session state means nothing was ever resident: there is no stale
         // residency to clear, so retiring the marker is the whole repair.
         if (state) {
-          advanceContextEpoch(db, {
+          const before = Number(state.context_epoch);
+          const after = advanceContextEpoch(db, {
             sessionId,
             source: marker.source === "compact" ? "compact" : "clear",
             turnId: marker.turnId ?? marker.invocationId ?? null,
+            // The marker's own id: an advance this marker already produced is
+            // refused durably, whatever `latest_checkpoint_id` has become.
+            markerId: marker.invocationId || null,
           });
-          applied++;
+          if (after !== before) applied++;
         }
         deleteCaptureGapMarker(file);
       } catch {
@@ -2819,24 +2843,34 @@ export function handleContinuityHook(
     }
   };
   /**
-   * Measure ONE real lock wait: the span from the call to the instant the
-   * transaction body starts. db_wait_ms used to count only the connection open
-   * and the gap write, which is zero for every hook that waited inside the
-   * capture — exactly the hooks the host was killing.
+   * Measure ONE lock acquisition attempt: from the call until either the
+   * transaction body starts (the wait ended, the rest is work) or the attempt
+   * ends without ever starting (SQLITE_BUSY, the budget) — in which case the
+   * WHOLE attempt was wait.
+   *
+   * db_wait_ms used to count only the connection open and the gap write, and
+   * then only the waits that succeeded. A hook blocked for 1,825 ms by a
+   * persistent lock reported 920: the attempt that timed out — the one the
+   * incident is about — contributed nothing (#162 review 2).
    */
-  const measureWait = () => {
+  const measureAttempt = <T>(run: (onTransactionStart: () => void) => T): T => {
     const calledAt = Date.now();
-    let seen = false;
-    return () => {
-      if (seen) return;
-      seen = true;
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
       dbWaitMs += Date.now() - calledAt;
     };
+    try {
+      return run(settle);
+    } finally {
+      settle();
+    }
   };
 
   try {
     const result = runContinuityHook(db, payload, {
-      deadlineAt, strictCapture, enterPhase, measureWait, invocationId,
+      deadlineAt, strictCapture, enterPhase, measureAttempt, invocationId,
     });
     return { ...result, finalize };
   } catch (error) {
@@ -2888,8 +2922,8 @@ function runContinuityHook(
     strictCapture: boolean;
     /** Re-checks the budget (and re-derives the lock wait) before a phase. */
     enterPhase: (write: boolean) => void;
-    /** Opens one lock-wait measurement; the returned callback closes it. */
-    measureWait: () => () => void;
+    /** Runs one lock acquisition attempt, counting its wait either way. */
+    measureAttempt: <T>(run: (onTransactionStart: () => void) => T) => T;
     /** This invocation's id — also the epoch token fallback, see below. */
     invocationId: string;
   },
@@ -2906,18 +2940,20 @@ function runContinuityHook(
       if (!payload.transcriptPath) {
         throw new HookCaptureFailed(new Error("capture hook requires transcript_path"));
       }
+      const transcriptPath = payload.transcriptPath;
       options.enterPhase(true);
       try {
-        const capture = captureTranscriptPrefix(db, {
-          sessionId: payload.sessionId,
-          project: payload.cwd,
-          transcriptPath: payload.transcriptPath,
-          kind,
-          turnId: payload.turnId,
-          workstreamId: payload.workstreamId,
-          deadlineAt: options.deadlineAt,
-          onTransactionStart: options.measureWait(),
-        });
+        const capture = options.measureAttempt((onTransactionStart) =>
+          captureTranscriptPrefix(db, {
+            sessionId: payload.sessionId,
+            project: payload.cwd,
+            transcriptPath,
+            kind,
+            turnId: payload.turnId,
+            workstreamId: payload.workstreamId,
+            deadlineAt: options.deadlineAt,
+            onTransactionStart,
+          }));
         return { stdout: "", capture };
       } catch (error) {
         // Every failure belongs to the caller: it owns the single gap-row
@@ -2977,12 +3013,11 @@ function runContinuityHook(
           sessionId: payload.sessionId,
           source,
           // The invocation id, not `now`, is the fallback token (#162 review).
-          // `advanceContextEpoch` is idempotent through `epoch_token`, and the
-          // marker replay in `applyPendingEpochAdvance` derives the same token
-          // from the same marker — so a hook that advanced the epoch and was
-          // then killed before it could delete its marker cannot have that
-          // advance applied a SECOND time by the next injection.
           turnId: payload.turnId ?? options.invocationId,
+          // …and it is recorded WITH the epoch, so the marker this invocation
+          // left behind cannot make the next injection advance again — not even
+          // after a later Stop moved `latest_checkpoint_id` (#162 review 2).
+          markerId: options.invocationId,
         });
       }
       if (source === "resume" || source === "compact") {
@@ -2991,9 +3026,22 @@ function runContinuityHook(
         const epoch = rehydrated.contextEpoch;
         let recallReceipt: ContinuityRecallReceipt | undefined;
         options.enterPhase(true);
-        const markRehydrationStart = options.measureWait();
+        // The budget has to bind the BODY too, not only the wait in front of
+        // it: the receipt, the residency and the cursor are all written under
+        // the lock, and a hook that ran 10 s past a 2 s budget still committed
+        // them and reported `ok` (#162 review 2). Throwing rolls the whole
+        // bundle back and the caller records outcome "deadline".
+        const failPastDeadline = () => {
+          if (Date.now() > options.deadlineAt) {
+            throw new HookDeadlineExceeded(
+              "hook budget exhausted before the rehydration bundle committed",
+            );
+          }
+        };
+        options.measureAttempt((onTransactionStart) => {
         const commitRehydration = db.transaction(() => {
-          markRehydrationStart();
+          onTransactionStart();
+          failPastDeadline();
           if (rehydrated.context.trim()) {
             // Keep continuity rehydration provenance in the same transaction
             // as residency. The hook marks it emitted only after stdout is
@@ -3048,8 +3096,11 @@ function runContinuityHook(
               fromSeq: rehydrated.hotEvidenceCursor, emittedSeqs: rehydrated.hotEvidenceSeqs,
             });
           }
+          // Last gate, inside the body: past here the bundle commits whole.
+          failPastDeadline();
         });
         commitRehydration.immediate();
+        });
         return {
           stdout: emitAdditionalContext("SessionStart", rehydrated.context),
           warning: recoveryWarning,

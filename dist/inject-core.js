@@ -190,8 +190,17 @@ export async function commitInjectionBundle(db, commit, options = {}) {
     const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
     const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
     const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
+    const calledAt = Date.now();
+    let waitReported = false;
+    const reportWait = () => {
+        if (waitReported)
+            return;
+        waitReported = true;
+        options.onDbWaitMs?.(Date.now() - calledAt);
+    };
     const body = () => {
         options.onTransactionStart?.();
+        reportWait();
         commit();
     };
     const run = () => {
@@ -202,38 +211,44 @@ export async function commitInjectionBundle(db, commit, options = {}) {
         else
             body();
     };
-    for (let attempt = 0;; attempt++) {
-        try {
-            if (attempt === 0 || typeof db.pragma !== "function") {
-                run();
-            }
-            else {
-                // The retry waits for the lock only briefly (see INJECT_COMMIT_RETRY_BUSY_MS);
-                // the connection's own budget is restored afterwards whatever happens.
-                const previous = Number(db.pragma("busy_timeout", { simple: true }));
-                db.pragma(`busy_timeout = ${retryBusyMs}`);
-                try {
+    try {
+        for (let attempt = 0;; attempt++) {
+            try {
+                if (attempt === 0 || typeof db.pragma !== "function") {
                     run();
                 }
-                finally {
-                    db.pragma(`busy_timeout = ${Number.isFinite(previous) ? previous : 5000}`);
+                else {
+                    // The retry waits for the lock only briefly (see INJECT_COMMIT_RETRY_BUSY_MS);
+                    // the connection's own budget is restored afterwards whatever happens.
+                    const previous = Number(db.pragma("busy_timeout", { simple: true }));
+                    db.pragma(`busy_timeout = ${retryBusyMs}`);
+                    try {
+                        run();
+                    }
+                    finally {
+                        db.pragma(`busy_timeout = ${Number.isFinite(previous) ? previous : 5000}`);
+                    }
                 }
+                return;
             }
-            return;
+            catch (error) {
+                if (!isSqliteBusy(error) || attempt >= retries || db.inTransaction)
+                    throw error;
+                // A retry that could not finish before the deadline is not started.
+                if (Date.now() + delayMs + retryBusyMs > deadlineAt)
+                    throw error;
+                // The pause is an await: a hook that disconnected during the first wait is
+                // observed here, and `deliverable()` inside the bundle refuses the retry.
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
+                // The event loop may have been held up during the pause; re-check.
+                if (Date.now() + retryBusyMs > deadlineAt)
+                    throw error;
+            }
         }
-        catch (error) {
-            if (!isSqliteBusy(error) || attempt >= retries || db.inTransaction)
-                throw error;
-            // A retry that could not finish before the deadline is not started.
-            if (Date.now() + delayMs + retryBusyMs > deadlineAt)
-                throw error;
-            // The pause is an await: a hook that disconnected during the first wait is
-            // observed here, and `deliverable()` inside the bundle refuses the retry.
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-            // The event loop may have been held up during the pause; re-check.
-            if (Date.now() + retryBusyMs > deadlineAt)
-                throw error;
-        }
+    }
+    finally {
+        // An attempt that never reached the body spent ALL of its time waiting.
+        reportWait();
     }
 }
 function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
@@ -872,13 +887,12 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         // Receipt, fact residency, Hot Evidence prefix and gate state either commit
         // together or remain retryable when this transaction fails. Delivery on
         // stdout happens afterwards; it is not an exactly-once transport.
-        const commitCalledAt = Date.now();
-        let commitWaitMs = 0;
         await commitInjectionBundle(db, commitBundle, {
             deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS,
-            onTransactionStart: () => { commitWaitMs = Date.now() - commitCalledAt; },
+            // Reported from inside, so a commit that timed out still accounts for
+            // the whole wait it paid (#162 review 2).
+            onDbWaitMs: options.onDbWaitMs,
         });
-        options.onDbWaitMs?.(commitWaitMs);
         // The receipt is durable at this point. The transport can now carry its
         // exact id and mark only this delivery after stdout succeeds.
         if (preparedReceiptId && options.onPreparedReceipt) {

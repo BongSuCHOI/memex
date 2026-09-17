@@ -20,7 +20,7 @@ import { getMemexHome } from "./paths.js";
 /** Markers older than this are pruned on a hook's success path (best effort). */
 export const CAPTURE_GAP_MARKER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 
-/** Upper bound on directory entries any single call will look at. */
+/** Upper bound on markers any single call will PARSE (after filtering). */
 const MARKER_SCAN_LIMIT = 500;
 
 export interface CaptureGapMarker {
@@ -110,8 +110,19 @@ function parseMarker(file: string): CaptureGapMarker | null {
   }
 }
 
-/** Oldest-first by `ts`; malformed files are skipped, never thrown on. */
-export function listCaptureGapMarkers(): LoadedCaptureGapMarker[] {
+/**
+ * Oldest-first by `ts`; malformed files are skipped, never thrown on.
+ *
+ * `sessionId` narrows the scan to ONE session, and it narrows it on the FILE
+ * NAME — which carries the session id — before the bound is applied. Capping
+ * the directory listing first and filtering afterwards is how a session's
+ * epoch-repair marker could be lost for ever: a few hundred Interrupt markers
+ * from other sessions were enough to push the one marker that mattered out of
+ * the window, and the inject replay reads this same list (#162 review 2).
+ */
+export function listCaptureGapMarkers(
+  options: { sessionId?: string; limit?: number } = {},
+): LoadedCaptureGapMarker[] {
   const dir = captureGapDir();
   let entries: string[];
   try {
@@ -119,12 +130,20 @@ export function listCaptureGapMarkers(): LoadedCaptureGapMarker[] {
   } catch {
     return [];
   }
+  const limit = options.limit ?? MARKER_SCAN_LIMIT;
+  // `<event>-<session>-<invocation>.json`, each segment already sanitized.
+  const wanted = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
   const out: LoadedCaptureGapMarker[] = [];
-  for (const name of entries.slice(0, MARKER_SCAN_LIMIT)) {
+  for (const name of entries) {
     if (!name.endsWith(".json")) continue;
+    // The name is only a cheap prefilter; the parsed marker below decides.
+    if (wanted && !name.includes(wanted)) continue;
+    if (out.length >= limit) break;
     const file = path.join(dir, name);
     const marker = parseMarker(file);
-    if (marker) out.push({ file, marker });
+    if (!marker) continue;
+    if (options.sessionId && marker.sessionId !== options.sessionId) continue;
+    out.push({ file, marker });
   }
   out.sort((a, b) => (a.marker.ts < b.marker.ts ? -1 : a.marker.ts > b.marker.ts ? 1 : 0));
   return out;
@@ -140,10 +159,8 @@ export function listCaptureGapMarkers(): LoadedCaptureGapMarker[] {
  */
 export function listEpochAdvanceMarkers(sessionId: string): LoadedCaptureGapMarker[] {
   if (!sessionId) return [];
-  return listCaptureGapMarkers().filter(
-    ({ marker }) =>
-      marker.sessionId === sessionId &&
-      (marker.source === "clear" || marker.source === "compact"),
+  return listCaptureGapMarkers({ sessionId }).filter(
+    ({ marker }) => marker.source === "clear" || marker.source === "compact",
   );
 }
 

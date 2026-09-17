@@ -9597,7 +9597,13 @@ function ensureContinuitySchema(db, options = {}) {
       ["last_retrieval_at", "TEXT"],
       ["hot_evidence_cursor", "INTEGER NOT NULL DEFAULT 0"],
       ["resident_bundle_hash", "TEXT NOT NULL DEFAULT ''"],
-      ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"]
+      ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"],
+      // Issue #162 (review 2): which capture-gap marker's transition the
+      // current epoch came from. `epoch_token` cannot answer that — for
+      // `compact` it is derived from `latest_checkpoint_id`, so a later Stop
+      // moved it and made an already-applied marker look unapplied, and the
+      // next injection advanced the epoch a second time.
+      ["epoch_marker_id", "TEXT"]
     ];
     const sessionColumns = columnNames(db, "session_memory_state");
     for (const [name, type] of gateColumns) {
@@ -28725,6 +28731,10 @@ var MARKER_SCAN_LIMIT = 500;
 function captureGapDir() {
   return path12.join(getMemexHome(), "continuity", "gaps");
 }
+function safeSegment(value) {
+  const cleaned = String(value ?? "").replace(/[^A-Za-z0-9._-]/g, "_");
+  return cleaned.slice(0, 80) || "unknown";
+}
 function deleteCaptureGapMarker(file) {
   if (!file) return false;
   try {
@@ -28754,7 +28764,7 @@ function parseMarker(file) {
     return null;
   }
 }
-function listCaptureGapMarkers() {
+function listCaptureGapMarkers(options = {}) {
   const dir = captureGapDir();
   let entries;
   try {
@@ -28762,20 +28772,26 @@ function listCaptureGapMarkers() {
   } catch {
     return [];
   }
+  const limit = options.limit ?? MARKER_SCAN_LIMIT;
+  const wanted = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
   const out = [];
-  for (const name of entries.slice(0, MARKER_SCAN_LIMIT)) {
+  for (const name of entries) {
     if (!name.endsWith(".json")) continue;
+    if (wanted && !name.includes(wanted)) continue;
+    if (out.length >= limit) break;
     const file = path12.join(dir, name);
     const marker = parseMarker(file);
-    if (marker) out.push({ file, marker });
+    if (!marker) continue;
+    if (options.sessionId && marker.sessionId !== options.sessionId) continue;
+    out.push({ file, marker });
   }
   out.sort((a, b2) => a.marker.ts < b2.marker.ts ? -1 : a.marker.ts > b2.marker.ts ? 1 : 0);
   return out;
 }
 function listEpochAdvanceMarkers(sessionId) {
   if (!sessionId) return [];
-  return listCaptureGapMarkers().filter(
-    ({ marker }) => marker.sessionId === sessionId && (marker.source === "clear" || marker.source === "compact")
+  return listCaptureGapMarkers({ sessionId }).filter(
+    ({ marker }) => marker.source === "clear" || marker.source === "compact"
   );
 }
 
@@ -28907,17 +28923,20 @@ function ensureSessionMemoryState(db, input) {
 function advanceContextEpoch(db, input) {
   const now = input.now ?? (/* @__PURE__ */ new Date()).toISOString();
   const state = db.prepare(`
-    SELECT context_epoch, epoch_token, latest_checkpoint_id,
+    SELECT context_epoch, epoch_token, epoch_marker_id, latest_checkpoint_id,
            resident_fact_revisions_json, carry_fact_revisions_json
     FROM session_memory_state WHERE session_id = ?
   `).get(input.sessionId);
   if (!state) throw new Error("session memory state is missing");
+  if (input.markerId && String(state.epoch_marker_id ?? "") === input.markerId) {
+    return Number(state.context_epoch);
+  }
   const token = input.source === "compact" ? `compact:${String(state.latest_checkpoint_id ?? input.turnId ?? "unknown")}` : `clear:${input.turnId ?? now}`;
   if (String(state.epoch_token) === token) return Number(state.context_epoch);
   const next = Number(state.context_epoch) + 1;
   db.prepare(`
     UPDATE session_memory_state
-    SET context_epoch = ?, epoch_token = ?,
+    SET context_epoch = ?, epoch_token = ?, epoch_marker_id = ?,
         carry_fact_revisions_json = CASE WHEN ? = 'compact'
           THEN CASE WHEN carry_fact_revisions_json = '[]'
             THEN resident_fact_revisions_json ELSE carry_fact_revisions_json END
@@ -28928,7 +28947,16 @@ function advanceContextEpoch(db, input) {
         hot_evidence_cursor = 0,
         last_source = ?, updated_at = ?
     WHERE session_id = ? AND context_epoch = ?
-  `).run(next, token, input.source, input.source, now, input.sessionId, state.context_epoch);
+  `).run(
+    next,
+    token,
+    input.markerId ?? null,
+    input.source,
+    input.source,
+    now,
+    input.sessionId,
+    state.context_epoch
+  );
   return next;
 }
 function readResidentFactRevisions(db, sessionId) {
@@ -29073,12 +29101,16 @@ function applyPendingEpochAdvance(db, sessionId) {
           "SELECT context_epoch FROM session_memory_state WHERE session_id = ?"
         ).get(sessionId);
         if (state) {
-          advanceContextEpoch(db, {
+          const before = Number(state.context_epoch);
+          const after = advanceContextEpoch(db, {
             sessionId,
             source: marker.source === "compact" ? "compact" : "clear",
-            turnId: marker.turnId ?? marker.invocationId ?? null
+            turnId: marker.turnId ?? marker.invocationId ?? null,
+            // The marker's own id: an advance this marker already produced is
+            // refused durably, whatever `latest_checkpoint_id` has become.
+            markerId: marker.invocationId || null
           });
-          applied++;
+          if (after !== before) applied++;
         }
         deleteCaptureGapMarker(file);
       } catch {
@@ -29311,8 +29343,16 @@ async function commitInjectionBundle(db, commit, options = {}) {
   const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
   const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
   const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
+  const calledAt = Date.now();
+  let waitReported = false;
+  const reportWait = () => {
+    if (waitReported) return;
+    waitReported = true;
+    options.onDbWaitMs?.(Date.now() - calledAt);
+  };
   const body = () => {
     options.onTransactionStart?.();
+    reportWait();
     commit();
   };
   const run = () => {
@@ -29321,26 +29361,30 @@ async function commitInjectionBundle(db, commit, options = {}) {
       db.inTransaction ? tx() : tx.immediate();
     } else body();
   };
-  for (let attempt = 0; ; attempt++) {
-    try {
-      if (attempt === 0 || typeof db.pragma !== "function") {
-        run();
-      } else {
-        const previous = Number(db.pragma("busy_timeout", { simple: true }));
-        db.pragma(`busy_timeout = ${retryBusyMs}`);
-        try {
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        if (attempt === 0 || typeof db.pragma !== "function") {
           run();
-        } finally {
-          db.pragma(`busy_timeout = ${Number.isFinite(previous) ? previous : 5e3}`);
+        } else {
+          const previous = Number(db.pragma("busy_timeout", { simple: true }));
+          db.pragma(`busy_timeout = ${retryBusyMs}`);
+          try {
+            run();
+          } finally {
+            db.pragma(`busy_timeout = ${Number.isFinite(previous) ? previous : 5e3}`);
+          }
         }
+        return;
+      } catch (error2) {
+        if (!isSqliteBusy(error2) || attempt >= retries || db.inTransaction) throw error2;
+        if (Date.now() + delayMs + retryBusyMs > deadlineAt) throw error2;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (Date.now() + retryBusyMs > deadlineAt) throw error2;
       }
-      return;
-    } catch (error2) {
-      if (!isSqliteBusy(error2) || attempt >= retries || db.inTransaction) throw error2;
-      if (Date.now() + delayMs + retryBusyMs > deadlineAt) throw error2;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      if (Date.now() + retryBusyMs > deadlineAt) throw error2;
     }
+  } finally {
+    reportWait();
   }
 }
 function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
@@ -29833,15 +29877,12 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       });
       if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
     };
-    const commitCalledAt = Date.now();
-    let commitWaitMs = 0;
     await commitInjectionBundle(db, commitBundle, {
       deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS,
-      onTransactionStart: () => {
-        commitWaitMs = Date.now() - commitCalledAt;
-      }
+      // Reported from inside, so a commit that timed out still accounts for
+      // the whole wait it paid (#162 review 2).
+      onDbWaitMs: options.onDbWaitMs
     });
-    options.onDbWaitMs?.(commitWaitMs);
     if (preparedReceiptId && options.onPreparedReceipt) {
       try {
         options.onPreparedReceipt(preparedReceiptId);
