@@ -403,7 +403,8 @@ export function scheduleCapsuleForCheckpoint(db, checkpointId, now = new Date().
             // even when its last trigger checkpoint already completed. Dead jobs stay
             // failed-visible; this is not an unbounded retry path.
             const reopened = db.prepare(`UPDATE memory_jobs
-        SET state = 'pending', attempts = 0, available_at = ?, updated_at = ?
+        SET state = 'pending', attempts = 0, last_error = NULL,
+            available_at = ?, updated_at = ?
         WHERE job_id = ? AND state = 'completed' AND EXISTS (
           SELECT 1 FROM workstream_evidence e JOIN capsule_frontiers f USING(workstream_id)
           WHERE e.workstream_id = ? AND e.seq > f.through_seq
@@ -1416,9 +1417,16 @@ export function applyWorkCapsulePatch(db, input) {
       WHERE checkpoint_id = ?
     `).run(drained ? "processed" : "pending", now, input.throughCheckpointId);
         if (input.jobLease) {
+            // Issue #157: this is the page-success path, and a success ends the
+            // failure it followed. `last_error` used to survive it, so a partial page
+            // left the job `pending` with `attempts = 0` while still displaying the
+            // previous attempt's message — contradicting its own checkpoint state,
+            // which this same transaction clears. The failure is not lost:
+            // `retry_history` and the recovery audit keep it.
             const completed = db.prepare(`
         UPDATE memory_jobs
         SET state = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?,
+            last_error = NULL,
             attempts = CASE WHEN ? THEN attempts ELSE 0 END
         WHERE job_id = ? AND state = 'running' AND lease_owner = ?
           AND lease_generation = ? AND lease_until > ?
@@ -1462,7 +1470,8 @@ export function completeEmptyCapsuleCheckpoint(db, input) {
             return false;
         const completed = db.prepare(`
       UPDATE memory_jobs
-      SET state = 'completed', lease_owner = NULL, lease_until = NULL, updated_at = ?
+      SET state = 'completed', lease_owner = NULL, lease_until = NULL,
+          last_error = NULL, updated_at = ?
       WHERE job_id = ? AND kind = 'capsule_update' AND checkpoint_id = ?
         AND state = 'running' AND lease_owner = ? AND lease_generation = ?
         AND lease_until > ?

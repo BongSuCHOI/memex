@@ -1432,9 +1432,15 @@ export function renewMemoryJobLease(db, input) {
 export function completeMemoryJob(db, input) {
     const now = input.now ?? new Date();
     const nowIso = now.toISOString();
+    // Issue #157: a success ends the failure it followed. `last_error` used to
+    // survive here, so a capsule job that completed a page and was reopened for
+    // the next one kept displaying the previous attempt's message on a healthy
+    // `pending` row — contradicting its own checkpoint state. The failure itself
+    // is not lost: `retry_history` and the audit log keep it.
     return db.prepare(`
     UPDATE memory_jobs
-    SET state = 'completed', lease_owner = NULL, lease_until = NULL, updated_at = ?
+    SET state = 'completed', lease_owner = NULL, lease_until = NULL,
+        last_error = NULL, updated_at = ?
     WHERE job_id = ? AND state = 'running' AND lease_owner = ?
       AND lease_generation = ? AND lease_until > ?
   `).run(nowIso, input.jobId, input.owner, input.leaseGeneration, nowIso).changes === 1;

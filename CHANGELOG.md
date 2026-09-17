@@ -21,6 +21,19 @@ have (#156).
   `command not found` exactly when a job needed draining. The bin itself is
   unchanged for npm installs.
 
+- `memex jobs drain` refuses any argument it does not implement instead of
+  ignoring it: `memex jobs drain --dry-run` used to run the real worker — model
+  calls and durable state changes — from a command that reads as a preview.
+
+### Jobs display
+
+- A successful capsule page clears `memory_jobs.last_error` (#157). A job that
+  succeeded a page and was reopened for the next one kept showing the previous
+  attempt's failure on a healthy `pending`, `attempts = 0` row, contradicting
+  its own `capsule_checkpoint_state`. The failure itself is still in
+  `retry_history` and the recovery audit; a failing attempt still records its
+  error.
+
 ### Upgrade
 
 Run `memex update` and restart Codex. No schema change.

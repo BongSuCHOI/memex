@@ -202,7 +202,8 @@ function completeCaptureIndexJob(
   const tx = db.transaction(() => {
     const completed = db.prepare(`
       UPDATE memory_jobs
-      SET state = 'completed', lease_owner = NULL, lease_until = NULL, updated_at = ?
+      SET state = 'completed', lease_owner = NULL, lease_until = NULL,
+          last_error = NULL, updated_at = ?
       WHERE job_id = ? AND kind = 'capture_index' AND checkpoint_id = ?
         AND state = 'running' AND lease_owner = ? AND lease_generation = ?
         AND lease_until > ?
