@@ -12028,6 +12028,20 @@ function rolloverSpentWaveBudgets(db, input = {}) {
   const prefixClause = AUTO_CONTINUED_WAVE_PREFIXES.map(() => "b.root_wave_id LIKE ?").join(" OR ");
   const prefixParams = AUTO_CONTINUED_WAVE_PREFIXES.map((prefix) => `${prefix}%`);
   const tx = db.transaction(() => {
+    const clockDead = db.prepare(`
+      SELECT b.budget_id AS budget_id
+      FROM model_work_budgets b
+      WHERE b.automatic = 0 AND b.state = 'active'
+        AND b.deadline_at IS NOT NULL AND b.deadline_at <= ?
+        AND (${prefixClause})
+      ORDER BY b.root_wave_id
+    `).all(nowIso2, ...prefixParams);
+    for (const row of clockDead) {
+      const budget = readBudgetById(db, row.budget_id);
+      if (!budget || budget.state !== "active") continue;
+      const reason = resolveBudgetExhaustion(db, budget, now);
+      if (reason) markModelBudgetExhausted(db, budget.budgetId, reason, nowIso2);
+    }
     const candidates = db.prepare(`
       SELECT b.budget_id AS budget_id
       FROM model_work_budgets b
@@ -33213,7 +33227,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.22"
+    version: "0.7.23"
   },
   {
     capabilities: {

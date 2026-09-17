@@ -2,6 +2,23 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.23 - 2026-09-17
+
+Fix for a wave continuation that always cost one wasted worker run (#160).
+
+### Jobs
+
+- A Continuity wave whose window ended while nobody touched it is now settled
+  by `rolloverSpentWaveBudgets` itself, in the same transaction and with the
+  same write the pre-claim check makes, before it picks its candidates. Such a
+  run still says `active` in its row, so the rollover used to skip it and the
+  pre-claim check settled it instead — refusing the claim and deferring the
+  job. The first worker run after every window expiry (`memex jobs drain`, and
+  the hook-spawned worker at the start of a session) therefore did no work and
+  only the second one continued the wave. Automatic maintenance budgets, runs
+  whose window is still open and cancelled runs are untouched, and the reason
+  recorded on the transition is unchanged (first reason wins).
+
 ## 0.7.22 - 2026-09-17
 
 Fix for a recovery hint that named a command the supported install does not

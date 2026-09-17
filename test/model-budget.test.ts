@@ -307,6 +307,60 @@ describe("durable model work budget", () => {
     db.close();
   });
 
+  it("settles a clock-dead continuity budget and rolls it over in the same pass (#160)", () => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    const now = new Date("2026-09-17T05:00:00.000Z");
+    const past = new Date(now.getTime() - 60 * 60_000).toISOString();
+    const future = new Date(now.getTime() + 60 * 60_000).toISOString();
+    const wave = (parentWaveId: string, deadlineAt: string | null, automatic = 0) => {
+      const budget = getOrCreateModelWorkBudget(db, { parentWaveId, limits: { maxAttempts: 3, deadlineAt } });
+      if (automatic) {
+        db.prepare("UPDATE model_work_budgets SET automatic = 1 WHERE budget_id = ?").run(budget.budgetId);
+      }
+      return budget.budgetId;
+    };
+    const job = (id: string, budgetId: string) => {
+      db.prepare(`INSERT INTO memory_jobs (job_id, kind, state, available_at, updated_at, budget_id)
+        VALUES (?, 'capsule_update', 'pending', ?, ?, ?)`).run(id, past, past, budgetId);
+    };
+    // Nobody touched this run while its 15-minute window ran out, so the row
+    // still says `active` — the state #160 is about.
+    const clockDead = wave("continuity:ws-dead", past);
+    job("dead-pending", clockDead);
+    // Its window is still open: live, not clock-dead.
+    const live = wave("continuity:ws-live", future);
+    job("live-pending", live);
+    // Automatic maintenance keeps its own rolling wake; never continued here.
+    const auto = wave("continuity:ws-auto", past, 1);
+    job("auto-pending", auto);
+    const budgetRow = (id: string) => db.prepare(
+      "SELECT state, exhausted_reason FROM model_work_budgets WHERE budget_id = ?",
+    ).get(id) as { state: string; exhausted_reason: string | null };
+
+    const rolled = rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } });
+    expect(rolled).toHaveLength(1);
+    expect(rolled[0]).toMatchObject({ budgetId: clockDead, reboundJobIds: ["dead-pending"] });
+    expect(rolled[0].parentWaveId).toBe("continuity:ws-dead#2");
+    // Settled by the same write the pre-claim check makes, with the reason it
+    // would have recorded there.
+    expect(budgetRow(clockDead)).toEqual({ state: "exhausted", exhausted_reason: "deadline" });
+    const next = getModelWorkBudget(db, rolled[0].nextBudgetId)!;
+    expect(next).toMatchObject({ state: "active", rootWaveId: "continuity:ws-dead", runSeq: 2, automatic: false });
+    expect(db.prepare("SELECT state, budget_id, maintenance_wave_id FROM memory_jobs WHERE job_id = 'dead-pending'").get())
+      .toMatchObject({ state: "pending", budget_id: next.budgetId, maintenance_wave_id: "continuity:ws-dead#2" });
+    // An open window and an automatic run are both left exactly as they were.
+    expect(budgetRow(live)).toEqual({ state: "active", exhausted_reason: null });
+    expect(budgetRow(auto)).toEqual({ state: "active", exhausted_reason: null });
+    expect(db.prepare("SELECT budget_id FROM memory_jobs WHERE job_id = 'live-pending'").get()).toEqual({ budget_id: live });
+    expect(db.prepare("SELECT budget_id FROM memory_jobs WHERE job_id = 'auto-pending'").get()).toEqual({ budget_id: auto });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM model_work_budgets").get()).toEqual({ n: 4 });
+    // Idempotent: the fresh run's window is open, so a second pass does nothing.
+    expect(rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } })).toEqual([]);
+    db.close();
+  });
+
   it("budgetStopApplies: only this run's budget (or an unknown one) stops a foreground run (post-release #146)", () => {
     expect(budgetStopApplies("run-1", "run-1")).toBe(true);
     expect(budgetStopApplies("run-1", null)).toBe(true);

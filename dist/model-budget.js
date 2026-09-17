@@ -2132,6 +2132,38 @@ export function rolloverSpentWaveBudgets(db, input = {}) {
     const prefixClause = AUTO_CONTINUED_WAVE_PREFIXES.map(() => "b.root_wave_id LIKE ?").join(" OR ");
     const prefixParams = AUTO_CONTINUED_WAVE_PREFIXES.map((prefix) => `${prefix}%`);
     const tx = db.transaction(() => {
+        // 🚨 Issue #160: SETTLE before selecting — the second pass #146 already
+        // added to `rebindSpentQueueJobsToBudget` and #153 to
+        // `openForegroundBackfillRun`, missing here.
+        //
+        // A run whose window ended while nobody touched it still says `active` in
+        // its row until somebody makes the transition (#14). Selecting on stored
+        // state alone therefore skipped exactly the wave the worker was about to
+        // claim from: `findExhaustedModelBudgetForClaim` then made this very
+        // transition, refused the claim and deferred the job — so the FIRST worker
+        // run after every window expiry did no work and only the second rolled the
+        // wave over. Observed on 0.7.22 (`jobs drain` → "capsule_update deferred:
+        // model work budget exhausted: deadline", zero pages).
+        //
+        // Same transition, same predicate, same write as every other caller, so a
+        // budget that is genuinely live is untouched and the reason stays
+        // first-reason-wins (#146: written only on the move out of `active`).
+        const clockDead = db.prepare(`
+      SELECT b.budget_id AS budget_id
+      FROM model_work_budgets b
+      WHERE b.automatic = 0 AND b.state = 'active'
+        AND b.deadline_at IS NOT NULL AND b.deadline_at <= ?
+        AND (${prefixClause})
+      ORDER BY b.root_wave_id
+    `).all(nowIso, ...prefixParams);
+        for (const row of clockDead) {
+            const budget = readBudgetById(db, row.budget_id);
+            if (!budget || budget.state !== "active")
+                continue;
+            const reason = resolveBudgetExhaustion(db, budget, now);
+            if (reason)
+                markModelBudgetExhausted(db, budget.budgetId, reason, nowIso);
+        }
         const candidates = db.prepare(`
       SELECT b.budget_id AS budget_id
       FROM model_work_budgets b
