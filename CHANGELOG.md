@@ -58,6 +58,36 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   from the time a worker itself spent waiting. UserPromptSubmit has no host
   timeout, and doctor never claims one for it.
 
+### Workers
+
+- The Continuity worker no longer holds a session-wide write lock on every
+  Capsule page. `appendSessionEvidence` now scans for the exchanges that are
+  actually missing evidence for (workstream, exchange, content generation)
+  BEFORE it opens any transaction, and opens one only when that list is not
+  empty. On the data root where this was found — a ~1,400-exchange session —
+  every page re-read the whole session inside one `BEGIN IMMEDIATE`, which is
+  the lock the continuity hook was killed waiting on (#162). The scan is only a
+  filter: each candidate is re-checked inside the transaction, so a rebind, a
+  new content generation or a privacy exclusion landing in between removes work
+  and can never insert a stale row. Callers that already hold a transaction
+  (the session rebind, workspace evidence refresh) keep the full scan.
+- Slow worker transactions are now recorded in
+  `<data root>/logs/worker-transactions.jsonl` as
+  `{ts, pid, label, wait_ms, held_ms}`, written only when a transaction was
+  held over 300 ms or waited over 1,000 ms. Waiting and holding are measured
+  separately — they need opposite fixes, and only `held_ms` says this worker
+  made everyone else wait.
+- `continuity-worker.js` takes `--mode=hook|foreground` (default `foreground`,
+  so existing callers are unchanged). Both hook spawners — the continuity hook
+  and the SessionStart maintenance hook — pass `--mode=hook`, which waits
+  `MEMEX_WORKER_START_DELAY_MS` (default 1,500 ms) before opening the database
+  and bounds that first open to a 2 s busy wait plus one retry, so a worker a
+  hook just started is not what the next hook times out on. `memex jobs drain`
+  passes `--mode=foreground`: you asked for it now, so it runs now.
+- The delay only keeps a NEWLY spawned worker out of the way. It cannot help
+  against a worker that is already running; shorter locks (the evidence
+  pre-scan above) are what does.
+
 ## 0.7.23 - 2026-09-17
 
 Fix for a wave continuation that always cost one wasted worker run (#160).
