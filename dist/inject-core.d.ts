@@ -50,6 +50,15 @@ export interface InjectOptions {
      */
     onDbWaitMs?: (ms: number) => void;
     /**
+     * Issue #162 (review 6): this function never throws — it logs and returns ""
+     * so a failure can never disrupt the user's prompt. That also made a failed
+     * injection indistinguishable from a healthy one in `hook-events.jsonl`: a
+     * cold run that spent 5.4 s blocked on the write lock and gave up was
+     * recorded as `outcome: "fallback"`, and doctor's `hook-latency` said ok.
+     * This hands the caller the failure so its done row can say so.
+     */
+    onError?: (message: string) => void;
+    /**
      * Issue #29: the time-boxed worker that evaluates USER overlay regexes.
      *
      * The warm daemon owns one resident matcher for its whole lifetime; the cold

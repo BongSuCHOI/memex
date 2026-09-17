@@ -101,8 +101,15 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   contributed nothing. The inject hook
   reports the same pair, including `db_wait_ms`, on both the daemon path (the
   daemon measures its own bundle-commit wait and reports it back) and the cold
-  fallback, and its commit reports the wait from inside `commitInjectionBundle`
-  so a commit that gave up on the lock is accounted for too.
+  fallback. On the inject side that total is every wait the call pays — the
+  connection open and its migration pass, the epoch replay, the session-state
+  write and the bundle commit — delivered on the success path AND the failure
+  path. `computeInjectContext` deliberately never throws (a failure must not
+  disrupt the prompt), which is why it now also hands the caller the error:
+  without it a cold run that spent 5.4 s blocked on the write lock and gave up
+  was recorded as a healthy `outcome: "fallback"` with `db_wait_ms: 0`, and
+  doctor's `hook-latency` reported ok. It is now `outcome: "error"` with the
+  wait, on the cold path and on the daemon path alike.
 - `memex doctor` gains `capture-gap` (the markers, with the loss statement
   above, verbatim) and `hook-latency` (start/done pairing over the last 200
   rows: an unpaired start past budget + 10 s with no later row from the same pid

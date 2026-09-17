@@ -663,8 +663,12 @@ export function startInjectDaemon(): net.Server | null {
           try { conn.write(`${JSON.stringify({ type: 'ack', ...current })}\n`); } catch { /* gone */ }
           let receiptId: string | null = null;
           // Issue #162 (review): the hook cannot measure a wait that happened
-          // in this process, so the daemon reports it back for the done row.
+          // in this process, so the daemon reports it back for the done row —
+          // and (review 6) the failure too, because computeInjectContext
+          // deliberately never throws and an empty context alone cannot tell a
+          // healthy no-match from a database this prompt never reached.
           let dbWaitMs = 0;
+          let injectError: string | null = null;
           const context = await computeInjectContext(
             String(req.prompt ?? ''),
             String(req.cwd ?? process.cwd()),
@@ -673,6 +677,7 @@ export function startInjectDaemon(): net.Server | null {
             {
               onPreparedReceipt: (id) => { receiptId = id; },
               onDbWaitMs: (ms) => { dbWaitMs = ms; },
+              onError: (message) => { injectError = message.slice(0, 200); },
               // The receipt may not outlive the delivery it accounts for. If the
               // hook has fallen back by the time the bundle is ready, the whole
               // transaction rolls back and the fallback gets a clean run instead
@@ -684,7 +689,7 @@ export function startInjectDaemon(): net.Server | null {
               matcher: sharedMatcher(),
             },
           );
-          reply({ type: 'ok', ...current, ok: true, context, receiptId, dbWaitMs });
+          reply({ type: 'ok', ...current, ok: true, context, receiptId, dbWaitMs, injectError });
         } catch (error) {
           note(`request failed: ${error instanceof Error ? error.message : String(error)}`);
           try { conn.end(`${JSON.stringify({ type: 'error', ok: false })}\n`); } catch { /* gone */ }

@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 import { initDatabase } from "../src/db.js";
 import { commitInjectionBundle } from "../src/inject-core.js";
+import { hookLatencyCheck } from "../src/lifecycle.js";
 
 const require_ = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -211,3 +212,46 @@ it("reports the inject wait even when the lock was never granted", async () => {
     db.close();
   }
 }, 30_000);
+
+it("reports every database wait of a cold inject that never got the lock", async () => {
+  // Schema first, so the run under test pays only for the lock.
+  initDatabase().close();
+  const lock = holdWriteLock(60_000);
+  const deadline = Date.now() + 10_000;
+  while (!fs.existsSync(lock.marker)) {
+    if (Date.now() > deadline) throw new Error("the lock holder never started");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  const startedAt = Date.now();
+  const child = spawn(process.execPath, [HOOK], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, MEMEX_HOME: root, MEMEX_DB_PATH: dbPath },
+  });
+  child.stdin.end(
+    JSON.stringify({ prompt: "왜 Redis?", cwd: "/project", session_id: "s-inject-locked" }),
+  );
+  const status = await new Promise<number>((resolve) =>
+    child.on("exit", (code) => resolve(code ?? -1)),
+  );
+  const elapsed = Date.now() - startedAt;
+  lock.release();
+  await lock.done;
+
+  // The hook never disrupts the prompt, so it still exits 0 — which is exactly
+  // why the done row has to carry the failure and the wait.
+  expect(status).toBe(0);
+  const done = hookEventRows().find(
+    (row) => row.event === "UserPromptSubmit" && row.phase === "done",
+  );
+  expect(done).toBeTruthy();
+  expect(done!.outcome).toBe("error");
+  // The busy_timeout the inject path spends on the lock, not zero.
+  expect(Number(done!.db_wait_ms)).toBeGreaterThanOrEqual(4_500);
+  expect(Number(done!.db_wait_ms)).toBeLessThanOrEqual(elapsed);
+
+  // And doctor can finally see it.
+  const check = hookLatencyCheck();
+  expect(check.status).toBe("warn");
+  expect(check.detail).toContain("waited on the database");
+}, 60_000);

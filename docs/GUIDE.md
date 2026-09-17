@@ -224,7 +224,11 @@ capture 실패는 `outcome: "error"`와 200자로 자른 `error` 문구를 `hook
 **시도 전체**를 대기로 셉니다. SessionStart의 세션 상태 기록·recovery·epoch 전진도 같은 write
 phase이므로 함께 셉니다 — 빠져 있던 동안에는 918 ms를 잠금에 막혀 죽은 훅이 `db_wait_ms: 0`을
 남겼습니다. 성공한 대기만 세던 때에는 1,825 ms 동안 막힌 훅이 920만 보고했습니다.
-UserPromptSubmit(inject) done row도 daemon·cold 양쪽에서 같은 규칙의 값을 싣습니다. 30일이 지난
+UserPromptSubmit(inject) done row도 daemon·cold 양쪽에서 같은 규칙의 값을 싣습니다 — 연결/마이그레이션,
+epoch 재적용, 세션 상태 기록, bundle commit의 대기를 모두 합산하고, **성공·실패 양쪽**에서 보고합니다.
+주입 계산은 프롬프트를 방해하지 않으려고 절대 throw 하지 않으므로, 실패는 done row가 유일한 흔적입니다:
+잠금에 5.4초 막혀 포기한 cold 실행이 `outcome: "fallback"`·`db_wait_ms: 0`으로 남아 doctor가 ok라고
+말하던 자리가 이제 `outcome: "error"` + 실제 대기 시간입니다. 30일이 지난
 marker는 성공 경로에서 정리합니다.
 
 **건너뛴 capture가 실제로 무엇을 잃는가(정확한 표현):** 같은 세션의 **이후 capture가 성공할 때만**

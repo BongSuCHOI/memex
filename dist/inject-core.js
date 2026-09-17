@@ -281,6 +281,32 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
     const t0 = Date.now();
     const now = options.now ?? new Date().toISOString();
     const daemonNote = options.daemon ? { daemon: options.daemon } : {};
+    // Issue #162 (review 6): ONE total for every database wait this call pays —
+    // the connection open and its migration pass, the epoch replay, the session
+    // state write and the bundle commit — reported on the success path AND the
+    // failure path. Measuring only the last of them left the case the number
+    // exists for (blocked from the first statement, never got the lock) at zero.
+    let dbWaitMs = 0;
+    let waitReported = false;
+    const reportDbWait = () => {
+        if (waitReported)
+            return;
+        waitReported = true;
+        try {
+            options.onDbWaitMs?.(dbWaitMs);
+        }
+        catch { /* observability only */ }
+    };
+    /** One acquisition attempt: the wait ends at the body, or the attempt is all wait. */
+    const measureAttempt = (run) => {
+        const calledAt = Date.now();
+        try {
+            return run();
+        }
+        finally {
+            dbWaitMs += Date.now() - calledAt;
+        }
+    };
     if (!sessionId) {
         appendInjectLog({
             status: "no-session-provenance",
@@ -289,25 +315,26 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             via,
             ...daemonNote,
         });
+        reportDbWait();
         return "";
     }
     try {
         // Cached long-lived handle (file-identity checked) — initDatabase()'s
         // full migration pass per request costs ~38ms and is pure overhead in the
         // warm daemon. NOT closed here: getSearchDb owns its lifecycle.
-        const db = getSearchDb();
+        const db = measureAttempt(() => getSearchDb());
         // Issue #162 (R1''): a SessionStart(clear|compact) skipped on a busy
         // database left the epoch un-advanced, and residency from the OLD context
         // then suppressed the very facts the clear/compact just dropped. This is
         // the single shared entry for both the daemon and the cold fallback, so
         // replaying the marker here covers every injection path.
-        applyPendingEpochAdvance(db, sessionId);
-        const sessionScope = ensureSessionMemoryState(db, {
+        measureAttempt(() => applyPendingEpochAdvance(db, sessionId));
+        const sessionScope = measureAttempt(() => ensureSessionMemoryState(db, {
             sessionId,
             project,
             prompt: userPrompt,
             source: "UserPromptSubmit",
-        });
+        }));
         const revisionState = sessionProjectRevisionState(db, sessionId);
         const currentProjectRevision = revisionState.current;
         const gateRow = readGateRow(db, sessionId);
@@ -890,8 +917,8 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         await commitInjectionBundle(db, commitBundle, {
             deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS,
             // Reported from inside, so a commit that timed out still accounts for
-            // the whole wait it paid (#162 review 2).
-            onDbWaitMs: options.onDbWaitMs,
+            // the whole wait it paid (#162 review 2). It joins the same total.
+            onDbWaitMs: (ms) => { dbWaitMs += ms; },
         });
         // The receipt is durable at this point. The transport can now carry its
         // exact id and mark only this delivery after stdout succeeds.
@@ -991,6 +1018,14 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             via,
             ...daemonNote,
         });
+        try {
+            options.onError?.(message);
+        }
+        catch { /* observability only */ }
         return ""; // non-fatal: never disrupt the user's prompt
+    }
+    finally {
+        // Both paths, always exactly once.
+        reportDbWait();
     }
 }

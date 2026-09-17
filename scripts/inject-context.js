@@ -380,6 +380,7 @@ function askDaemon(prompt, cwd, sessionId, identity) {
             context: String(res.context ?? ""),
             receiptId: res.receiptId ? String(res.receiptId) : null,
           dbWaitMs: typeof res.dbWaitMs === "number" ? res.dbWaitMs : 0,
+          injectError: typeof res.injectError === "string" ? res.injectError : null,
             version: typeof res.version === "string" ? res.version : null,
             buildId: typeof res.buildId === "string" ? res.buildId : null,
             pid: typeof res.pid === "number" ? res.pid : null,
@@ -510,7 +511,13 @@ async function main() {
       await emitContext(served.context);
       await markRecallEmitted(sessionId, prompt, served.receiptId, "daemon");
     }
-    return done("daemon", null, served.dbWaitMs);
+    // A daemon that computed but failed is not a served prompt: say so, and
+    // carry the wait it paid (#162 review 6).
+    return done(
+      served.injectError ? "error" : "daemon",
+      served.injectError,
+      served.dbWaitMs,
+    );
   }
 
   // COLD FALLBACK — compute locally (heavy imports load only here).
@@ -536,6 +543,10 @@ async function main() {
       }
     : {};
   let matcher = null;
+  // Declared out here so the catch below can still report what the cold path
+  // paid before it failed.
+  let dbWaitMs = 0;
+  let injectError = null;
   try {
     const { computeInjectContext } = await import(
       path.join(__dirname, "../dist/inject-core.js")
@@ -556,7 +567,6 @@ async function main() {
       // `doctor`'s overlay-matcher check reports it.
     }
     let receiptId = null;
-    let dbWaitMs = 0;
     const context = await computeInjectContext(
       prompt,
       cwd,
@@ -565,6 +575,7 @@ async function main() {
       {
         onPreparedReceipt: (id) => { receiptId = id; },
         onDbWaitMs: (ms) => { dbWaitMs = ms; },
+        onError: (message) => { injectError = message; },
         ...daemonNote,
         ...(matcher ? { matcher } : {}),
       },
@@ -573,10 +584,13 @@ async function main() {
       await emitContext(context);
       await markRecallEmitted(sessionId, prompt, receiptId, "fallback");
     }
-    done("fallback", null, dbWaitMs);
+    // computeInjectContext never throws — it logs and returns "" so a failure
+    // cannot disrupt the prompt — so the done row is the only place a cold run
+    // that never reached the database can be seen (#162 review 6).
+    done(injectError ? "error" : "fallback", injectError, dbWaitMs);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    done("error", msg);
+    done("error", msg, dbWaitMs);
     process.stderr.write(`inject-context: error: ${msg}\n`);
     if (/Cannot find (package|module)|ERR_MODULE_NOT_FOUND/.test(msg)) {
       // Fail loud, never auto-install: missing deps are an explicit setup step.

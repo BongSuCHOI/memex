@@ -29433,6 +29433,24 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
   const t0 = Date.now();
   const now = options.now ?? (/* @__PURE__ */ new Date()).toISOString();
   const daemonNote = options.daemon ? { daemon: options.daemon } : {};
+  let dbWaitMs = 0;
+  let waitReported = false;
+  const reportDbWait = () => {
+    if (waitReported) return;
+    waitReported = true;
+    try {
+      options.onDbWaitMs?.(dbWaitMs);
+    } catch {
+    }
+  };
+  const measureAttempt = (run) => {
+    const calledAt = Date.now();
+    try {
+      return run();
+    } finally {
+      dbWaitMs += Date.now() - calledAt;
+    }
+  };
   if (!sessionId) {
     appendInjectLog({
       status: "no-session-provenance",
@@ -29441,17 +29459,18 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       via,
       ...daemonNote
     });
+    reportDbWait();
     return "";
   }
   try {
-    const db = getSearchDb();
-    applyPendingEpochAdvance(db, sessionId);
-    const sessionScope = ensureSessionMemoryState(db, {
+    const db = measureAttempt(() => getSearchDb());
+    measureAttempt(() => applyPendingEpochAdvance(db, sessionId));
+    const sessionScope = measureAttempt(() => ensureSessionMemoryState(db, {
       sessionId,
       project,
       prompt: userPrompt,
       source: "UserPromptSubmit"
-    });
+    }));
     const revisionState = sessionProjectRevisionState(db, sessionId);
     const currentProjectRevision = revisionState.current;
     const gateRow = readGateRow(db, sessionId);
@@ -29918,8 +29937,10 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     await commitInjectionBundle(db, commitBundle, {
       deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS,
       // Reported from inside, so a commit that timed out still accounts for
-      // the whole wait it paid (#162 review 2).
-      onDbWaitMs: options.onDbWaitMs
+      // the whole wait it paid (#162 review 2). It joins the same total.
+      onDbWaitMs: (ms) => {
+        dbWaitMs += ms;
+      }
     });
     if (preparedReceiptId && options.onPreparedReceipt) {
       try {
@@ -30011,7 +30032,13 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       via,
       ...daemonNote
     });
+    try {
+      options.onError?.(message);
+    } catch {
+    }
     return "";
+  } finally {
+    reportDbWait();
   }
 }
 
@@ -30328,6 +30355,7 @@ function startInjectDaemon() {
           }
           let receiptId = null;
           let dbWaitMs = 0;
+          let injectError = null;
           const context = await computeInjectContext(
             String(req.prompt ?? ""),
             String(req.cwd ?? process.cwd()),
@@ -30340,6 +30368,9 @@ function startInjectDaemon() {
               onDbWaitMs: (ms) => {
                 dbWaitMs = ms;
               },
+              onError: (message) => {
+                injectError = message.slice(0, 200);
+              },
               // The receipt may not outlive the delivery it accounts for. If the
               // hook has fallen back by the time the bundle is ready, the whole
               // transaction rolls back and the fallback gets a clean run instead
@@ -30349,7 +30380,7 @@ function startInjectDaemon() {
               matcher: sharedMatcher()
             }
           );
-          reply({ type: "ok", ...current, ok: true, context, receiptId, dbWaitMs });
+          reply({ type: "ok", ...current, ok: true, context, receiptId, dbWaitMs, injectError });
         } catch (error2) {
           note(`request failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
           try {
