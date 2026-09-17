@@ -5,6 +5,12 @@ import { spawn } from "node:child_process";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+// Issue #162 — the hook budget starts HERE, at process entry, not at the first
+// database call. Everything before the DB (stdin read, dist import) is time the
+// host's 3 s timer is already spending, and ignoring it is exactly how a 5 s
+// busy_timeout turned into "Hook failed — hook timed out after 3s".
+const STARTED_AT = Date.now();
+
 function readStdin(timeoutMs = 1_500) {
   return new Promise((resolve) => {
     if (process.stdin.isTTY) return resolve("");
@@ -25,13 +31,23 @@ function readStdin(timeoutMs = 1_500) {
   });
 }
 
-async function markRecallEmitted(sessionId, receipt) {
+async function markRecallEmitted(sessionId, receipt, deadlineAt) {
   if (!sessionId || !receipt?.id || !receipt?.prompt) return;
   try {
     const { initDatabase, markRecallEventEmitted } = await import(
       path.join(here, "../dist/db.js")
     );
-    const db = initDatabase();
+    // The receipt write is inside the same hook budget as everything else: on
+    // BUSY it must leave the receipt `prepared` (the documented fallback) and
+    // log that, never sit on the 5 s default until the host kills the hook.
+    const { busyTimeoutForRemaining } = await import(
+      path.join(here, "../dist/continuity-core.js")
+    );
+    const db = initDatabase({
+      busyTimeoutMs: busyTimeoutForRemaining(
+        (deadlineAt ?? Date.now()) - Date.now(),
+      ),
+    });
     try {
       if (!markRecallEventEmitted(db, {
         id: receipt.id,
@@ -78,10 +94,10 @@ export function writeStdout(data, stdout = process.stdout) {
 export async function emitContinuityResult(
   result,
   sessionId,
-  { stdout = process.stdout, markEmitted = markRecallEmitted } = {},
+  { stdout = process.stdout, markEmitted = markRecallEmitted, deadlineAt } = {},
 ) {
   if (result.stdout) await writeStdout(result.stdout, stdout);
-  if (result.recallReceipt) await markEmitted(sessionId, result.recallReceipt);
+  if (result.recallReceipt) await markEmitted(sessionId, result.recallReceipt, deadlineAt);
 }
 
 async function main() {
@@ -93,16 +109,18 @@ async function main() {
   } catch {
     throw new Error("hook payload is not valid JSON");
   }
-  const { handleContinuityHook } = await import(
+  const { handleContinuityHook, hookBudgetMs } = await import(
     path.join(here, "../dist/continuity-core.js")
   );
-  const result = handleContinuityHook(payload);
+  const budgetMs = hookBudgetMs(String(payload.hook_event_name ?? payload.hookEventName ?? ""));
+  const result = handleContinuityHook(payload, { startedAt: STARTED_AT, budgetMs });
   if (result.warning) {
     process.stderr.write(`[memex continuity] capture gap: ${result.warning}\n`);
   }
   await emitContinuityResult(
     result,
     String(payload.session_id ?? payload.sessionId ?? ""),
+    { deadlineAt: STARTED_AT + budgetMs },
   );
   if (process.env.MEMEX_CONTINUITY_NO_WAKE !== "1") {
     try {

@@ -27,6 +27,7 @@ import {
   type TelemetryMetric,
 } from "./chronicle.js";
 import {
+  applyPendingEpochAdvance,
   ensureSessionMemoryState,
   readResidentFactRevisions,
   readResidentRevisionCorrections,
@@ -445,6 +446,12 @@ export async function computeInjectContext(
     // full migration pass per request costs ~38ms and is pure overhead in the
     // warm daemon. NOT closed here: getSearchDb owns its lifecycle.
     const db = getSearchDb();
+    // Issue #162 (R1''): a SessionStart(clear|compact) skipped on a busy
+    // database left the epoch un-advanced, and residency from the OLD context
+    // then suppressed the very facts the clear/compact just dropped. This is
+    // the single shared entry for both the daemon and the cold fallback, so
+    // replaying the marker here covers every injection path.
+    applyPendingEpochAdvance(db, sessionId);
     const sessionScope = ensureSessionMemoryState(db, {
       sessionId,
       project,

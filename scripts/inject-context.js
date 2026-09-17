@@ -26,6 +26,9 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/** Wall clock at process entry — the duration every done row reports (#162). */
+const STARTED_AT = Date.now();
+
 const SOCKET_CONNECT_TIMEOUT_MS = 300;
 /**
  * Connect + handshake ONLY (issue #89 split it out of the old response budget).
@@ -459,18 +462,38 @@ async function main() {
   if (!sessionId) sessionId = process.env.SESSION_ID || "";
 
   // CX-01: privacy-safe event observation (event/ts/session/cwd only).
+  //
+  // Issue #162 (R5/R6'): a start row and a matching done row, so doctor can
+  // report this hook's duration on the SAME footing as the continuity hook.
+  // UserPromptSubmit has no host timeout in hooks.json, so nothing here — and
+  // nothing in doctor — may ever claim one for it.
+  let observe = null;
+  let invocationId = "";
   try {
-    const { recordHookEvent } = await import(
-      path.join(__dirname, "../dist/observe-hook-event.js")
-    );
-    recordHookEvent("UserPromptSubmit", { sessionId, cwd });
+    observe = await import(path.join(__dirname, "../dist/observe-hook-event.js"));
+    invocationId = observe.recordHookStart("UserPromptSubmit", { sessionId, cwd });
   } catch {
     /* observation is best-effort */
   }
+  const done = (outcome, error) => {
+    if (!observe) return;
+    try {
+      observe.recordHookDone("UserPromptSubmit", {
+        sessionId,
+        cwd,
+        invocationId,
+        outcome,
+        durationMs: Date.now() - STARTED_AT,
+        ...(error ? { error } : {}),
+      });
+    } catch {
+      /* observation is best-effort */
+    }
+  };
   // Phase 5: the cheap gate decides what is worth retrieval. Only an empty
   // prompt is dropped here, so a short explicit memory question ("왜 Redis?")
   // still reaches the gate while acknowledgements skip without a model call.
-  if (!prompt || prompt.trim().length === 0) return;
+  if (!prompt || prompt.trim().length === 0) return done("empty-prompt");
 
   // FAST PATH — warm daemon inside a running MCP server, but only one running
   // THIS installation's code (issue #84).
@@ -482,7 +505,7 @@ async function main() {
       await emitContext(served.context);
       await markRecallEmitted(sessionId, prompt, served.receiptId, "daemon");
     }
-    return;
+    return done("daemon");
   }
 
   // COLD FALLBACK — compute locally (heavy imports load only here).
@@ -543,8 +566,10 @@ async function main() {
       await emitContext(context);
       await markRecallEmitted(sessionId, prompt, receiptId, "fallback");
     }
+    done("fallback");
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    done("error", msg);
     process.stderr.write(`inject-context: error: ${msg}\n`);
     if (/Cannot find (package|module)|ERR_MODULE_NOT_FOUND/.test(msg)) {
       // Fail loud, never auto-install: missing deps are an explicit setup step.

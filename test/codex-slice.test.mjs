@@ -458,7 +458,19 @@ test('session-end hook records exactly one SessionEnd event on the normal path',
   const log = path.join(env.MEMEX_HOME, 'logs', 'hook-events.jsonl');
   const events = fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse)
     .filter((entry) => entry.event === 'SessionEnd' && entry.session_id === 'observed-session');
-  assert.equal(events.length, 1);
+  // 0.7.24 (#162): one invocation is now a start/done PAIR sharing an
+  // invocation id — the start row is written before any DB access so a hook the
+  // host kills is still visible. The invariant is still "exactly one run".
+  const starts = events.filter((entry) => entry.phase === 'start');
+  const dones = events.filter((entry) => entry.phase === 'done');
+  assert.equal(events.length, 2);
+  assert.equal(starts.length, 1);
+  assert.equal(dones.length, 1);
+  assert.equal(starts[0].invocation_id, dones[0].invocation_id);
+  assert.equal(typeof starts[0].pid, 'number');
+  assert.equal(dones[0].outcome, 'ok');
+  assert.equal(typeof dones[0].duration_ms, 'number');
+  assert.equal(typeof dones[0].db_wait_ms, 'number');
 });
 
 test('session-end hook duplicate delivery has the same final-fence effect', () => {

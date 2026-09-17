@@ -2,6 +2,62 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.24 - 2026-09-17
+
+Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
+
+### Hooks
+
+- The continuity hook now runs against ONE budget that starts at process entry
+  — 2,000 ms for the 3 s events, 3,800 ms for PreCompact,
+  `MEMEX_HOOK_BUDGET_MS`-overridable — and every database wait derives from
+  what is left of it (one lock wait is capped at 800 ms). Through 0.7.23 every
+  hook connection waited on sqlite's 5 s `busy_timeout` default while the host
+  killed the hook at 3 s, so a lock held for two seconds became a host-level
+  hook failure instead of a bounded, logged skip. `initDatabase({busyTimeoutMs})`
+  now applies that timeout as the connection's FIRST pragma, before
+  `journal_mode = WAL` and the whole migration pass, which is where a hook used
+  to spend the 5 s. The recall-receipt write at the end of the hook uses the
+  remaining budget too, and on BUSY leaves the receipt `prepared` as documented.
+- Before it touches the database at all, a hook writes a durable intent marker
+  at `<data root>/continuity/gaps/<event>-<session>-<invocation id>.json`
+  (temp + rename) carrying the transcript's byte size at that moment, and
+  deletes it when the hook completes. A marker left behind is the record that a
+  hook did not finish — including the case the host killed it, where nothing was
+  written down before. On BUSY, on the budget and on an oversize delta the hook
+  makes at most ONE bounded `recordCaptureGap` attempt (only with >150 ms left),
+  appends a hook-events done row with `outcome` (`busy`/`oversize`/`deadline`)
+  and `db_wait_ms`, and exits 0 with empty stdout. Markers older than 30 days are
+  pruned on the success path.
+- What a skipped capture actually costs, stated correctly: it only delays that
+  turn's fence IF a later capture of the same session succeeds. If the last
+  Stop/SessionEnd of a session are all skipped, the tail never reaches the
+  continuity journal/capsule and the final open turn stays out of extraction.
+  `memex sync` still indexes the rollout, so search and RAG see the content;
+  continuity and that turn's extraction do not until #163 lands.
+- `captureTranscriptPrefix` is now bounded in its EXECUTION phase, not only in
+  its lock waits. A delta that cannot be ingested inside the remaining budget
+  (`MEMEX_HOOK_INGEST_BYTES_PER_MS`, default 20,000 B/ms) never opens the write
+  transaction at all, and a copy that runs past the deadline between chunks
+  rolls back. A partial capture is never committed.
+- A `clear`/`compact` SessionStart skipped on a busy database is the one
+  transition that does not heal itself: the epoch never advanced, so residency
+  from the old context kept suppressing exactly the facts the clear dropped. The
+  inject path — one shared entry for the warm daemon and the cold fallback —
+  now applies the pending advance from the marker before it computes anything,
+  and deletes the marker.
+- `hook-events.jsonl` gains a start row written before any database access
+  (`invocation_id`, `pid`) and a matching done row (`outcome`, `duration_ms`,
+  `db_wait_ms`, bounded `error`). The inject hook reports the same pair.
+- `memex doctor` gains `capture-gap` (the markers, with the loss statement
+  above, verbatim) and `hook-latency` (start/done pairing over the last 200
+  rows: an unpaired start past budget + 10 s with no later row from the same pid
+  is reported as killed by host; `db_wait_ms > 1,000` as "hooks waited on the
+  database"). When `<data root>/logs/worker-transactions.jsonl` exists it names
+  the top holder as "held the write lock for N ms" — from `held_ms` only, never
+  from the time a worker itself spent waiting. UserPromptSubmit has no host
+  timeout, and doctor never claims one for it.
+
 ## 0.7.23 - 2026-09-17
 
 Fix for a wave continuation that always cost one wasted worker run (#160).

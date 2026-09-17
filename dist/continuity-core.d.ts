@@ -21,6 +21,7 @@ export declare const CAPTURE_CHUNK_BYTES: number;
 export declare const DEFAULT_MAX_CAPSULE_CHARS = 12000;
 /** `MEMEX_CAPSULE_MAX_CHARS` override, parsed like the model-budget env caps. */
 export declare function capsuleMaxChars(): number;
+export { busyTimeoutForRemaining, hookBudgetMs, hookIngestBytesPerMs, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
 export type CaptureKind = "stop" | "interrupt" | "precompact" | "final";
 export type LifecycleSource = "startup" | "resume" | "clear" | "compact";
 export type ResidentFactRevision = [string, number, number];
@@ -228,6 +229,14 @@ export declare function captureTranscriptPrefix(db: Database.Database, input: {
     turnId?: string | null;
     workstreamId?: string | null;
     now?: string;
+    /**
+     * Issue #162 (R1''): absolute wall-clock bound (Date.now() ms) for the
+     * EXECUTION phase. busy_timeout only bounds lock waits; the copy, the
+     * hashes and the fsync below happen while the write lock is already held,
+     * so without this a large transcript delta blows the hook budget after
+     * acquiring the lock — the worst case, because it also blocks everyone else.
+     */
+    deadlineAt?: number;
     afterJournalChunk?: (bytesCopied: number) => void;
     afterJournalFsync?: () => void;
     afterCheckpoint?: () => void;
@@ -345,9 +354,28 @@ export declare function buildRehydrationContext(db: Database.Database, input: {
     hotEvidenceCursor: number;
     hotEvidenceSeqs: number[];
 };
+/**
+ * Replay the ONE lifecycle transition a skipped hook cannot heal by itself.
+ *
+ * A `clear`/`compact` SessionStart advances the context epoch, which clears
+ * residency; when that hook is skipped, inject-core still sees the old
+ * residency and suppresses exactly the facts the cleared context just lost. So
+ * the inject path (daemon and cold fallback share `computeInjectContext`)
+ * applies the pending advance from the marker before computing an injection.
+ *
+ * `advanceContextEpoch` is idempotent through `epoch_token`; for `clear` that
+ * token is derived from the turn id, so the marker's invocation id is used when
+ * the payload carried no turn id. Best effort by design — an inject must never
+ * fail because a marker could not be replayed.
+ */
+export declare function applyPendingEpochAdvance(db: Database.Database, sessionId: string): number;
 export declare function handleContinuityHook(payloadValue: unknown, options?: {
     db?: Database.Database;
     strictCapture?: boolean;
+    /** Process entry time (ms). The budget covers stdin and dist import too. */
+    startedAt?: number;
+    budgetMs?: number;
+    invocationId?: string;
 }): HandleHookResult;
 export declare function runtimePlatformSummary(): string;
 /**

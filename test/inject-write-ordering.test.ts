@@ -39,6 +39,9 @@ vi.mock("../src/inject-log.js", () => ({
   appendInjectLog: vi.fn(),
 }));
 vi.mock("../src/continuity-core.js", () => ({
+  // Issue #162: the inject path replays a skipped clear/compact epoch advance
+  // before it computes anything, so the mock has to carry it too.
+  applyPendingEpochAdvance: vi.fn(() => 0),
   ensureSessionMemoryState: vi.fn(() => ({
     projectId: "project-ordering",
     workspaceId: "workspace-ordering",

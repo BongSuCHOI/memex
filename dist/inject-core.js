@@ -8,7 +8,7 @@ import { detectRepeat } from "./repeat-detector.js";
 import { appendInjectLog } from "./inject-log.js";
 import { recordRecallEvent } from "./db.js";
 import { matchIncidentPatterns, readChronicleTimeline, recordTelemetrySample, } from "./chronicle.js";
-import { ensureSessionMemoryState, readResidentFactRevisions, readResidentRevisionCorrections, readWorkCapsule, recordResidentFactRevisions, } from "./continuity-core.js";
+import { applyPendingEpochAdvance, ensureSessionMemoryState, readResidentFactRevisions, readResidentRevisionCorrections, readWorkCapsule, recordResidentFactRevisions, } from "./continuity-core.js";
 import { commitHotEvidenceCursor, markSessionProjectRevisionSeen, readHotEvidence, sessionProjectRevisionState, } from "./continuity-identity.js";
 import { blobToEmbedding, decideRecall, embeddingToBlob, resolveAmbiguousDecision, tokenizePrompt, } from "./recall-gate.js";
 import { NORMAL_BUNDLE_BUDGET, renderMemoryBundle, } from "./memory-bundle.js";
@@ -277,6 +277,12 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         // full migration pass per request costs ~38ms and is pure overhead in the
         // warm daemon. NOT closed here: getSearchDb owns its lifecycle.
         const db = getSearchDb();
+        // Issue #162 (R1''): a SessionStart(clear|compact) skipped on a busy
+        // database left the epoch un-advanced, and residency from the OLD context
+        // then suppressed the very facts the clear/compact just dropped. This is
+        // the single shared entry for both the daemon and the cold fallback, so
+        // replaying the marker here covers every injection path.
+        applyPendingEpochAdvance(db, sessionId);
         const sessionScope = ensureSessionMemoryState(db, {
             sessionId,
             project,

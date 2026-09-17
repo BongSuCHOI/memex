@@ -184,11 +184,42 @@ node scripts/translate-facts.mjs
 | SessionStart(startup/resume) | session/workstream restore, queue recovery, version/sync/import/maintenance | continuity resolve는 sync, 나머지는 독립 async |
 | SessionStart(clear/compact) | 새 `context_epoch`; compact는 Capsule/tail baton/current revisions 즉시 복원 | 새 retrieval/model 대기 없음 |
 | UserPromptSubmit | scoped retrieval, relevance/dedup/budget, recall receipt, `additionalContext` | no-match는 무주입 |
-| Stop | incremental journal append + closed fence + outbox | 3초 timeout, model/embedding 0 |
+| Stop | incremental journal append + closed fence | 3초 timeout, model/embedding 0 |
 | Interrupt | incremental journal append + interrupted/open fence | 3초 timeout, 완료 처리 금지 |
-| PreCompact(manual/auto) | fsync + immutable prefix checkpoint + carry freeze + outbox | 5초 timeout |
+| PreCompact(manual/auto) | fsync + immutable prefix checkpoint + carry freeze | 5초 timeout |
 | PostCompact(manual/auto) | telemetry/diagnostics only | correctness 비의존, 3초 timeout |
-| SessionEnd | final delta + final fence + outbox, 그리고 **별도 항목**으로 크로스디바이스 export | fence는 3초 timeout·foreground extraction 없음. export 항목은 3초 timeout의 동기 훅입니다 — Codex는 SessionEnd에서 async 훅을 어차피 동기로 실행하고(0.6.7까지는 그 경고가 세션 종료마다 떴습니다) SessionEnd timeout을 3초로 고정합니다(더 크면 경고). 동기화가 꺼져 있거나(기본) 마지막 export 이후 durable 변경이 없으면 0.2초 안에 no-op으로 끝나고, 3초 안에 끝나지 않은 export는 다음 유지보수 wake가 다시 시도합니다 |
+| SessionEnd | final delta + final fence, 그리고 **별도 항목**으로 크로스디바이스 export | fence는 3초 timeout·foreground extraction 없음. export 항목은 3초 timeout의 동기 훅입니다 — Codex는 SessionEnd에서 async 훅을 어차피 동기로 실행하고(0.6.7까지는 그 경고가 세션 종료마다 떴습니다) SessionEnd timeout을 3초로 고정합니다(더 크면 경고). 동기화가 꺼져 있거나(기본) 마지막 export 이후 durable 변경이 없으면 0.2초 안에 no-op으로 끝나고, 3초 안에 끝나지 않은 export는 다음 유지보수 wake가 다시 시도합니다 |
+
+### Hook 예산과 capture gap marker (0.7.24, #162)
+
+훅에는 **프로세스 진입 시점부터 세는 예산 하나**가 있습니다. 3초 이벤트는 2,000 ms, PreCompact는
+3,800 ms이고(`MEMEX_HOOK_BUDGET_MS`로 변경), stdin 읽기·`dist` import·DB 연결·migration·capture
+트랜잭션이 모두 그 안에서 끝나야 합니다. 모든 DB 대기는 남은 시간에서 파생됩니다(한 번의 잠금
+대기는 최대 800 ms). 0.7.23까지는 훅 연결이 sqlite 기본값 5초를 기다렸고, 호스트는 3초에 훅을
+죽였습니다 — 그것이 `Hook failed — hook timed out after 3s`의 정체입니다.
+
+훅은 **DB에 손대기 전에** intent marker를 씁니다:
+
+```
+<data root>/continuity/gaps/<event>-<session>-<invocation_id>.json
+  { invocationId, event, source, sessionId, cwd, transcriptPath, transcriptBytes, turnId, ts }
+```
+
+정상 종료 시 marker는 삭제됩니다. 남아 있다면 **그 훅이 끝내지 못했다**는 durable한 기록입니다
+(호스트가 죽였거나, 잠금/예산으로 capture를 건너뛰었거나). BUSY·예산 초과·oversize일 때 훅은
+exit 0 + 빈 stdout으로 끝나고 `hook-events.jsonl`에 `outcome`(`busy`\|`oversize`\|`deadline`)과
+`db_wait_ms`를 가진 done row를 남깁니다. 30일이 지난 marker는 성공 경로에서 정리합니다.
+
+**건너뛴 capture가 실제로 무엇을 잃는가(정확한 표현):** 같은 세션의 **이후 capture가 성공할 때만**
+그 턴의 fence가 지연되는 것으로 끝납니다. 세션의 마지막 Stop/SessionEnd가 모두 건너뛰어지면 워커는
+기존 journal 경계까지만 읽으므로 그 tail은 continuity journal/capsule에 도달하지 못하고, 마지막
+open/interrupted 턴은 추출에서 제외된 채 남습니다(#149의 stale-open 정산은 뒤에 main-line exchange가
+있는 턴만 정산합니다). 대화 인덱스는 `memex sync`의 파일 기반 인덱싱으로 계속 채워지므로 검색·RAG는
+내용을 보지만, continuity(capsule)와 마지막 턴의 추출은 #163이 들어오기 전까지 보지 못합니다.
+
+`clear`/`compact` SessionStart를 건너뛴 경우만은 스스로 낫지 않습니다(epoch이 오르지 않아 이전
+residency가 같은 fact를 계속 억제합니다). 그래서 다음 주입이 marker를 보고 `advanceContextEpoch`를
+대신 수행한 뒤 marker를 지웁니다 — daemon·cold fallback 모두 같은 진입점을 씁니다.
 
 Capture가 만든 durable queue의 우선순위는 `capture_index`(P0) → `capsule_update`(P1) → fact extraction(이후)입니다. Stop/Interrupt boundary 6개 또는 8KiB, PreCompact, SessionEnd에서 Capsule job을 coalesce합니다. Capture hook은 commit 뒤 detached worker를 깨우지만 완료를 기다리지 않으며, wake 실패나 expired lease는 다음 startup/resume에서 복구합니다.
 
@@ -579,8 +610,9 @@ node scripts/package-runtime-e2e.mjs
 node scripts/lifecycle-e2e.mjs
 ```
 
-`memex doctor`가 출력하는 점검 항목은 다음 순서로 **항상 19개**이고(0.7.0에서 `llm-model` 1개와
-오버레이 5개가 추가됐습니다), `ontology-index`는 repair marker가 있을 때만 추가되어 최대 20개입니다.
+`memex doctor`가 출력하는 점검 항목은 다음 순서로 **항상 21개**이고(0.7.0에서 `llm-model` 1개와
+오버레이 5개, 0.7.24에서 `capture-gap`·`hook-latency` 2개가 추가됐습니다), `ontology-index`는 repair
+marker가 있을 때만 추가되어 최대 22개입니다.
 하나라도 `FAIL`이면 전체가 `FAIL`이고 exit code는 `1`, 전부 `ok`면 `PASS`, 그 밖에는 `PARTIAL`입니다.
 
 0.7.0부터 **사용자 오버레이가 없는 기본 설치의 판정은 `PASS`가 아니라 `PARTIAL`** 입니다 —
@@ -595,6 +627,8 @@ node scripts/lifecycle-e2e.mjs
 | `lifecycle-configured` | 7개 hook event 전부 활성이면 ok, 일부면 warn, 전무하면 fail |
 | `lifecycle-observed` | 모든 event를 최소 1회 관측했으면 ok, 아니면 warn |
 | `inject-output` | 최근 20줄의 마지막 상태. `error`/`receipt-failed`면 fail, 창 안에 `receipt-failed`가 섞이면 warn |
+| `capture-gap` (0.7.24, #162) | `<data root>/continuity/gaps/`의 marker 목록. 없으면 ok. 있으면 warn이며 marker마다 `capture skipped at <event> <ts> (<bytes> uncaptured bytes); continuity/extraction of the tail is pending #163`를 그대로 적습니다 — "내용은 절대 유실되지 않는다"는 표현은 쓰지 않습니다([§5](#5-lifecycle-hooks)) |
+| `hook-latency` (0.7.24, #162) | `hook-events.jsonl` 마지막 200줄을 `invocation_id`로 start/done 짝지어 봅니다. done이 없는 start가 `예산 + 10초`를 넘었고 같은 pid의 이후 행도 없으면 **호스트가 죽인 것**(`killed by host`)으로 warn하고 marker 수를 함께 적습니다. `db_wait_ms > 1,000`인 done row가 있으면 `hooks waited on the database`로 warn. `<data root>/logs/worker-transactions.jsonl`이 있으면 최근 100행에서 `held_ms`가 가장 큰 행을 "held the write lock for N ms"로 덧붙입니다(`wait_ms`는 잠금을 **기다린** 쪽이므로 절대 이 문장에 쓰지 않습니다). UserPromptSubmit에는 host timeout이 없으므로 그 이벤트에는 절대 timeout을 주장하지 않습니다 |
 | `recall-provenance` (0.6.0) | 발행 건수와 `recall_events` 행 수 비교. 발행이 있는데 영수증이 0이면 fail, 모자라면 warn |
 | `injection-yield` (0.6.0) | fact 0개 주입이 8회 이상 연속이고 창의 주입 합이 0이면 warn. 리터럴 레인이 죽어도 warn |
 | `llm-model` (0.7.0, #31) | 해석된 모델·추론 강도와 **그 출처**(`env`/`file`/`default`/`explicit`). 내 설정 지문에 활성 HOLD가 있으면 warn + provider 원문·최초 관측·관측 횟수와 `memex models show → set → test` 안내. 다른 선택의 HOLD만 있으면 ok(막지 않음을 명시). HOLD가 없는데 다른 사유로 대기 중인 작업이 있으면 warn. 자세한 내용은 [§21](#21-모델-선택-070-31) |
@@ -800,6 +834,18 @@ SELECT state, COUNT(*) FROM checkpoints GROUP BY state;
 ```
 
 `capture_gaps.state = 'open'`은 recovery 대기입니다. `MEMEX_STRICT_CAPTURE=1`을 켜면 gap 대신 hook이 실패합니다. transcript가 rewrite되면 새 stream epoch이 생기고 이전 journal은 보존됩니다.
+
+DB에 손도 대지 못한 건너뜀은 파일 marker로 남습니다(0.7.24, #162). `memex doctor`의 `capture-gap`이
+같은 내용을 읽어 줍니다.
+
+```bash
+ls "$(memex home)/continuity/gaps"       # 남아 있으면 그 훅이 끝내지 못한 것입니다
+memex doctor --json | grep -A2 capture-gap
+```
+
+건너뛴 capture가 잃는 것의 정확한 범위는 [§5의 hook 예산 절](#hook-예산과-capture-gap-marker-0724-162)에
+있습니다 — 세션의 마지막 Stop/SessionEnd가 모두 건너뛰어지면 그 tail은 continuity/추출에 도달하지
+못합니다(#163).
 
 ### Project link/split, workstream rebind
 
@@ -1052,6 +1098,8 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | 변수 | 기본 | 의미 |
 | --- | --- | --- |
 | `MEMEX_STRICT_CAPTURE` | unset | `1`이면 capture 실패가 `capture_gaps` 대신 hook 실패가 됩니다 |
+| `MEMEX_HOOK_BUDGET_MS` (0.7.24, #162) | `2000` (PreCompact `3800`) | continuity hook 하나의 **총** 예산(프로세스 진입부터). 모든 DB 대기가 여기서 파생되며 한 번의 잠금 대기는 최대 800 ms입니다. 호스트 timeout(3초·PreCompact 5초)보다 반드시 작게 두십시오 |
+| `MEMEX_HOOK_INGEST_BYTES_PER_MS` (0.7.24, #162) | `20000` | capture 전 oversize 사전 점검이 쓰는 가정 처리량(B/ms). 남은 예산 안에 들어오지 않는 delta는 쓰기 잠금을 아예 잡지 않고 marker 경로(`outcome: oversize`)로 갑니다 |
 | `MEMEX_CONTINUITY_NO_WAKE` | unset | detached worker wake 비활성 (테스트/진단) |
 | `MEMEX_CAPSULE_MAX_CHARS` | `12000` (하한 `2000`) | Work Capsule 한 세대의 bounded storage size. 초과 patch는 버리지 않고 우선순위대로 절단해 저장하고 `work_capsules.truncated`에 기록 |
 | `MEMEX_INJECT_BASELINE_MARGIN` | `0.045` (허용 `0`–`1`) | 주입 관련성 게이트가 요구하는 baseline 대비 마진. 범위를 벗어난 값은 기본값으로 되돌아갑니다. **`baseline_margin_gap`으로 측정한 뒤에 조정하십시오** |

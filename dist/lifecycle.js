@@ -22,7 +22,9 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { lastObserved } from "./observe-hook-event.js";
+import { lastObserved, readHookEventTail } from "./observe-hook-event.js";
+import { listCaptureGapMarkers } from "./capture-gap-markers.js";
+import { hookBudgetMs } from "./hook-budget.js";
 import { getDbPath, getMemexHome } from "./paths.js";
 import { resolveLlmSelection } from "./model-settings.js";
 import { readExportStatus } from "./sync-export.js";
@@ -746,6 +748,162 @@ async function injectDaemonCheck() {
  * second matters most: a hold fails no job and consumes no attempt, so without
  * this check the only symptom is "nothing is being extracted any more".
  */
+/**
+ * Issue #162 — what a skipped capture actually costs, stated once.
+ *
+ * NOT "content is never lost". Skipping a capture only delays that turn's fence
+ * IF a later capture of the same session succeeds. When the last Stop/SessionEnd
+ * of a session are all skipped, the worker reads only the existing journal
+ * boundary: the tail never reaches the continuity journal/capsule, and the last
+ * open/interrupted turn stays out of extraction (#149 settles only turns
+ * followed by a later main-line exchange). `memex sync` still indexes the
+ * rollout file, so search/RAG see the content — continuity and the final turn's
+ * extraction do not until #163 lands.
+ */
+export const CAPTURE_GAP_LOSS_STATEMENT = "continuity/extraction of the tail is pending #163";
+/** How many marker lines the detail spells out before summarising. */
+const CAPTURE_GAP_DETAIL_LIMIT = 5;
+export function captureGapCheck() {
+    const name = "capture-gap";
+    let markers;
+    try {
+        markers = listCaptureGapMarkers();
+    }
+    catch {
+        return { name, status: "warn", detail: "unable to read the capture gap markers" };
+    }
+    if (markers.length === 0) {
+        return { name, status: "ok", detail: "no skipped captures recorded" };
+    }
+    // `transcriptBytes` is the transcript size the invocation saw; with no
+    // database reachable at marker time there is no committed boundary to
+    // subtract, so this is the bound on what the skip left uncaptured.
+    const lines = markers.slice(0, CAPTURE_GAP_DETAIL_LIMIT).map(({ marker }) => `capture skipped at ${marker.event} ${marker.ts} (${marker.transcriptBytes ?? 0} uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`);
+    const more = markers.length - lines.length;
+    return {
+        name,
+        status: "warn",
+        detail: `${markers.length} skipped capture(s), oldest ${markers[0].marker.ts} — ` +
+            lines.join(" | ") + (more > 0 ? ` | +${more} more` : ""),
+    };
+}
+/** A hook killed by the host is only visible as a start row with no done row. */
+const HOOK_LATENCY_WINDOW_ROWS = 200;
+/** Grace beyond the budget before an unpaired start counts as a host kill. */
+const HOOK_KILL_GRACE_MS = 10_000;
+/** A done row above this much lock wait is worth naming. */
+const HOOK_DB_WAIT_WARN_MS = 1_000;
+/** UserPromptSubmit has no host timeout in hooks.json — never claim one. */
+const UNTIMED_HOOK_EVENTS = new Set(["UserPromptSubmit"]);
+/**
+ * The lock holder, read from the worker's own transaction log (written by the
+ * worker lane). "Held the write lock for N ms" is said ONLY from `held_ms`:
+ * `wait_ms` is time the worker itself spent blocked, which names a victim, not
+ * a holder. A missing file is the normal case on a healthy install.
+ */
+function workerLockHolderLine() {
+    try {
+        const file = path.join(getMemexHome(), "logs", "worker-transactions.jsonl");
+        if (!fs.existsSync(file))
+            return "";
+        const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+        let top = null;
+        for (const line of lines.slice(Math.max(0, lines.length - 100))) {
+            try {
+                const row = JSON.parse(line);
+                const held = Number(row?.held_ms ?? 0);
+                if (!Number.isFinite(held) || held <= 0)
+                    continue;
+                if (!top || held > Number(top.held_ms ?? 0))
+                    top = row;
+            }
+            catch {
+                /* skip malformed */
+            }
+        }
+        if (!top)
+            return "";
+        return ` — worker transaction ${top.label ?? "unknown"} held the write lock for ${Math.round(Number(top.held_ms))} ms`;
+    }
+    catch {
+        return "";
+    }
+}
+export function hookLatencyCheck(now = Date.now()) {
+    const name = "hook-latency";
+    const rows = readHookEventTail(HOOK_LATENCY_WINDOW_ROWS);
+    const doneIds = new Set();
+    for (const row of rows) {
+        if (row.phase === "done" && row.invocation_id)
+            doneIds.add(row.invocation_id);
+    }
+    const killed = [];
+    const waited = [];
+    let maxDuration = 0;
+    let paired = 0;
+    rows.forEach((row, index) => {
+        if (row.phase === "done") {
+            paired++;
+            maxDuration = Math.max(maxDuration, Number(row.duration_ms ?? 0));
+            if (Number(row.db_wait_ms ?? 0) > HOOK_DB_WAIT_WARN_MS)
+                waited.push(row);
+            return;
+        }
+        if (row.phase !== "start" || !row.invocation_id)
+            return;
+        if (doneIds.has(row.invocation_id))
+            return;
+        if (UNTIMED_HOOK_EVENTS.has(row.event))
+            return;
+        const startedAt = Date.parse(row.ts);
+        if (!Number.isFinite(startedAt))
+            return;
+        if (now - startedAt <= hookBudgetMs(row.event) + HOOK_KILL_GRACE_MS)
+            return;
+        // A later row from the same pid proves the process outlived this hook, so
+        // the missing done row is a bug elsewhere, not a kill.
+        const survived = rows
+            .slice(index + 1)
+            .some((later) => typeof later.pid === "number" && later.pid === row.pid);
+        if (!survived)
+            killed.push(row);
+    });
+    if (rows.length === 0) {
+        return { name, status: "ok", detail: "no hook runs observed yet" };
+    }
+    const holder = workerLockHolderLine();
+    if (killed.length > 0) {
+        const markers = (() => {
+            try {
+                return listCaptureGapMarkers().length;
+            }
+            catch {
+                return 0;
+            }
+        })();
+        const worst = killed[killed.length - 1];
+        return {
+            name,
+            status: "warn",
+            detail: `${killed.length} hook run(s) started and never finished — killed by host ` +
+                `(latest ${worst.event} ${worst.ts}); ${markers} capture gap marker(s)` + holder,
+        };
+    }
+    if (waited.length > 0) {
+        const worst = waited.reduce((a, b) => Number(a.db_wait_ms ?? 0) >= Number(b.db_wait_ms ?? 0) ? a : b);
+        return {
+            name,
+            status: "warn",
+            detail: `hooks waited on the database — ${waited.length}/${paired} runs over ` +
+                `${HOOK_DB_WAIT_WARN_MS} ms (worst ${worst.event} ${Math.round(Number(worst.db_wait_ms))} ms, ${worst.ts})` + holder,
+        };
+    }
+    return {
+        name,
+        status: "ok",
+        detail: `${paired} hook run(s) completed, max ${maxDuration} ms` + holder,
+    };
+}
 export function llmModelCheck() {
     const name = "llm-model";
     let selection;
@@ -1098,6 +1256,9 @@ export async function doctor() {
             detail: "unable to read inject log",
         });
     }
+    // Issue #162: a hook the host killed, and the captures it skipped.
+    checks.push(captureGapCheck());
+    checks.push(hookLatencyCheck());
     checks.push(recallProvenanceCheck(recent));
     checks.push(injectionYieldCheck(recent));
     checks.push(llmModelCheck());

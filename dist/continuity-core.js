@@ -8,7 +8,9 @@ import { readScopeForSession } from './read-scope.js';
 import { initDatabase, recordRecallEvent } from "./db.js";
 import { fitsContextBudget, REHYDRATION_CONTEXT_LIMITS, wrapMemoryContext, } from "./context-envelope.js";
 import { getMemexHome, getSessionsRoot } from "./paths.js";
-import { recordHookEvent } from "./observe-hook-event.js";
+import { recordHookDone, recordHookStart } from "./observe-hook-event.js";
+import { busyTimeoutForRemaining, hookBudgetMs, hookIngestBytesPerMs, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_INGEST_RESERVE_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
+import { deleteCaptureGapMarker, listEpochAdvanceMarkers, pruneCaptureGapMarkers, writeCaptureGapMarker, } from "./capture-gap-markers.js";
 import { isConversationExcludedSession } from "./conversation-policy.js";
 import { CAPSULE_POLICY_VERSION, capsulePageIsCurrent, commitCapsulePage } from "./continuity-evidence.js";
 import { bindSessionWorkstream, commitHotEvidenceCursor, markSessionProjectRevisionSeen, projectRevision, readHotEvidence, resolveProjectWorkspace, } from "./continuity-identity.js";
@@ -54,6 +56,11 @@ export function capsuleMaxChars() {
         return DEFAULT_MAX_CAPSULE_CHARS;
     return Math.max(MIN_MAX_CAPSULE_CHARS, parsed);
 }
+// Issue #162 — the hook budget, its typed give-up errors and the SQLITE_BUSY
+// predicate live in a leaf module so `memex doctor` can quote the same numbers
+// without importing better-sqlite3. Re-exported here because the hook scripts
+// load exactly one module from dist.
+export { busyTimeoutForRemaining, hookBudgetMs, hookIngestBytesPerMs, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
 const capsuleStringListSchema = { type: "array", items: { type: "string" } };
 const capsuleEvidenceListSchema = {
     type: "array",
@@ -448,11 +455,41 @@ export function scheduleCapsuleBacklog(db) {
     }
 }
 export function captureTranscriptPrefix(db, input) {
+    // Pre-check BEFORE opening the write transaction: a delta that cannot be
+    // ingested inside the remaining budget must not take the lock at all.
+    if (input.deadlineAt !== undefined) {
+        const remaining = input.deadlineAt - Date.now();
+        if (remaining <= 0)
+            throw new HookDeadlineExceeded();
+        const pending = db.prepare(`
+      SELECT copied_byte_end FROM journal_streams
+      WHERE session_id = ? ORDER BY stream_epoch DESC LIMIT 1
+    `).get(input.sessionId);
+        let sourceBytes = 0;
+        try {
+            sourceBytes = fs.statSync(input.transcriptPath).size;
+        }
+        catch {
+            sourceBytes = 0;
+        }
+        const bytesToIngest = Math.max(0, sourceBytes - Number(pending?.copied_byte_end ?? 0));
+        if (bytesToIngest / hookIngestBytesPerMs() > remaining - HOOK_INGEST_RESERVE_MS) {
+            throw new HookOversizeCapture(`${bytesToIngest} pending bytes exceed the remaining ${remaining} ms hook budget`);
+        }
+    }
     const capture = db.transaction(() => captureTranscriptPrefixInTransaction(db, input));
     try {
         return db.inTransaction ? capture() : capture.immediate();
     }
     catch (error) {
+        // A bounded skip is not a capture failure: the hook records the gap once,
+        // inside what is left of its budget. Retrying the write here would spend a
+        // second full busy_timeout precisely when there is none left.
+        if (error instanceof HookDeadlineExceeded ||
+            error instanceof HookOversizeCapture ||
+            isSqliteBusyError(error)) {
+            throw error;
+        }
         // File bytes can be fsynced before a transaction aborts. Keep the failure
         // visible in a separate transaction; the next serialized capture trims the
         // orphan tail and replays the exact source delta.
@@ -470,6 +507,15 @@ export function captureTranscriptPrefix(db, input) {
     }
 }
 function captureTranscriptPrefixInTransaction(db, input) {
+    // Throwing rolls the enclosing transaction back, so a capture is committed
+    // whole or not at all — the uncommitted journal tail is truncated by the next
+    // capture against the still-intact committed boundary.
+    const checkDeadline = () => {
+        if (input.deadlineAt !== undefined && Date.now() > input.deadlineAt) {
+            throw new HookDeadlineExceeded();
+        }
+    };
+    checkDeadline();
     const now = input.now ?? new Date().toISOString();
     const source = validateTranscriptPath(input.transcriptPath);
     const meta = readCanonicalSessionMeta(source.realpath);
@@ -611,6 +657,7 @@ function captureTranscriptPrefixInTransaction(db, input) {
                 }
                 copied += read;
                 input.afterJournalChunk?.(copied);
+                checkDeadline();
             }
             sourceGuardStart = Math.max(0, sourceThroughByte - SOURCE_PREFIX_GUARD_BYTES);
             const guard = Buffer.alloc(sourceThroughByte - sourceGuardStart);
@@ -640,6 +687,8 @@ function captureTranscriptPrefixInTransaction(db, input) {
     const segmentHash = segmentDigest.digest("hex");
     const prefixHash = completeBytes > 0 ? prefixDigest.digest("hex") : priorPrefixHash || sha256(Buffer.alloc(0));
     input.afterJournalFsync?.();
+    // Last gate before the row writes: past here the capture commits as a whole.
+    checkDeadline();
     const journalThroughByte = journalByteEnd + completeBytes;
     const blockId = stableId("journal-block", input.sessionId, streamEpoch, sourceThroughByte, prefixHash);
     const checkpointId = stableId("checkpoint", input.sessionId, streamEpoch, sourceThroughByte, prefixHash, input.kind);
@@ -1953,15 +2002,179 @@ function captureKind(event) {
         return "final";
     return null;
 }
+/** Bounded-skip classification: the three ways a hook gives up inside budget. */
+function boundedSkipOutcome(error) {
+    if (error instanceof HookOversizeCapture)
+        return "oversize";
+    if (error instanceof HookDeadlineExceeded)
+        return "deadline";
+    if (isSqliteBusyError(error))
+        return "busy";
+    return null;
+}
+function transcriptSizeAt(transcriptPath) {
+    if (!transcriptPath)
+        return null;
+    try {
+        return fs.statSync(transcriptPath).size;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Replay the ONE lifecycle transition a skipped hook cannot heal by itself.
+ *
+ * A `clear`/`compact` SessionStart advances the context epoch, which clears
+ * residency; when that hook is skipped, inject-core still sees the old
+ * residency and suppresses exactly the facts the cleared context just lost. So
+ * the inject path (daemon and cold fallback share `computeInjectContext`)
+ * applies the pending advance from the marker before computing an injection.
+ *
+ * `advanceContextEpoch` is idempotent through `epoch_token`; for `clear` that
+ * token is derived from the turn id, so the marker's invocation id is used when
+ * the payload carried no turn id. Best effort by design — an inject must never
+ * fail because a marker could not be replayed.
+ */
+export function applyPendingEpochAdvance(db, sessionId) {
+    let applied = 0;
+    try {
+        for (const { file, marker } of listEpochAdvanceMarkers(sessionId)) {
+            try {
+                const state = db.prepare("SELECT context_epoch FROM session_memory_state WHERE session_id = ?").get(sessionId);
+                // No session state means nothing was ever resident: there is no stale
+                // residency to clear, so retiring the marker is the whole repair.
+                if (state) {
+                    advanceContextEpoch(db, {
+                        sessionId,
+                        source: marker.source === "compact" ? "compact" : "clear",
+                        turnId: marker.turnId ?? marker.invocationId ?? null,
+                    });
+                    applied++;
+                }
+                deleteCaptureGapMarker(file);
+            }
+            catch {
+                /* keep the marker: doctor still reports it, the next inject retries */
+            }
+        }
+    }
+    catch {
+        /* listing failures never break an injection */
+    }
+    return applied;
+}
 export function handleContinuityHook(payloadValue, options = {}) {
     const payload = normalizeHookPayload(payloadValue);
+    const startedAt = options.startedAt ?? Date.now();
+    const deadlineAt = startedAt + (options.budgetMs ?? hookBudgetMs(payload.hookEventName));
+    const strictCapture = options.strictCapture ?? process.env.MEMEX_STRICT_CAPTURE === "1";
+    // R5: the START row is written before any database access, because a hook the
+    // host kills never reaches a done row — the pair is what makes the kill visible.
+    const invocationId = recordHookStart(payload.hookEventName, {
+        sessionId: payload.sessionId,
+        cwd: payload.cwd,
+        invocationId: options.invocationId,
+    });
+    // R1': the durable intent marker, also before any database access, carrying
+    // the transcript byte boundary this invocation was supposed to capture.
+    const markerFile = writeCaptureGapMarker({
+        invocationId,
+        event: payload.hookEventName,
+        source: payload.source,
+        sessionId: payload.sessionId,
+        cwd: payload.cwd,
+        transcriptPath: payload.transcriptPath,
+        transcriptBytes: transcriptSizeAt(payload.transcriptPath),
+        turnId: payload.turnId,
+        ts: new Date(startedAt).toISOString(),
+    });
+    let dbWaitMs = 0;
     const ownDb = !options.db;
-    const db = options.db ?? initDatabase();
-    try {
-        recordHookEvent(payload.hookEventName, {
+    let db;
+    const finish = (outcome, error) => {
+        recordHookDone(payload.hookEventName, {
             sessionId: payload.sessionId,
             cwd: payload.cwd,
+            invocationId,
+            outcome,
+            durationMs: Date.now() - startedAt,
+            dbWaitMs,
+            ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
         });
+    };
+    try {
+        const openedAt = Date.now();
+        try {
+            db = options.db ??
+                initDatabase({ busyTimeoutMs: busyTimeoutForRemaining(deadlineAt - openedAt) });
+        }
+        finally {
+            if (ownDb)
+                dbWaitMs = Date.now() - openedAt;
+        }
+    }
+    catch (error) {
+        const outcome = boundedSkipOutcome(error);
+        if (!outcome) {
+            deleteCaptureGapMarker(markerFile);
+            finish("error", error);
+            throw error;
+        }
+        // No connection at all: the marker is the entire record. Exit 0, no stdout.
+        finish(outcome, error);
+        if (strictCapture && captureKind(payload.hookEventName))
+            throw error;
+        return { stdout: "", warning: `continuity hook skipped (${outcome})` };
+    }
+    try {
+        const result = runContinuityHook(db, payload, { deadlineAt, strictCapture });
+        deleteCaptureGapMarker(markerFile);
+        finish("ok");
+        // Bounded, best-effort maintenance on the success path only (R1'/#162):
+        // markers are how a skipped capture stays visible, so they expire slowly.
+        pruneCaptureGapMarkers();
+        return result;
+    }
+    catch (error) {
+        const outcome = boundedSkipOutcome(error);
+        if (!outcome) {
+            deleteCaptureGapMarker(markerFile);
+            finish("error", error);
+            throw error;
+        }
+        // Exactly ONE bounded attempt at the durable gap row, and only when enough
+        // of the budget is left for it to finish rather than time out again.
+        const remaining = deadlineAt - Date.now();
+        const kind = captureKind(payload.hookEventName);
+        if (kind && remaining > HOOK_RETRY_FLOOR_MS) {
+            const gapStartedAt = Date.now();
+            try {
+                db.pragma(`busy_timeout = ${busyTimeoutForRemaining(remaining)}`);
+                recordCaptureGap(db, {
+                    sessionId: payload.sessionId,
+                    sourcePath: payload.transcriptPath,
+                    eventKind: kind,
+                    reason: error instanceof Error ? error.message : String(error),
+                });
+            }
+            catch {
+                /* the marker already records the skip durably */
+            }
+            dbWaitMs += Date.now() - gapStartedAt;
+        }
+        finish(outcome, error);
+        if (strictCapture && kind)
+            throw error;
+        return { stdout: "", warning: `continuity hook skipped (${outcome})` };
+    }
+    finally {
+        if (ownDb)
+            db.close();
+    }
+}
+function runContinuityHook(db, payload, options) {
+    {
         if (isConversationExcludedSession(db, payload.sessionId)) {
             // Conversation exclusion is terminal privacy state. Do not recreate a
             // journal/checkpoint/session projection after a prior purge.
@@ -1979,10 +2192,15 @@ export function handleContinuityHook(payloadValue, options = {}) {
                     kind,
                     turnId: payload.turnId,
                     workstreamId: payload.workstreamId,
+                    deadlineAt: options.deadlineAt,
                 });
                 return { stdout: "", capture };
             }
             catch (error) {
+                // A bounded skip belongs to the caller: it owns the single gap-row
+                // attempt, the done row and the marker that survives a host kill.
+                if (boundedSkipOutcome(error))
+                    throw error;
                 const warning = error instanceof Error ? error.message : String(error);
                 try {
                     recordCaptureGap(db, {
@@ -1995,7 +2213,7 @@ export function handleContinuityHook(payloadValue, options = {}) {
                 catch {
                     // If even the gap record cannot persist, strict capture must fail.
                 }
-                if (options.strictCapture ?? process.env.MEMEX_STRICT_CAPTURE === "1")
+                if (options.strictCapture)
                     throw error;
                 return { stdout: "", warning };
             }
@@ -2110,10 +2328,6 @@ export function handleContinuityHook(payloadValue, options = {}) {
             return { stdout: "", warning: recoveryWarning };
         }
         throw new Error(`unsupported continuity hook event: ${payload.hookEventName}`);
-    }
-    finally {
-        if (ownDb)
-            db.close();
     }
 }
 export function runtimePlatformSummary() {
