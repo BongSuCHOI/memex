@@ -10,7 +10,7 @@ import { fitsContextBudget, REHYDRATION_CONTEXT_LIMITS, wrapMemoryContext, } fro
 import { getMemexHome, getSessionsRoot } from "./paths.js";
 import { recordHookDone, recordHookStart } from "./observe-hook-event.js";
 import { busyTimeoutForRemaining, captureGapAlreadyRecorded, hookBudgetMs, hookIngestBytesPerMs, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, markCaptureGapRecorded, HOOK_INGEST_RESERVE_MS, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
-import { deleteCaptureGapMarker, listEpochAdvanceMarkers, pruneCaptureGapMarkers, writeCaptureGapMarker, } from "./capture-gap-markers.js";
+import { deleteCaptureGapMarker, listEpochAdvanceMarkers, pruneCaptureGapMarkers, writeCaptureGapMarker, CAPTURE_GAP_MARKER_MAX_AGE_MS, } from "./capture-gap-markers.js";
 import { isConversationExcludedSession } from "./conversation-policy.js";
 import { CAPSULE_POLICY_VERSION, capsulePageIsCurrent, commitCapsulePage } from "./continuity-evidence.js";
 import { bindSessionWorkstream, commitHotEvidenceCursor, markSessionProjectRevisionSeen, projectRevision, readHotEvidence, resolveProjectWorkspace, } from "./continuity-identity.js";
@@ -830,25 +830,28 @@ function captureTranscriptPrefixInTransaction(db, input) {
 }
 export function advanceContextEpoch(db, input) {
     const now = input.now ?? new Date().toISOString();
-    const state = db.prepare(`
-    SELECT context_epoch, epoch_token, epoch_marker_id, latest_checkpoint_id,
+    const apply = () => {
+        const state = db.prepare(`
+    SELECT context_epoch, epoch_token, latest_checkpoint_id,
            resident_fact_revisions_json, carry_fact_revisions_json
     FROM session_memory_state WHERE session_id = ?
   `).get(input.sessionId);
-    if (!state)
-        throw new Error("session memory state is missing");
-    if (input.markerId && String(state.epoch_marker_id ?? "") === input.markerId) {
-        return Number(state.context_epoch);
-    }
-    const token = input.source === "compact"
-        ? `compact:${String(state.latest_checkpoint_id ?? input.turnId ?? "unknown")}`
-        : `clear:${input.turnId ?? now}`;
-    if (String(state.epoch_token) === token)
-        return Number(state.context_epoch);
-    const next = Number(state.context_epoch) + 1;
-    db.prepare(`
+        if (!state)
+            throw new Error("session memory state is missing");
+        if (input.markerId && db.prepare("SELECT 1 FROM session_epoch_markers WHERE session_id = ? AND marker_id = ?").get(input.sessionId, input.markerId)) {
+            return Number(state.context_epoch);
+        }
+        const token = input.source === "compact"
+            ? `compact:${String(state.latest_checkpoint_id ?? input.turnId ?? "unknown")}`
+            : `clear:${input.turnId ?? now}`;
+        if (String(state.epoch_token) === token) {
+            rememberEpochMarker(db, input.sessionId, input.markerId, now);
+            return Number(state.context_epoch);
+        }
+        const next = Number(state.context_epoch) + 1;
+        db.prepare(`
     UPDATE session_memory_state
-    SET context_epoch = ?, epoch_token = ?, epoch_marker_id = ?,
+    SET context_epoch = ?, epoch_token = ?,
         carry_fact_revisions_json = CASE WHEN ? = 'compact'
           THEN CASE WHEN carry_fact_revisions_json = '[]'
             THEN resident_fact_revisions_json ELSE carry_fact_revisions_json END
@@ -859,8 +862,31 @@ export function advanceContextEpoch(db, input) {
         hot_evidence_cursor = 0,
         last_source = ?, updated_at = ?
     WHERE session_id = ? AND context_epoch = ?
-  `).run(next, token, input.markerId ?? null, input.source, input.source, now, input.sessionId, state.context_epoch);
-    return next;
+  `).run(next, token, input.source, input.source, now, input.sessionId, state.context_epoch);
+        rememberEpochMarker(db, input.sessionId, input.markerId, now);
+        return next;
+    };
+    // The epoch row and the applied-marker row must move together: a crash
+    // between them would leave an advance nobody can recognise as applied.
+    return db.inTransaction ? apply() : db.transaction(apply).immediate();
+}
+/** Applied-marker bookkeeping: remember this id, and keep the set bounded. */
+function rememberEpochMarker(db, sessionId, markerId, now) {
+    if (!markerId)
+        return;
+    db.prepare(`
+    INSERT OR IGNORE INTO session_epoch_markers (session_id, marker_id, applied_at)
+    VALUES (?, ?, ?)
+  `).run(sessionId, markerId, now);
+    // Same retention as the marker files themselves, and bounded per call: an
+    // epoch advance is rare, so this is the cheapest place to keep the set small.
+    const cutoff = new Date(Date.parse(now) - CAPTURE_GAP_MARKER_MAX_AGE_MS).toISOString();
+    db.prepare(`
+    DELETE FROM session_epoch_markers
+    WHERE rowid IN (
+      SELECT rowid FROM session_epoch_markers WHERE applied_at < ? LIMIT 200
+    )
+  `).run(cutoff);
 }
 export function readResidentFactRevisions(db, sessionId) {
     const row = db.prepare(`
@@ -2371,9 +2397,9 @@ function runContinuityHook(db, payload, options) {
                     source,
                     // The invocation id, not `now`, is the fallback token (#162 review).
                     turnId: payload.turnId ?? options.invocationId,
-                    // …and it is recorded WITH the epoch, so the marker this invocation
-                    // left behind cannot make the next injection advance again — not even
-                    // after a later Stop moved `latest_checkpoint_id` (#162 review 2).
+                    // …and it joins the applied-marker set in the same transaction, so
+                    // the marker this invocation left behind cannot make ANY later
+                    // injection advance again (#162 review 2/3).
                     markerId: options.invocationId,
                 });
             }

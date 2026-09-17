@@ -27,15 +27,22 @@ export declare function deleteCaptureGapMarker(file: string | null | undefined):
 /**
  * Oldest-first by `ts`; malformed files are skipped, never thrown on.
  *
- * `sessionId` narrows the scan to ONE session, and it narrows it on the FILE
- * NAME — which carries the session id — before the bound is applied. Capping
- * the directory listing first and filtering afterwards is how a session's
- * epoch-repair marker could be lost for ever: a few hundred Interrupt markers
- * from other sessions were enough to push the one marker that mattered out of
- * the window, and the inject replay reads this same list (#162 review 2).
+ * EVERY selective filter runs before the bound, and the bound applies to what
+ * is RETURNED, never to what the scan is allowed to look at. That ordering is
+ * the whole point (#162 review 2/3): capping the directory listing first and
+ * filtering afterwards made a session's epoch-repair marker invisible for ever
+ * behind a few hundred markers that were never candidates — first other
+ * sessions' markers, then the session's OWN Interrupt markers — and the inject
+ * replay reads this same list.
+ *
+ * `sessionId` and `event` are also matched on the FILE NAME, which carries
+ * both, so the common case never parses a file it cannot want. `match` sees the
+ * parsed marker for everything the name cannot answer (`source`, `ts`).
  */
 export declare function listCaptureGapMarkers(options?: {
     sessionId?: string;
+    event?: string;
+    match?: (marker: CaptureGapMarker) => boolean;
     limit?: number;
 }): LoadedCaptureGapMarker[];
 /**

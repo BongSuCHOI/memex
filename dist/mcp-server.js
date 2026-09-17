@@ -9597,19 +9597,24 @@ function ensureContinuitySchema(db, options = {}) {
       ["last_retrieval_at", "TEXT"],
       ["hot_evidence_cursor", "INTEGER NOT NULL DEFAULT 0"],
       ["resident_bundle_hash", "TEXT NOT NULL DEFAULT ''"],
-      ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"],
-      // Issue #162 (review 2): which capture-gap marker's transition the
-      // current epoch came from. `epoch_token` cannot answer that — for
-      // `compact` it is derived from `latest_checkpoint_id`, so a later Stop
-      // moved it and made an already-applied marker look unapplied, and the
-      // next injection advanced the epoch a second time.
-      ["epoch_marker_id", "TEXT"]
+      ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"]
     ];
     const sessionColumns = columnNames(db, "session_memory_state");
     for (const [name, type] of gateColumns) {
       if (!sessionColumns.has(name)) db.exec(`ALTER TABLE session_memory_state ADD COLUMN ${name} ${type}`);
     }
     options.afterMigrationStage?.("recall-gate-columns");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_epoch_markers (
+        session_id TEXT NOT NULL,
+        marker_id TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, marker_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_epoch_markers_applied
+        ON session_epoch_markers(applied_at);
+    `);
+    options.afterMigrationStage?.("session-epoch-markers");
     db.exec(`
       CREATE TABLE IF NOT EXISTS capsule_frontiers (
         workstream_id TEXT PRIMARY KEY REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
@@ -28728,6 +28733,7 @@ import fs11 from "node:fs";
 import path12 from "node:path";
 var CAPTURE_GAP_MARKER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1e3;
 var MARKER_SCAN_LIMIT = 500;
+var MARKER_PARSE_LIMIT = 2e4;
 function captureGapDir() {
   return path12.join(getMemexHome(), "continuity", "gaps");
 }
@@ -28773,26 +28779,34 @@ function listCaptureGapMarkers(options = {}) {
     return [];
   }
   const limit = options.limit ?? MARKER_SCAN_LIMIT;
-  const wanted = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
+  const wantedSession = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
+  const wantedEvent = options.event ? `${safeSegment(options.event)}-` : null;
   const out = [];
+  let scanned = 0;
   for (const name of entries) {
     if (!name.endsWith(".json")) continue;
-    if (wanted && !name.includes(wanted)) continue;
-    if (out.length >= limit) break;
+    if (wantedSession && !name.includes(wantedSession)) continue;
+    if (wantedEvent && !name.startsWith(wantedEvent)) continue;
+    if (++scanned > MARKER_PARSE_LIMIT) break;
     const file = path12.join(dir, name);
     const marker = parseMarker(file);
     if (!marker) continue;
     if (options.sessionId && marker.sessionId !== options.sessionId) continue;
+    if (options.event && marker.event !== options.event) continue;
+    if (options.match && !options.match(marker)) continue;
     out.push({ file, marker });
+    if (out.length >= limit) break;
   }
   out.sort((a, b2) => a.marker.ts < b2.marker.ts ? -1 : a.marker.ts > b2.marker.ts ? 1 : 0);
   return out;
 }
 function listEpochAdvanceMarkers(sessionId) {
   if (!sessionId) return [];
-  return listCaptureGapMarkers({ sessionId }).filter(
-    ({ marker }) => marker.source === "clear" || marker.source === "compact"
-  );
+  return listCaptureGapMarkers({
+    sessionId,
+    event: "SessionStart",
+    match: (marker) => marker.source === "clear" || marker.source === "compact"
+  });
 }
 
 // src/conversation-policy.ts
@@ -28922,21 +28936,27 @@ function ensureSessionMemoryState(db, input) {
 }
 function advanceContextEpoch(db, input) {
   const now = input.now ?? (/* @__PURE__ */ new Date()).toISOString();
-  const state = db.prepare(`
-    SELECT context_epoch, epoch_token, epoch_marker_id, latest_checkpoint_id,
+  const apply = () => {
+    const state = db.prepare(`
+    SELECT context_epoch, epoch_token, latest_checkpoint_id,
            resident_fact_revisions_json, carry_fact_revisions_json
     FROM session_memory_state WHERE session_id = ?
   `).get(input.sessionId);
-  if (!state) throw new Error("session memory state is missing");
-  if (input.markerId && String(state.epoch_marker_id ?? "") === input.markerId) {
-    return Number(state.context_epoch);
-  }
-  const token = input.source === "compact" ? `compact:${String(state.latest_checkpoint_id ?? input.turnId ?? "unknown")}` : `clear:${input.turnId ?? now}`;
-  if (String(state.epoch_token) === token) return Number(state.context_epoch);
-  const next = Number(state.context_epoch) + 1;
-  db.prepare(`
+    if (!state) throw new Error("session memory state is missing");
+    if (input.markerId && db.prepare(
+      "SELECT 1 FROM session_epoch_markers WHERE session_id = ? AND marker_id = ?"
+    ).get(input.sessionId, input.markerId)) {
+      return Number(state.context_epoch);
+    }
+    const token = input.source === "compact" ? `compact:${String(state.latest_checkpoint_id ?? input.turnId ?? "unknown")}` : `clear:${input.turnId ?? now}`;
+    if (String(state.epoch_token) === token) {
+      rememberEpochMarker(db, input.sessionId, input.markerId, now);
+      return Number(state.context_epoch);
+    }
+    const next = Number(state.context_epoch) + 1;
+    db.prepare(`
     UPDATE session_memory_state
-    SET context_epoch = ?, epoch_token = ?, epoch_marker_id = ?,
+    SET context_epoch = ?, epoch_token = ?,
         carry_fact_revisions_json = CASE WHEN ? = 'compact'
           THEN CASE WHEN carry_fact_revisions_json = '[]'
             THEN resident_fact_revisions_json ELSE carry_fact_revisions_json END
@@ -28947,17 +28967,27 @@ function advanceContextEpoch(db, input) {
         hot_evidence_cursor = 0,
         last_source = ?, updated_at = ?
     WHERE session_id = ? AND context_epoch = ?
-  `).run(
-    next,
-    token,
-    input.markerId ?? null,
-    input.source,
-    input.source,
-    now,
-    input.sessionId,
-    state.context_epoch
-  );
-  return next;
+  `).run(next, token, input.source, input.source, now, input.sessionId, state.context_epoch);
+    rememberEpochMarker(db, input.sessionId, input.markerId, now);
+    return next;
+  };
+  return db.inTransaction ? apply() : db.transaction(apply).immediate();
+}
+function rememberEpochMarker(db, sessionId, markerId, now) {
+  if (!markerId) return;
+  db.prepare(`
+    INSERT OR IGNORE INTO session_epoch_markers (session_id, marker_id, applied_at)
+    VALUES (?, ?, ?)
+  `).run(sessionId, markerId, now);
+  const cutoff = new Date(
+    Date.parse(now) - CAPTURE_GAP_MARKER_MAX_AGE_MS
+  ).toISOString();
+  db.prepare(`
+    DELETE FROM session_epoch_markers
+    WHERE rowid IN (
+      SELECT rowid FROM session_epoch_markers WHERE applied_at < ? LIMIT 200
+    )
+  `).run(cutoff);
 }
 function readResidentFactRevisions(db, sessionId) {
   const row = db.prepare(`

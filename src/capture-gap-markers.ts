@@ -20,8 +20,10 @@ import { getMemexHome } from "./paths.js";
 /** Markers older than this are pruned on a hook's success path (best effort). */
 export const CAPTURE_GAP_MARKER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 
-/** Upper bound on markers any single call will PARSE (after filtering). */
+/** Upper bound on markers any single call will RETURN. */
 const MARKER_SCAN_LIMIT = 500;
+/** Upper bound on files a single call will open, after the name prefilters. */
+const MARKER_PARSE_LIMIT = 20_000;
 
 export interface CaptureGapMarker {
   invocationId: string;
@@ -113,15 +115,25 @@ function parseMarker(file: string): CaptureGapMarker | null {
 /**
  * Oldest-first by `ts`; malformed files are skipped, never thrown on.
  *
- * `sessionId` narrows the scan to ONE session, and it narrows it on the FILE
- * NAME — which carries the session id — before the bound is applied. Capping
- * the directory listing first and filtering afterwards is how a session's
- * epoch-repair marker could be lost for ever: a few hundred Interrupt markers
- * from other sessions were enough to push the one marker that mattered out of
- * the window, and the inject replay reads this same list (#162 review 2).
+ * EVERY selective filter runs before the bound, and the bound applies to what
+ * is RETURNED, never to what the scan is allowed to look at. That ordering is
+ * the whole point (#162 review 2/3): capping the directory listing first and
+ * filtering afterwards made a session's epoch-repair marker invisible for ever
+ * behind a few hundred markers that were never candidates — first other
+ * sessions' markers, then the session's OWN Interrupt markers — and the inject
+ * replay reads this same list.
+ *
+ * `sessionId` and `event` are also matched on the FILE NAME, which carries
+ * both, so the common case never parses a file it cannot want. `match` sees the
+ * parsed marker for everything the name cannot answer (`source`, `ts`).
  */
 export function listCaptureGapMarkers(
-  options: { sessionId?: string; limit?: number } = {},
+  options: {
+    sessionId?: string;
+    event?: string;
+    match?: (marker: CaptureGapMarker) => boolean;
+    limit?: number;
+  } = {},
 ): LoadedCaptureGapMarker[] {
   const dir = captureGapDir();
   let entries: string[];
@@ -132,18 +144,26 @@ export function listCaptureGapMarkers(
   }
   const limit = options.limit ?? MARKER_SCAN_LIMIT;
   // `<event>-<session>-<invocation>.json`, each segment already sanitized.
-  const wanted = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
+  const wantedSession = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
+  const wantedEvent = options.event ? `${safeSegment(options.event)}-` : null;
   const out: LoadedCaptureGapMarker[] = [];
+  let scanned = 0;
   for (const name of entries) {
     if (!name.endsWith(".json")) continue;
     // The name is only a cheap prefilter; the parsed marker below decides.
-    if (wanted && !name.includes(wanted)) continue;
-    if (out.length >= limit) break;
+    if (wantedSession && !name.includes(wantedSession)) continue;
+    if (wantedEvent && !name.startsWith(wantedEvent)) continue;
+    // A bound on work that survives a pathological directory, deliberately far
+    // above the returned limit so it can never be what hides a candidate.
+    if (++scanned > MARKER_PARSE_LIMIT) break;
     const file = path.join(dir, name);
     const marker = parseMarker(file);
     if (!marker) continue;
     if (options.sessionId && marker.sessionId !== options.sessionId) continue;
+    if (options.event && marker.event !== options.event) continue;
+    if (options.match && !options.match(marker)) continue;
     out.push({ file, marker });
+    if (out.length >= limit) break;
   }
   out.sort((a, b) => (a.marker.ts < b.marker.ts ? -1 : a.marker.ts > b.marker.ts ? 1 : 0));
   return out;
@@ -159,9 +179,14 @@ export function listCaptureGapMarkers(
  */
 export function listEpochAdvanceMarkers(sessionId: string): LoadedCaptureGapMarker[] {
   if (!sessionId) return [];
-  return listCaptureGapMarkers({ sessionId }).filter(
-    ({ marker }) => marker.source === "clear" || marker.source === "compact",
-  );
+  // Both predicates go IN, not after: the session's own Stop/Interrupt markers
+  // are far more numerous than its SessionStart ones, so filtering afterwards
+  // is exactly how the marker that matters fell out of the window.
+  return listCaptureGapMarkers({
+    sessionId,
+    event: "SessionStart",
+    match: (marker) => marker.source === "clear" || marker.source === "compact",
+  });
 }
 
 /**

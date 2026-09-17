@@ -396,6 +396,42 @@ describe("the epoch replay is idempotent against a moving checkpoint (#162 revie
     expect(markerFiles()).toHaveLength(0);
   });
 
+  it("cannot replay an older applied marker after a NEWER advance moved on", () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    const before = contextEpoch();
+
+    // A: a compact advance whose hook was killed before it could finalize.
+    handleContinuityHook(payload("SessionStart", { source: "compact", turn_id: "turn-A" }), { db });
+    expect(contextEpoch()).toBe(before + 1);
+    expect(markerFiles()).toHaveLength(1);
+
+    // B: a later clear advance, killed the same way. Remembering only the LAST
+    // marker id is what made A look unapplied again from here on.
+    handleContinuityHook(payload("SessionStart", { source: "clear", turn_id: "turn-B" }), { db });
+    expect(contextEpoch()).toBe(before + 2);
+    expect(markerFiles()).toHaveLength(2);
+
+    // Residency the session legitimately rebuilt after B. A wrongful replay of
+    // A would clear exactly this.
+    db.prepare(
+      "UPDATE session_memory_state SET resident_fact_revisions_json = ? WHERE session_id = ?",
+    ).run(JSON.stringify([["fact-1", 1, 1]]), SESSION);
+
+    applyPendingEpochAdvance(db, SESSION);
+
+    expect(contextEpoch()).toBe(before + 2);
+    expect(
+      (db
+        .prepare("SELECT resident_fact_revisions_json AS j FROM session_memory_state WHERE session_id = ?")
+        .get(SESSION) as { j: string }).j,
+    ).toBe(JSON.stringify([["fact-1", 1, 1]]));
+    expect(markerFiles()).toHaveLength(0);
+
+    // A second injection has nothing left to replay and changes nothing.
+    applyPendingEpochAdvance(db, SESSION);
+    expect(contextEpoch()).toBe(before + 2);
+  });
+
   it("still repairs a marker whose advance never happened", () => {
     ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
     const before = contextEpoch();
@@ -512,5 +548,30 @@ describe("marker lookup never loses the target session (#162 review 2)", () => {
     const found = listEpochAdvanceMarkers(SESSION);
     expect(found).toHaveLength(40);
     expect(found.every(({ marker }) => marker.sessionId === SESSION)).toBe(true);
+  });
+
+  it("finds them behind hundreds of the session's OWN non-epoch markers", () => {
+    const ts = new Date().toISOString();
+    // Same session, so the session filter does not thin these out at all: only
+    // the event/source predicate distinguishes them, and it has to run BEFORE
+    // the bound or the epoch markers fall out of the window.
+    for (let i = 0; i < 600; i++) {
+      writeCaptureGapMarker({
+        invocationId: `inv-interrupt-${i}`, event: "Interrupt", source: null,
+        sessionId: SESSION, cwd: "/project", transcriptPath: null,
+        transcriptBytes: null, turnId: null, ts,
+      });
+    }
+    for (let i = 0; i < 40; i++) {
+      writeCaptureGapMarker({
+        invocationId: `inv-epoch-${i}`, event: "SessionStart", source: "compact",
+        sessionId: SESSION, cwd: "/project", transcriptPath: null,
+        transcriptBytes: null, turnId: null, ts,
+      });
+    }
+
+    const found = listEpochAdvanceMarkers(SESSION);
+    expect(found).toHaveLength(40);
+    expect(found.every(({ marker }) => marker.event === "SessionStart")).toBe(true);
   });
 });

@@ -234,13 +234,17 @@ open/interrupted 턴은 추출에서 제외된 채 남습니다(#149의 stale-op
 
 `clear`/`compact` SessionStart를 건너뛴 경우만은 스스로 낫지 않습니다(epoch이 오르지 않아 이전
 residency가 같은 fact를 계속 억제합니다). 그래서 다음 주입이 marker를 보고 `advanceContextEpoch`를
-대신 수행한 뒤 marker를 지웁니다 — daemon·cold fallback 모두 같은 진입점을 씁니다. 이 재적용은
-`session_memory_state.epoch_marker_id`로 **durable하게 한 번만** 일어납니다: 전진을 만든 marker의
-invocation id가 epoch과 같은 UPDATE에 기록되고, 같은 id를 들고 온 재적용은 no-op입니다. `epoch_token`
-만으로는 안 됩니다 — `compact` 토큰은 `latest_checkpoint_id`에서 나오는데 이후 Stop이 그 값을 바꾸면
-이미 적용된 marker가 미적용처럼 보여 epoch이 한 번 더 올랐습니다. 또한 marker 조회는 **세션으로 먼저
-좁힌 뒤** 상한을 적용합니다. 디렉터리를 먼저 500개로 자르고 나중에 세션을 거르면, 다른 세션의
-marker 수백 개만으로 정작 필요한 marker가 영원히 보이지 않게 됩니다.
+대신 수행한 뒤 marker를 지웁니다 — daemon·cold fallback 모두 같은 진입점을 씁니다. 이 재적용은 `session_epoch_markers`
+테이블(`session_id`, `marker_id`, `applied_at`)로 **durable하게 한 번만** 일어납니다: 전진을 만든
+marker의 invocation id가 epoch UPDATE와 **같은 트랜잭션**에서 이 집합에 들어가고, 이미 집합에 있는
+id를 들고 온 재적용은 no-op입니다. 30일이 지난 행은 다음 epoch 전진 때 최대 200개씩 정리합니다.
+더 싼 기록으로는 안 됩니다 — `epoch_token`은 `compact`일 때 `latest_checkpoint_id`에서 나오므로 이후
+Stop이 그 값을 바꾸면 이미 적용된 marker가 미적용처럼 보이고(1→2), "마지막 marker id" 하나만 두면
+A 전진 뒤 B 전진이 오는 순간 A가 다시 미적용처럼 보입니다(1→2→3). 집합 소속만이 계속 참입니다.
+또한 marker 조회는 **선택 조건(세션과 event/source)을 모두 적용한 뒤** 상한을 겁니다. 상한은
+"돌려주는 개수"에 걸리지, "들여다봐도 되는 개수"에 걸리지 않습니다 — 디렉터리를 먼저 500개로 자르면
+다른 세션의 marker 수백 개로도, 같은 세션의 Interrupt marker 수백 개로도 정작 필요한 marker가
+영원히 보이지 않게 됩니다.
 
 Capture가 만든 durable queue의 우선순위는 `capture_index`(P0) → `capsule_update`(P1) → fact extraction(이후)입니다. Stop/Interrupt boundary 6개 또는 8KiB, PreCompact, SessionEnd에서 Capsule job을 coalesce합니다. Capture hook은 commit 뒤 detached worker를 깨우지만 완료를 기다리지 않으며, wake 실패나 expired lease는 다음 startup/resume에서 복구합니다.
 

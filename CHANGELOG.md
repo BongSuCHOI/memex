@@ -68,16 +68,21 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   from the old context kept suppressing exactly the facts the clear dropped. The
   inject path — one shared entry for the warm daemon and the cold fallback —
   now applies the pending advance from the marker before it computes anything,
-  and deletes the marker. That replay is idempotent through a durable
-  `session_memory_state.epoch_marker_id`: the invocation id of the marker an
-  advance came from is written in the same UPDATE as the epoch, and a replay
-  carrying that id is a no-op. `epoch_token` alone could not do it — the
-  `compact` token is derived from `latest_checkpoint_id`, so any later Stop made
-  an already-applied marker look unapplied and the epoch advanced again (1 → 2).
-  Marker lookup is also narrowed to the session BEFORE the scan bound is
-  applied; capping the directory listing first and filtering afterwards meant a
-  few hundred markers from other sessions could hide the one that mattered for
-  ever.
+  and deletes the marker. That replay is idempotent through a durable SET of
+  applied marker ids — the new `session_epoch_markers(session_id, marker_id,
+  applied_at)` — written in the SAME transaction as the epoch row, so an advance
+  whose id is already there is a no-op. Rows older than 30 days are pruned, up
+  to 200 at a time, on the next advance. Neither cheaper record survives: the
+  `compact` `epoch_token` is derived from `latest_checkpoint_id`, so any later
+  Stop made an applied marker look unapplied (1 → 2), and remembering only the
+  LAST marker id fails one step further on — A advances and its marker survives
+  a kill, B advances, and A looks unapplied again (1 → 2 → 3), clearing
+  residency the session had legitimately rebuilt. Marker lookup applies every
+  selective filter — the session AND the event/source predicate — BEFORE the
+  bound, and the bound limits what is returned rather than what may be looked
+  at: capping the directory listing first hid the one marker that mattered
+  behind a few hundred that were never candidates, first other sessions' and
+  then the session's own Interrupt markers.
 - `hook-events.jsonl` gains a start row written before any database access
   (`invocation_id`, `pid`) and a matching done row (`outcome`, `duration_ms`,
   `db_wait_ms`, bounded `error`). `db_wait_ms` is the time actually spent

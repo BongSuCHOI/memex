@@ -19,6 +19,7 @@ export type MemoryJobState =
 
 export type ContinuityMigrationStage =
   | "exchange-seq-column"
+  | "session-epoch-markers"
   | "content-hash-column"
   | "content-generation-column"
   | "closure-state-column"
@@ -823,18 +824,33 @@ export function ensureContinuitySchema(
       ["hot_evidence_cursor", "INTEGER NOT NULL DEFAULT 0"],
       ["resident_bundle_hash", "TEXT NOT NULL DEFAULT ''"],
       ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"],
-      // Issue #162 (review 2): which capture-gap marker's transition the
-      // current epoch came from. `epoch_token` cannot answer that — for
-      // `compact` it is derived from `latest_checkpoint_id`, so a later Stop
-      // moved it and made an already-applied marker look unapplied, and the
-      // next injection advanced the epoch a second time.
-      ["epoch_marker_id", "TEXT"],
     ];
     const sessionColumns = columnNames(db, "session_memory_state");
     for (const [name, type] of gateColumns) {
       if (!sessionColumns.has(name)) db.exec(`ALTER TABLE session_memory_state ADD COLUMN ${name} ${type}`);
     }
     options.afterMigrationStage?.("recall-gate-columns");
+
+    // Issue #162 — every capture-gap marker whose epoch advance has been
+    // applied, so replaying one is a durable no-op.
+    //
+    // A single "last marker" column cannot do this: A advances and its marker
+    // survives a host kill, B advances next, and A now looks unapplied again,
+    // so the next injection replays it and clears residency the session had
+    // legitimately rebuilt (1 -> 2 -> 3). Neither can `epoch_token` — for
+    // `compact` it is derived from `latest_checkpoint_id`, which any later Stop
+    // moves. Membership in this set is the only thing that stays true.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_epoch_markers (
+        session_id TEXT NOT NULL,
+        marker_id TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, marker_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_epoch_markers_applied
+        ON session_epoch_markers(applied_at);
+    `);
+    options.afterMigrationStage?.("session-epoch-markers");
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS capsule_frontiers (
