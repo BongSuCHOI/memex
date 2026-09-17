@@ -710,7 +710,7 @@ capture hook은 commit 후 detached worker를 깨웁니다. wake 실패·expired
 
 ```bash
 memex status --json                 # 단계별 pending/processing/retry/dead + 종료 상태 카운트
-node scripts/continuity-worker.js   # 즉시 drain (설치 artifact에서는 memex-continuity-worker)
+memex jobs drain                    # Continuity worker를 전경에서 즉시 drain ([--max n] [--json])
 memex backfill all                  # extraction/ontology/embedding backlog
 ```
 
@@ -744,7 +744,7 @@ memex jobs dismiss <job-id> --reason "왜 포기하는가"            # 재시�
 
 단위 해석도 그 트랜잭션 안에서 합니다(0.6.2). `memory_jobs` CAS가 0행이면 — 그 사이 다른 복구자나 worker가 job을 가져간 것이므로 — 그 단위의 **나머지 리셋을 전혀 하지 않고** 사유를 출력의 note에 남깁니다(부분 리셋 없음). `memex recover <target-id>`는 그 target을 소유한 job이 **실행 중이고 lease가 살아 있으면 거부합니다** — 소유 job이 terminal(`dead`/`retry`)이거나 lease가 만료된 경우에만 되돌립니다. 예전에는 실행 중 job이 `pending`·`attempts=0`·`lease_owner=NULL`로 리셋돼 같은 단위를 두 worker가 동시에 처리(중복 모델 호출·중복 추출)했습니다.
 
-복구 후에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker`, `memex backfill extract`). `memex status`의 "Needs attention"은 `retry`/`dismiss` 직후 바로 줄어듭니다.
+복구 후에는 worker를 실행해야 실제로 처리됩니다(`memex jobs drain`, `memex backfill extract`). `memex status`의 "Needs attention"은 `retry`/`dismiss` 직후 바로 줄어듭니다.
 
 여덟 가지 terminal 상태 전체와 각각의 복구 명령은 [§20](#20-문제가-생겼을-때--실패-클래스별-복구)의 표에 정리되어 있습니다.
 
@@ -1008,7 +1008,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex ontology` | 로컬 taxonomy 조회·수리: `list\|merge\|rename`. `merge`는 `--dry-run` | [§4](#ontology-taxonomy-수리-061-47) |
 | `memex backfill` | `all\|extract\|ontology\|embeddings\|receipts` backlog 처리. `--background` | [§4](#4-최초-onboarding) |
 | `memex status` | pipeline readiness, `Needs attention`, terminal 상태, 격리된 프로젝트, `memory_jobs`의 kind × state 집계(`--json`의 `jobs.total`·`byKind`·`byState`) | [§4](#4-최초-onboarding), [§15](#작업이-실패했을-때-terminal-상태-복구), [§20](#20-문제가-생겼을-때--실패-클래스별-복구) |
-| `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
+| `memex jobs` | memory job 조회·복구·전경 drain: `list\|show\|retry\|dismiss\|drain` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기. `--all-dead`, `--kind`, `--dry-run` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex model-work` | `status [budget-id]`, `resume <budget-id> --new-run` | [§17](#17-모델-작업-예산과-대기-진단) |
 | `memex models` (0.7.0 #31) | 모델 작업에 쓸 모델·추론 강도 선택: `show\|set\|reset\|test`. `set`은 `--model`·`--reasoning`(`unset`으로 플래그 제거), `test`는 `--timeout-ms`(기본 `60000`). 모두 `--json` | [§21](#21-모델-선택-070-31) |
@@ -1018,7 +1018,10 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex home` | 해석된 Memex data root 출력 (`--json`) | [§10](#10-저장-위치와-sync) |
 | `memex migrate-projects` | cwd 근거로 project identity 재도출 (CX-02). `--dry-run` | — |
 
-`memex-ui`, `memex-continuity-worker`, `memex-mcp-server`는 `memex`의 서브커맨드가 아니라 별도 bin입니다.
+`memex-ui`, `memex-mcp-server`는 `memex`의 서브커맨드가 아니라 별도 bin입니다.
+`memex-continuity-worker` bin은 **npm 설치본에만** 존재합니다(0.7.22 #156). 지원되는 설치
+경로(Codex plugin cache + `memex` shim)에는 `memex`만 있으므로, Continuity worker는
+`memex jobs drain [--max <n>] [--json]`으로 실행하십시오.
 
 ## 19. 환경 변수
 
@@ -1101,7 +1104,7 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | 실패 클래스 | 어디에 보이나 | 원인 | 복구 명령 |
 | --- | --- | --- | --- |
 | `memory_jobs` dead | `Needs attention: N (N dead, …)` | 재시도 상한을 소진해 terminal이 된 작업 | `memex jobs show <job-id>` → `memex recover <job-id>` 또는 `memex recover --all-dead` |
-| `memory_jobs` retry (backoff) | `Needs attention: … of which N in backoff` | 실패 후 backoff 시각이 아직 안 됨. 고장이 아님 | 기다리거나 `memex-continuity-worker` 실행. 즉시 되돌리려면 `memex jobs retry <job-id>` |
+| `memory_jobs` retry (backoff) | `Needs attention: … of which N in backoff` | 실패 후 backoff 시각이 아직 안 됨. 고장이 아님 | 기다리거나 `memex jobs drain` 실행. 즉시 되돌리려면 `memex jobs retry <job-id>` |
 | checkpoint dead-letter / failed-visible | `terminal state: checkpointsDeadLetter=…` / `checkpointsFailedVisible=…` | P0 capture-index가 hash·journal 경계 검증에 반복 실패 | `memex recover <job-id> --dry-run` → `memex recover <job-id>` |
 | extraction target dead | `terminal state: extractionTargetsDead=…`, `Fact extraction … N deferred` | 추출 target이 재시도를 소진 | `memex recover <target-id>` 또는 `--all-dead` |
 | extraction target item failed-visible | `terminal state: extractionTargetItemsFailedVisible=…` | 특정 item이 결정론적으로 실패 | 같은 단위로 `memex recover` |
@@ -1148,7 +1151,7 @@ ORDER BY recorded_at DESC LIMIT 20;
 센 수입니다(0.6.3, #75). 따라서 `passed`는 주입된 semantic 후보 수와 항상 일치하며, `gaps`를 직접
 마진과 비교해 다시 세면 경계(예: 마진 `0.045`, gap `0.04496`)에서 다른 답이 나올 수 있습니다.
 
-복구 뒤에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker` 또는 `memex backfill extract`).
+복구 뒤에는 worker를 실행해야 실제로 처리됩니다(`memex jobs drain` 또는 `memex backfill extract`).
 `memex recover`와 `memex jobs retry`는 **아무것도 삭제하지 않습니다**: 지워진 `last_error`는
 `memory_jobs.retry_history` JSON 배열에 보존되고, `dismiss`는 사유를 `last_error`에 남깁니다.
 

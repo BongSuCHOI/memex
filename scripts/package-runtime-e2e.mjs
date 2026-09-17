@@ -243,6 +243,20 @@ try {
   installedBin("memex-continuity-worker", [], {
     timeout: 2 * 60 * 1000,
   });
+  // Issue #156: the npm-only bin above is NOT what the supported install
+  // exposes. `memex jobs drain` must reach the same worker through the `memex`
+  // entry point alone, from a cwd outside this checkout (the install path the
+  // bug was observed on), with stdout that stays one parseable JSON array.
+  const drain = installedBin("memex", ["jobs", "drain", "--max", "1", "--json"], {
+    cwd: TEMP,
+    timeout: 2 * 60 * 1000,
+  });
+  const drained = JSON.parse(drain.stdout);
+  if (!Array.isArray(drained)) {
+    throw new Error(
+      `packaged 'memex jobs drain --json' did not print a JSON array: ${drain.stdout.slice(-500)}`,
+    );
+  }
 
   console.log(
     JSON.stringify(

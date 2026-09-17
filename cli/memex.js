@@ -111,7 +111,7 @@ COMMANDS:
   migrate-projects  Re-derive project identity from cwd evidence (CX-02 migration)
   home        Print the resolved Memex data root (read-only)
   status      Show pipeline readiness per stage (read-only)
-  jobs        Inspect and recover memory jobs: list|show|retry|dismiss
+  jobs        Inspect and recover memory jobs: list|show|retry|dismiss|drain
   recover     Reset terminal (dead) work back to claimable in one transaction
   models      Choose the model and reasoning effort: show|set|reset|test
   model-work  Inspect durable model-work budgets or explicitly resume one
@@ -287,13 +287,18 @@ Options:
   memex jobs show <job-id> [--json]
   memex jobs retry <job-id|--all-dead> [--kind <kind>] [--dry-run] [--json]
   memex jobs dismiss <job-id> --reason "<why>" [--json]
+  memex jobs drain [--max <n>] [--json]
 
 list and show are read-only. retry is the same recovery as 'memex recover': it
 resets the whole terminal unit (job, checkpoint, capsule state, extraction
 target/items/ranges) in one transaction, sets the job pending with attempts 0
 and a cleared lease, and preserves the cleared failure in retry_history.
 dismiss retires a job as 'superseded' with
-last_error = 'user dismissed: <reason>' and one audit line. Nothing is deleted.`,
+last_error = 'user dismissed: <reason>' and one audit line. Nothing is deleted.
+drain runs the Continuity worker in the FOREGROUND, here, and drains up to
+--max claimable jobs (default 8, ceiling 32; a larger value is clamped). It is
+the supported way to process recovered capsule_update work from any install.
+--json puts exactly one JSON array of per-job results on stdout.`,
   recover: `Usage: memex recover <job-id|target-id|--all-dead> [--kind <kind>] [--dry-run] [--json]
 
 Reset terminal (dead) Continuity work back to claimable, resetting memory_jobs,
@@ -302,7 +307,7 @@ extraction_target_items, exchange_extraction_state and extraction_failed_ranges
 in ONE transaction — the same unit that was made terminal together.
 
 --dry-run reports exactly what would be reset and writes nothing.
-Run the worker afterwards: memex-continuity-worker / memex backfill extract.`,
+Run the worker afterwards: memex jobs drain / memex backfill extract.`,
   // Issue #31 — the full text lives in src/models-cli.ts (HELP_DELEGATES sends
   // `--help` there). This entry is what puts `models` in KNOWN_COMMANDS, which
   // is what makes the #36 guard cover it.
@@ -963,7 +968,7 @@ async function main() {
         const json = args.includes("--json");
         const dryRun = args.includes("--dry-run");
         const allDead = args.includes("--all-dead");
-        const valueFlags = new Set(["--state", "--kind", "--limit", "--reason"]);
+        const valueFlags = new Set(["--state", "--kind", "--limit", "--reason", "--max"]);
         const optValue = (name) => {
           const index = args.indexOf(name);
           if (index < 0) return undefined;
@@ -980,11 +985,73 @@ async function main() {
         }
         const sub = command === "recover" ? "recover" : positional[0];
         const id = command === "recover" ? positional[0] : positional[1];
-        if (command === "jobs" && !["list", "show", "retry", "dismiss"].includes(sub ?? "")) {
+        if (command === "jobs" && !["list", "show", "retry", "dismiss", "drain"].includes(sub ?? "")) {
           console.error(
-            "Usage: memex jobs <list|show|retry|dismiss> [...] (see: memex jobs --help)",
+            "Usage: memex jobs <list|show|retry|dismiss|drain> [...] (see: memex jobs --help)",
           );
           process.exitCode = 1;
+          break;
+        }
+
+        // Issue #156: the supported install (Codex plugin cache + the `memex`
+        // shim) exposes ONLY `memex`, so the foreground Continuity worker has to
+        // be reachable as a subcommand. Same dispatch as `memex backfill
+        // <stage>`: the INSTALLED root's script, foreground, stdio inherited —
+        // never this checkout's or an npx copy's.
+        if (command === "jobs" && sub === "drain") {
+          const script = join(
+            __dirname,
+            "..",
+            "scripts",
+            "continuity-worker.js",
+          );
+          if (!fsSync(script)) {
+            console.error(
+              `Worker script missing: ${script} — run npm run build first.`,
+            );
+            process.exitCode = 1;
+            break;
+          }
+          const workerArgs = [];
+          const maxIndex = args.indexOf("--max");
+          let maxJobs;
+          if (maxIndex >= 0) {
+            const raw = args[maxIndex + 1];
+            if (raw === undefined || raw.startsWith("-") || !/^\d+$/.test(raw)) {
+              console.error(
+                `memex jobs drain: --max must be an integer >= 1 (got ${raw === undefined ? "no value" : raw})`,
+              );
+              console.error("Usage: memex jobs drain [--max <n>] [--json]");
+              process.exitCode = 2;
+              break;
+            }
+            maxJobs = Number(raw);
+            if (!Number.isInteger(maxJobs) || maxJobs < 1) {
+              console.error(
+                `memex jobs drain: --max must be an integer >= 1 (got ${raw})`,
+              );
+              console.error("Usage: memex jobs drain [--max <n>] [--json]");
+              process.exitCode = 2;
+              break;
+            }
+            if (maxJobs > 32) {
+              console.error(
+                `memex jobs drain: --max ${maxJobs} clamped to 32 (the worker's per-run ceiling)`,
+              );
+              maxJobs = 32;
+            }
+            workerArgs.push("--max", String(maxJobs));
+          }
+          if (json) {
+            // A1: stdout is EXACTLY one JSON array, so the header goes nowhere
+            // near it.
+            workerArgs.push("--json");
+          } else {
+            console.log(
+              `Running Continuity worker in foreground${maxJobs === undefined ? "" : ` (max ${maxJobs} job${maxJobs === 1 ? "" : "s"})`}...`,
+            );
+          }
+          await runScript(script, workerArgs);
           break;
         }
 
@@ -1094,7 +1161,7 @@ async function main() {
             for (const note of result.notes) console.log(`  note: ${note}`);
             if (!dryRun && result.entries.length > 0) {
               console.log("Run the worker to drain the recovered work:");
-              console.log("  memex-continuity-worker    # or: node scripts/continuity-worker.js");
+              console.log("  memex jobs drain           # Continuity worker, here, in the foreground");
               console.log("  memex backfill extract     # for fact extraction targets");
             }
           }
@@ -1279,7 +1346,7 @@ async function main() {
           const env = `MEMEX_MODEL_BUDGET_ID=${result.budget.budgetId} MEMEX_MAINTENANCE_WAVE_ID=${result.budget.parentWaveId}`;
           const workerCommands = [];
           if (kinds.has("fact_extract")) workerCommands.push(`${env} memex backfill extract`);
-          if (kinds.has("capsule_update")) workerCommands.push(`${env} memex-continuity-worker`);
+          if (kinds.has("capsule_update")) workerCommands.push(`${env} memex jobs drain`);
           if (workerCommands.length === 0) {
             workerCommands.push(`${env} memex backfill all`);
           }

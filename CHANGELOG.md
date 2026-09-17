@@ -2,6 +2,29 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.22 - 2026-09-17
+
+Fix for a recovery hint that named a command the supported install does not
+have (#156).
+
+### Jobs
+
+- `memex jobs drain [--max <n>] [--json]` runs the Continuity worker in the
+  foreground from the installed root. `--max` takes an integer ≥ 1 (a missing,
+  non-numeric, non-integer or smaller value is a usage error, exit 2) and is
+  clamped to the worker's ceiling of 32. With `--json`, stdout is exactly one
+  JSON array of per-job results and every human line stays on stderr.
+- `memex recover`, `memex jobs retry` and `memex model-work resume` now point
+  at `memex jobs drain` instead of `memex-continuity-worker`. That bin exists
+  only under `node_modules/.bin` of an npm install; the supported install
+  (Codex plugin cache + the `memex` shim) exposes only `memex`, so the hint was
+  `command not found` exactly when a job needed draining. The bin itself is
+  unchanged for npm installs.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.21 - 2026-09-17
 
 Hotfix for the finding of the post-release review of 0.7.20 (#153).
