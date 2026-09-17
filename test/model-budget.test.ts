@@ -345,8 +345,14 @@ describe("durable model work budget", () => {
     db.prepare(`INSERT INTO model_work_targets (membership_id, budget_id, stage, target_id, state, created_at, updated_at)
       VALUES ('m-1', ?, 'relation', 'fact-1', 'pending', ?, ?), ('m-2', ?, 'relation', 'fact-2', 'completed', ?, ?)`)
       .run(spent.budgetId, past, past, spent.budgetId, past, past);
+    // an extract-only run must not take memberships it will never process
+    const extractOnly = openForegroundBackfillRun(db, {
+      env: { MEMEX_BACKFILL_RUN_BUDGET_ID: second.budget.budgetId } as NodeJS.ProcessEnv, kinds: ["fact_extract"], now,
+    })!;
+    expect(extractOnly.reboundTargets).toBe(0);
+    expect(db.prepare("SELECT budget_id FROM model_work_targets WHERE membership_id = 'm-1'").get()).toEqual({ budget_id: spent.budgetId });
     const shared = openForegroundBackfillRun(db, {
-      env: { MEMEX_BACKFILL_RUN_BUDGET_ID: second.budget.budgetId } as NodeJS.ProcessEnv, now,
+      env: { MEMEX_BACKFILL_RUN_BUDGET_ID: second.budget.budgetId } as NodeJS.ProcessEnv, migrateTargets: true, now,
     })!;
     expect(shared.budget.budgetId).toBe(second.budget.budgetId);
     expect(shared.reboundTargets).toBe(1);
@@ -362,7 +368,7 @@ describe("durable model work budget", () => {
     db.prepare(`INSERT INTO model_work_targets (membership_id, budget_id, stage, target_id, state, created_at, updated_at)
       VALUES ('m-3', ?, 'relation', 'fact-3', 'pending', ?, ?)`).run(clockDead.budgetId, past, past);
     const third = openForegroundBackfillRun(db, {
-      env: { MEMEX_BACKFILL_RUN_BUDGET_ID: second.budget.budgetId } as NodeJS.ProcessEnv, now,
+      env: { MEMEX_BACKFILL_RUN_BUDGET_ID: second.budget.budgetId } as NodeJS.ProcessEnv, migrateTargets: true, now,
     })!;
     expect(third.reboundTargets).toBe(1);
     expect(db.prepare("SELECT budget_id FROM model_work_targets WHERE membership_id = 'm-3'").get())

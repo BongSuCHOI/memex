@@ -1356,7 +1356,8 @@ async function main() {
               if (typeof openForegroundBackfillRun === "function") {
                 const runDb = initDatabase();
                 try {
-                  const run = openForegroundBackfillRun(runDb, {});
+                  // the ontology stage runs in `all`, so relation memberships may follow
+                  const run = openForegroundBackfillRun(runDb, { migrateTargets: true });
                   if (run) {
                     process.env.MEMEX_BACKFILL_RUN_BUDGET_ID = run.budget.budgetId;
                     console.log(`backfill: model run ${run.budget.parentWaveId} (${run.budget.budgetId}) shared by every stage`);

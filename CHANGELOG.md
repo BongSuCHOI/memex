@@ -2,6 +2,20 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.21 - 2026-09-17
+
+Hotfix for the finding of the post-release review of 0.7.20 (#153).
+
+### Model work budgets
+
+- Only a foreground run that will process them takes pending ontology
+  relation memberships onto its run — the ontology stage and `backfill all`.
+  An extract-only run used to move them onto a budget nothing drains.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.20 - 2026-09-17
 
 Fix for a foreground backfill stage found idle on a second machine (#153).

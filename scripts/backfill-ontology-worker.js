@@ -147,7 +147,7 @@ async function main() {
       try {
         // dynamic: an older dist without the export must not fail at load time
         const { openForegroundBackfillRun } = await import('../dist/model-budget.js');
-        foregroundRun = typeof openForegroundBackfillRun === 'function' ? openForegroundBackfillRun(db, {}) : null;
+        foregroundRun = typeof openForegroundBackfillRun === 'function' ? openForegroundBackfillRun(db, { migrateTargets: true }) : null;
       } catch { foregroundRun = null; }
     }
     if (foregroundRun) {
