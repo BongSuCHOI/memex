@@ -1003,29 +1003,65 @@ async function main() {
           // spends model calls and changes durable state, so an unrecognized
           // flag must never be silently ignored: `memex jobs drain --dry-run`
           // reads as "show me what it would do" and would otherwise do it.
-          // Checked BEFORE the worker spawn and before any database access.
-          const unsupported = [];
+          //
+          // One left-to-right scan, every option accepted at most once and
+          // every value validated where it is consumed. A repeated option used
+          // to swallow the next token as its value
+          // (`--max 1 --max --dry-run --json` ran the real worker), so a repeat
+          // is itself a usage error. All of it BEFORE the worker spawn and
+          // before any database access.
+          const drainUsage = "Usage: memex jobs drain [--max <n>] [--json]";
+          let drainError = null;
           let sawSub = false;
+          let sawJson = false;
+          let sawMax = false;
+          let maxJobs;
+          let clampNote = null;
           for (let i = 0; i < args.length; i++) {
             const arg = args[i];
             if (arg === "drain" && !sawSub) {
               sawSub = true;
               continue;
             }
-            if (arg === "--json") continue;
-            // The value is validated below; consume it here so it is not
-            // reported as an unsupported positional.
-            if (arg === "--max") {
-              i++;
+            if (arg === "--json") {
+              if (sawJson) {
+                drainError = "--json given more than once";
+                break;
+              }
+              sawJson = true;
               continue;
             }
-            unsupported.push(arg);
+            if (arg === "--max") {
+              if (sawMax) {
+                drainError = "--max given more than once";
+                break;
+              }
+              sawMax = true;
+              const raw = args[i + 1];
+              i++;
+              if (raw === undefined || raw.startsWith("-") || !/^\d+$/.test(raw)) {
+                drainError = `--max must be an integer >= 1 (got ${raw === undefined ? "no value" : raw})`;
+                break;
+              }
+              const value = Number(raw);
+              if (!Number.isInteger(value) || value < 1) {
+                drainError = `--max must be an integer >= 1 (got ${raw})`;
+                break;
+              }
+              if (value > 32) {
+                clampNote = `--max ${value} clamped to 32 (the worker's per-run ceiling)`;
+                maxJobs = 32;
+              } else {
+                maxJobs = value;
+              }
+              continue;
+            }
+            drainError = `unsupported argument: ${arg}`;
+            break;
           }
-          if (unsupported.length > 0) {
-            console.error(
-              `memex jobs drain: unsupported argument${unsupported.length === 1 ? "" : "s"}: ${unsupported.join(" ")}`,
-            );
-            console.error("Usage: memex jobs drain [--max <n>] [--json]");
+          if (drainError) {
+            console.error(`memex jobs drain: ${drainError}`);
+            console.error(drainUsage);
             process.exitCode = 2;
             break;
           }
@@ -1043,36 +1079,9 @@ async function main() {
             break;
           }
           const workerArgs = [];
-          const maxIndex = args.indexOf("--max");
-          let maxJobs;
-          if (maxIndex >= 0) {
-            const raw = args[maxIndex + 1];
-            if (raw === undefined || raw.startsWith("-") || !/^\d+$/.test(raw)) {
-              console.error(
-                `memex jobs drain: --max must be an integer >= 1 (got ${raw === undefined ? "no value" : raw})`,
-              );
-              console.error("Usage: memex jobs drain [--max <n>] [--json]");
-              process.exitCode = 2;
-              break;
-            }
-            maxJobs = Number(raw);
-            if (!Number.isInteger(maxJobs) || maxJobs < 1) {
-              console.error(
-                `memex jobs drain: --max must be an integer >= 1 (got ${raw})`,
-              );
-              console.error("Usage: memex jobs drain [--max <n>] [--json]");
-              process.exitCode = 2;
-              break;
-            }
-            if (maxJobs > 32) {
-              console.error(
-                `memex jobs drain: --max ${maxJobs} clamped to 32 (the worker's per-run ceiling)`,
-              );
-              maxJobs = 32;
-            }
-            workerArgs.push("--max", String(maxJobs));
-          }
-          if (json) {
+          if (clampNote) console.error(`memex jobs drain: ${clampNote}`);
+          if (maxJobs !== undefined) workerArgs.push("--max", String(maxJobs));
+          if (sawJson) {
             // A1: stdout is EXACTLY one JSON array, so the header goes nowhere
             // near it.
             workerArgs.push("--json");

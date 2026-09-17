@@ -299,6 +299,32 @@ describe("memex jobs drain (#156)", () => {
     });
   }
 
+  // A repeated option used to swallow the next token as its value, which put
+  // an unsupported flag past the check: this exact argv ran the real worker
+  // (exit 0, stdout `[]`, database created).
+  for (const [label, argv] of [
+    ["--max twice, the second swallowing a flag", ["jobs", "drain", "--max", "1", "--max", "--dry-run", "--json"]],
+    ["--max twice with two valid values", ["jobs", "drain", "--max", "1", "--max", "2"]],
+    ["--json twice", ["jobs", "drain", "--json", "--json"]],
+  ]) {
+    it(`rejects ${label} with exit 2 before touching anything`, () => {
+      try {
+        runMemex(argv);
+        assert.fail("expected the repeated-option exit code");
+      } catch (err) {
+        assert.equal(err.status, 2, err.stderr);
+        assert.match(err.stderr, /memex jobs drain: --(max|json) given more than once/);
+        assert.match(err.stderr, /Usage: memex jobs drain \[--max <n>\] \[--json\]/);
+        assert.equal(err.stdout, "", "nothing may reach stdout");
+      }
+      assert.equal(
+        fs.existsSync(dbPath),
+        false,
+        "a rejected invocation must not open or create the database",
+      );
+    });
+  }
+
   it("jobs and recover help name 'memex jobs drain' and no npm-only bin", () => {
     const jobsHelp = runMemex(["jobs", "--help"]);
     assert.match(jobsHelp, /memex jobs drain \[--max <n>\] \[--json\]/);
