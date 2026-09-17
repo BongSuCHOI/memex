@@ -1078,7 +1078,10 @@ async function main() {
             process.exitCode = 1;
             break;
           }
-          const workerArgs = [];
+          // #162: the user asked for this run HERE and now — no start delay and
+          // the worker's normal busy wait. `--mode=hook` is only for the
+          // detached workers a hook spawns beside a 3 s hook budget.
+          const workerArgs = ["--mode=foreground"];
           if (clampNote) console.error(`memex jobs drain: ${clampNote}`);
           if (maxJobs !== undefined) workerArgs.push("--max", String(maxJobs));
           if (sawJson) {

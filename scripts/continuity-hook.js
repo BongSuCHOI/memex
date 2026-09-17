@@ -106,7 +106,10 @@ async function main() {
   );
   if (process.env.MEMEX_CONTINUITY_NO_WAKE !== "1") {
     try {
-      const child = spawn(process.execPath, [path.join(here, "continuity-worker.js")], {
+      // `--mode=hook` (#162): this worker was started by a hook, so it waits
+      // before opening the database and bounds its first open — the inject hook
+      // that follows within ~1-2 s must not lose its 3 s budget to this process.
+      const child = spawn(process.execPath, [path.join(here, "continuity-worker.js"), "--mode=hook"], {
         detached: true,
         stdio: "ignore",
         windowsHide: true,

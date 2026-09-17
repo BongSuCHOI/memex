@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
+import { getMemexHome } from "./paths.js";
 import { claimMemoryJobById, failMemoryJob, readJobFailureToClear, recordClearedJobFailure, } from "./continuity-store.js";
 import { applyLatestLifecycleClosure, CAPTURE_CHUNK_BYTES, WORK_CAPSULE_OUTPUT_SCHEMA, applyWorkCapsulePatch, completeEmptyCapsuleCheckpoint, readWorkCapsule, scheduleCapsuleBacklog, } from "./continuity-core.js";
 import { parseConversation } from "./codex-rollout.js";
@@ -26,6 +28,84 @@ All other list items are short strings; carryFactRevisions may only preserve
 exact triples already present in previousCapsule. Never invent results, causes,
 file changes, completion, IDs, or revisions. Keep the JSON under 1500
 characters, each text under 500 characters, and every list at eight items.`;
+/**
+ * Issue #162 — name the write-lock holder.
+ *
+ * A hook killed by its host at 3 s left nothing behind that could say WHICH
+ * process held the lock, or whether the worker was waiting for it or sitting on
+ * it. These two numbers answer exactly that, and they are not interchangeable:
+ *
+ *   wait_ms  time from the transaction call to the moment its body starts —
+ *            how long this worker WAITED for the write lock.
+ *   held_ms  from the body's first statement to commit — how long this worker
+ *            HELD it, i.e. how long everyone else waited on this process.
+ *
+ * Only `held_ms` may ever be reported as "held the write lock for N ms".
+ *
+ * The row format `{ts, pid, label, wait_ms, held_ms}` is a contract with
+ * `memex doctor`'s hook-latency check, which reads this file.
+ */
+export const WORKER_SLOW_TRANSACTION_HELD_MS = 300;
+export const WORKER_SLOW_TRANSACTION_WAIT_MS = 1_000;
+export function workerTransactionLogPath() {
+    return path.join(getMemexHome(), "logs", "worker-transactions.jsonl");
+}
+/** Returns whether a row was appended (only slow transactions are recorded). */
+function recordWorkerTransaction(label, waitMs, heldMs) {
+    const wait_ms = Math.max(0, Math.round(waitMs));
+    const held_ms = Math.max(0, Math.round(heldMs));
+    if (held_ms <= WORKER_SLOW_TRANSACTION_HELD_MS && wait_ms <= WORKER_SLOW_TRANSACTION_WAIT_MS) {
+        return false;
+    }
+    try {
+        const file = workerTransactionLogPath();
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.appendFileSync(file, `${JSON.stringify({ ts: new Date().toISOString(), pid: process.pid, label, wait_ms, held_ms })}\n`);
+        return true;
+    }
+    catch {
+        // Diagnostics must never break the worker.
+        return false;
+    }
+}
+/**
+ * Time one write transaction. `run` receives `markStart`, which it must call as
+ * the FIRST statement inside the transaction body — that is the instant the
+ * write lock was granted, and the only way to separate waiting from holding.
+ *
+ * If `markStart` never fires the body never ran: either nothing needed a
+ * transaction (nothing is recorded — no lock was taken) or acquiring it threw,
+ * in which case the whole span was wait.
+ *
+ * Callees that open their OWN transaction (`applyWorkCapsulePatch`,
+ * `completeEmptyCapsuleCheckpoint`, `scheduleCapsuleBacklog`, which live in
+ * continuity-core) cannot report that instant, so their spans are marked at the
+ * call: `wait_ms` reads 0 and `held_ms` covers the whole call. That over-states
+ * held time under contention rather than losing the row — the holder named is
+ * still this process and this label.
+ */
+export function timeWorkerTransaction(label, run) {
+    const calledAt = performance.now();
+    let startedAt = null;
+    const markStart = () => {
+        if (startedAt === null)
+            startedAt = performance.now();
+    };
+    try {
+        const value = run(markStart);
+        if (startedAt !== null)
+            recordWorkerTransaction(label, startedAt - calledAt, performance.now() - startedAt);
+        return value;
+    }
+    catch (error) {
+        const finishedAt = performance.now();
+        if (startedAt === null)
+            recordWorkerTransaction(label, finishedAt - calledAt, 0);
+        else
+            recordWorkerTransaction(label, startedAt - calledAt, finishedAt - startedAt);
+        throw error;
+    }
+}
 function nextJob(db, kind, now) {
     return db.prepare(`
     SELECT j.job_id
@@ -122,33 +202,36 @@ function verifyCheckpointJournal(db, checkpoint) {
     }
 }
 function completeCaptureIndexJob(db, input) {
-    const tx = db.transaction(() => {
-        // Issue #157: the text this success clears moves to `retry_history`.
-        const cleared = readJobFailureToClear(db, input.jobId);
-        const completed = db.prepare(`
-      UPDATE memory_jobs
-      SET state = 'completed', lease_owner = NULL, lease_until = NULL,
-          last_error = NULL, updated_at = ?
-      WHERE job_id = ? AND kind = 'capture_index' AND checkpoint_id = ?
-        AND state = 'running' AND lease_owner = ? AND lease_generation = ?
-        AND lease_until > ?
-    `).run(input.now, input.jobId, input.checkpointId, input.owner, input.leaseGeneration, input.now);
-        if (completed.changes !== 1)
-            return false;
-        recordClearedJobFailure(db, { jobId: input.jobId, cleared, now: input.now });
-        const capsulePending = db.prepare(`
-      SELECT 1 FROM memory_jobs
-      WHERE checkpoint_id = ? AND kind = 'capsule_update'
-        AND state NOT IN ('completed','superseded','dead')
-      LIMIT 1
-    `).get(input.checkpointId);
-        if (!capsulePending) {
-            db.prepare("UPDATE checkpoints SET state = 'processed' WHERE checkpoint_id = ?")
-                .run(input.checkpointId);
-        }
-        return true;
+    return timeWorkerTransaction("completeCaptureIndexJob", (markStart) => {
+        const tx = db.transaction(() => {
+            markStart();
+            // Issue #157: the text this success clears moves to `retry_history`.
+            const cleared = readJobFailureToClear(db, input.jobId);
+            const completed = db.prepare(`
+        UPDATE memory_jobs
+        SET state = 'completed', lease_owner = NULL, lease_until = NULL,
+            last_error = NULL, updated_at = ?
+        WHERE job_id = ? AND kind = 'capture_index' AND checkpoint_id = ?
+          AND state = 'running' AND lease_owner = ? AND lease_generation = ?
+          AND lease_until > ?
+      `).run(input.now, input.jobId, input.checkpointId, input.owner, input.leaseGeneration, input.now);
+            if (completed.changes !== 1)
+                return false;
+            recordClearedJobFailure(db, { jobId: input.jobId, cleared, now: input.now });
+            const capsulePending = db.prepare(`
+        SELECT 1 FROM memory_jobs
+        WHERE checkpoint_id = ? AND kind = 'capsule_update'
+          AND state NOT IN ('completed','superseded','dead')
+        LIMIT 1
+      `).get(input.checkpointId);
+            if (!capsulePending) {
+                db.prepare("UPDATE checkpoints SET state = 'processed' WHERE checkpoint_id = ?")
+                    .run(input.checkpointId);
+            }
+            return true;
+        });
+        return tx.immediate();
     });
-    return tx.immediate();
 }
 async function processCaptureIndex(db, jobId, owner, now, beforePrefixIngest) {
     const claim = claimMemoryJobById(db, { jobId, owner, now, leaseMs: 5 * 60_000 });
@@ -321,17 +404,23 @@ async function processCapsule(db, jobId, owner, now, model, budgeted) {
     `).run(expectedGeneration, new Date().toISOString(), checkpoint.checkpoint_id);
         // Existing exchanges can predate session binding. Backfill only that
         // session's missing immutable generations before freezing this job target.
-        appendSessionEvidence(db, checkpoint.session_id);
-        const page = db.transaction(() => readCapsulePage(db, checkpoint.checkpoint_id)).immediate();
+        timeWorkerTransaction("appendSessionEvidence", (markStart) => appendSessionEvidence(db, checkpoint.session_id, { onTransactionStart: markStart }));
+        const page = timeWorkerTransaction("readCapsulePage", (markStart) => db.transaction(() => {
+            markStart();
+            return readCapsulePage(db, checkpoint.checkpoint_id);
+        }).immediate());
         attemptPage = page;
         const evidence = page.evidence;
         if (evidence.length === 0) {
-            if (!completeEmptyCapsuleCheckpoint(db, {
-                checkpointId: checkpoint.checkpoint_id,
-                jobId,
-                owner,
-                leaseGeneration: claim.lease_generation,
-                evidencePage: page,
+            if (!timeWorkerTransaction("completeEmptyCapsuleCheckpoint", (markStart) => {
+                markStart();
+                return completeEmptyCapsuleCheckpoint(db, {
+                    checkpointId: checkpoint.checkpoint_id,
+                    jobId,
+                    owner,
+                    leaseGeneration: claim.lease_generation,
+                    evidencePage: page,
+                });
             })) {
                 return { jobId, kind: "capsule_update", state: "stale", detail: "lease lost" };
             }
@@ -377,17 +466,20 @@ async function processCapsule(db, jobId, owner, now, model, budgeted) {
         // so the Capsule row records what the truncation removed. Validating here
         // first would hand `applyWorkCapsulePatch` an already-fitted patch and its
         // `truncated` bookkeeping would read as "nothing was removed".
-        const applied = applyWorkCapsulePatch(db, {
-            workstreamId: checkpoint.workstream_id,
-            expectedGeneration,
-            throughCheckpointId: checkpoint.checkpoint_id,
-            patch: parsed,
-            evidencePage: page,
-            jobLease: {
-                jobId,
-                owner,
-                leaseGeneration: claim.lease_generation,
-            },
+        const applied = timeWorkerTransaction("applyWorkCapsulePatch", (markStart) => {
+            markStart();
+            return applyWorkCapsulePatch(db, {
+                workstreamId: checkpoint.workstream_id,
+                expectedGeneration,
+                throughCheckpointId: checkpoint.checkpoint_id,
+                patch: parsed,
+                evidencePage: page,
+                jobLease: {
+                    jobId,
+                    owner,
+                    leaseGeneration: claim.lease_generation,
+                },
+            });
         });
         if (!applied) {
             const transition = failMemoryJob(db, {
@@ -559,7 +651,10 @@ export async function runContinuityWorker(db, options = {}) {
         console.error("continuity-worker: capsule updates held on a model setting; capture continues (memex models show)");
     }
     for (let index = 0; index < maxJobs; index++) {
-        scheduleCapsuleBacklog(db);
+        timeWorkerTransaction("scheduleCapsuleBacklog", (markStart) => {
+            markStart();
+            scheduleCapsuleBacklog(db);
+        });
         const now = options.now ?? new Date();
         const capture = nextJob(db, "capture_index", now.toISOString());
         if (capture) {

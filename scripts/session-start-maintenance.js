@@ -119,9 +119,9 @@ async function main() {
       );
     };
 
-    const spawnDetached = (script) => {
+    const spawnDetached = (script, args = []) => {
       try {
-        const child = spawn(process.execPath, [path.join(HERE, script)], {
+        const child = spawn(process.execPath, [path.join(HERE, script), ...args], {
           detached: true,
           stdio: 'ignore',
           windowsHide: true,
@@ -163,7 +163,10 @@ async function main() {
       `).get(new Date().toISOString(), new Date().toISOString());
       if (pendingContinuity) {
         continuityPending = true;
-        spawnDetached('continuity-worker.js');
+        // `--mode=hook` (#162): a maintenance-spawned worker is hook-spawned
+        // too, so it waits before opening the database and bounds its first
+        // open instead of racing the SessionStart/inject hooks for the lock.
+        spawnDetached('continuity-worker.js', ['--mode=hook']);
       }
     } catch { /* non-fatal */ }
 

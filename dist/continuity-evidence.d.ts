@@ -16,7 +16,23 @@ export interface CapsulePage {
     evidence: Array<Record<string, unknown>>;
 }
 export declare function appendExchangeEvidence(db: Database.Database, exchangeId: string): number;
-export declare function appendSessionEvidence(db: Database.Database, sessionId: string): void;
+/**
+ * Backfill this session's missing evidence generations.
+ *
+ * Out of transaction (the worker's per-page call, issue #162) the scan runs
+ * FIRST, as a read: the steady state — every exchange already has evidence for
+ * its current generation — then costs no write lock at all, instead of one
+ * immediate transaction that re-read every exchange of a 1,400-exchange session
+ * while a 3-second hook waited on the same lock.
+ *
+ * Inside a caller's transaction (the rebind in continuity-identity.ts and
+ * `refreshWorkspaceEvidence`) the full scan stays exactly as it was: that
+ * caller already holds the write lock, the pre-scan would not shorten it, and
+ * the rows it would read are the caller's own uncommitted ones.
+ */
+export declare function appendSessionEvidence(db: Database.Database, sessionId: string, options?: {
+    onTransactionStart?: () => void;
+}): void;
 export declare function readCapsulePage(db: Database.Database, checkpointId: string): CapsulePage;
 export declare function commitCapsulePage(db: Database.Database, workstreamId: string, page: CapsulePage): boolean;
 /**
