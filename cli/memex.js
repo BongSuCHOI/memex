@@ -999,6 +999,36 @@ async function main() {
         // <stage>`: the INSTALLED root's script, foreground, stdio inherited —
         // never this checkout's or an npx copy's.
         if (command === "jobs" && sub === "drain") {
+          // Fail closed on anything this command does not implement. `drain`
+          // spends model calls and changes durable state, so an unrecognized
+          // flag must never be silently ignored: `memex jobs drain --dry-run`
+          // reads as "show me what it would do" and would otherwise do it.
+          // Checked BEFORE the worker spawn and before any database access.
+          const unsupported = [];
+          let sawSub = false;
+          for (let i = 0; i < args.length; i++) {
+            const arg = args[i];
+            if (arg === "drain" && !sawSub) {
+              sawSub = true;
+              continue;
+            }
+            if (arg === "--json") continue;
+            // The value is validated below; consume it here so it is not
+            // reported as an unsupported positional.
+            if (arg === "--max") {
+              i++;
+              continue;
+            }
+            unsupported.push(arg);
+          }
+          if (unsupported.length > 0) {
+            console.error(
+              `memex jobs drain: unsupported argument${unsupported.length === 1 ? "" : "s"}: ${unsupported.join(" ")}`,
+            );
+            console.error("Usage: memex jobs drain [--max <n>] [--json]");
+            process.exitCode = 2;
+            break;
+          }
           const script = join(
             __dirname,
             "..",

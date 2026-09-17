@@ -273,6 +273,32 @@ describe("memex jobs drain (#156)", () => {
     );
   });
 
+  // `drain` spends model calls and changes durable state, so an argument it
+  // does not implement must stop it, not be ignored. `--dry-run` is the case
+  // that matters: it reads as "show me what it would do".
+  for (const [label, argv] of [
+    ["--dry-run", ["jobs", "drain", "--dry-run", "--json"]],
+    ["an unknown flag", ["jobs", "drain", "--all-dead"]],
+    ["a positional argument", ["jobs", "drain", "foo"]],
+  ]) {
+    it(`rejects ${label} with exit 2 before touching anything`, () => {
+      try {
+        runMemex(argv);
+        assert.fail("expected the unsupported-argument exit code");
+      } catch (err) {
+        assert.equal(err.status, 2, err.stderr);
+        assert.match(err.stderr, /memex jobs drain: unsupported argument/);
+        assert.match(err.stderr, /Usage: memex jobs drain \[--max <n>\] \[--json\]/);
+        assert.equal(err.stdout, "", "nothing may reach stdout");
+      }
+      assert.equal(
+        fs.existsSync(dbPath),
+        false,
+        "a rejected invocation must not open or create the database",
+      );
+    });
+  }
+
   it("jobs and recover help name 'memex jobs drain' and no npm-only bin", () => {
     const jobsHelp = runMemex(["jobs", "--help"]);
     assert.match(jobsHelp, /memex jobs drain \[--max <n>\] \[--json\]/);
