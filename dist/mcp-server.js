@@ -12154,7 +12154,8 @@ function openForegroundBackfillRun(db, input = {}) {
   for (const kind of input.kinds ?? []) {
     reboundJobIds.push(...rebindSpentQueueJobsToBudget(db, { budgetId: budget.budgetId, kind, now }));
   }
-  if (tableExists2(db, "model_work_targets")) {
+  const migrate = input.migrateTargets === true && tableExists2(db, "model_work_targets");
+  if (migrate) {
     const holders = db.prepare(`
       SELECT DISTINCT b.budget_id AS budget_id FROM model_work_targets t
       JOIN model_work_budgets b ON b.budget_id = t.budget_id
@@ -12167,7 +12168,7 @@ function openForegroundBackfillRun(db, input = {}) {
       if (spent) markModelBudgetExhausted(db, row.budgetId, spent, now.toISOString());
     }
   }
-  const reboundTargets = tableExists2(db, "model_work_targets") ? db.prepare(`
+  const reboundTargets = migrate ? db.prepare(`
         UPDATE OR IGNORE model_work_targets
         SET budget_id = ?, updated_at = ?
         WHERE state = 'pending' AND budget_id <> ?
@@ -33212,7 +33213,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.20"
+    version: "0.7.21"
   },
   {
     capabilities: {

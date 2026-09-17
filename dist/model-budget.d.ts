@@ -664,6 +664,14 @@ export declare function budgetStopApplies(runBudgetId: string | null, exhaustedB
  */
 export declare function openForegroundBackfillRun(db: Database.Database, input?: {
     kinds?: string[];
+    /**
+     * Move pending model-work memberships (ontology relation probes) parked
+     * on spent budgets onto this run. Only a run that will actually process
+     * them may take them — the ontology stage, or `backfill all` — otherwise
+     * an extract-only run would strand them on a budget nothing drains
+     * (post-release review of 0.7.20).
+     */
+    migrateTargets?: boolean;
     env?: NodeJS.ProcessEnv;
     limits?: Partial<ModelBudgetLimits>;
     now?: Date;

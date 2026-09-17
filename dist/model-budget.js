@@ -2334,7 +2334,8 @@ export function openForegroundBackfillRun(db, input = {}) {
     // otherwise the ontology selector never sees them again (review of #153).
     // Settle first: a budget whose deadline passed may still be stored `active`
     // (nothing touched it since), and only a durable `exhausted` row qualifies.
-    if (tableExists(db, "model_work_targets")) {
+    const migrate = input.migrateTargets === true && tableExists(db, "model_work_targets");
+    if (migrate) {
         const holders = db.prepare(`
       SELECT DISTINCT b.budget_id AS budget_id FROM model_work_targets t
       JOIN model_work_budgets b ON b.budget_id = t.budget_id
@@ -2349,7 +2350,7 @@ export function openForegroundBackfillRun(db, input = {}) {
                 markModelBudgetExhausted(db, row.budgetId, spent, now.toISOString());
         }
     }
-    const reboundTargets = tableExists(db, "model_work_targets")
+    const reboundTargets = migrate
         ? db.prepare(`
         UPDATE OR IGNORE model_work_targets
         SET budget_id = ?, updated_at = ?

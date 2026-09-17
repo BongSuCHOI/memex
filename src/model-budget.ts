@@ -3010,7 +3010,20 @@ export function budgetStopApplies(
  */
 export function openForegroundBackfillRun(
   db: Database.Database,
-  input: { kinds?: string[]; env?: NodeJS.ProcessEnv; limits?: Partial<ModelBudgetLimits>; now?: Date } = {},
+  input: {
+    kinds?: string[];
+    /**
+     * Move pending model-work memberships (ontology relation probes) parked
+     * on spent budgets onto this run. Only a run that will actually process
+     * them may take them — the ontology stage, or `backfill all` — otherwise
+     * an extract-only run would strand them on a budget nothing drains
+     * (post-release review of 0.7.20).
+     */
+    migrateTargets?: boolean;
+    env?: NodeJS.ProcessEnv;
+    limits?: Partial<ModelBudgetLimits>;
+    now?: Date;
+  } = {},
 ): { budget: ModelWorkBudget; reboundJobIds: string[]; reboundTargets: number } | null {
   const env = input.env ?? process.env;
   if (env.MEMEX_MAINTENANCE_WAVE_ID?.trim() || env.MEMEX_MODEL_BUDGET_ID?.trim()) return null;
@@ -3035,7 +3048,8 @@ export function openForegroundBackfillRun(
   // otherwise the ontology selector never sees them again (review of #153).
   // Settle first: a budget whose deadline passed may still be stored `active`
   // (nothing touched it since), and only a durable `exhausted` row qualifies.
-  if (tableExists(db, "model_work_targets")) {
+  const migrate = input.migrateTargets === true && tableExists(db, "model_work_targets");
+  if (migrate) {
     const holders = db.prepare(`
       SELECT DISTINCT b.budget_id AS budget_id FROM model_work_targets t
       JOIN model_work_budgets b ON b.budget_id = t.budget_id
@@ -3048,7 +3062,7 @@ export function openForegroundBackfillRun(
       if (spent) markModelBudgetExhausted(db, row.budgetId, spent, now.toISOString());
     }
   }
-  const reboundTargets = tableExists(db, "model_work_targets")
+  const reboundTargets = migrate
     ? db.prepare(`
         UPDATE OR IGNORE model_work_targets
         SET budget_id = ?, updated_at = ?
