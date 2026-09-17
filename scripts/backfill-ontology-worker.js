@@ -139,11 +139,30 @@ async function main() {
       return;
     }
     const requestedBudgetId = process.env.MEMEX_MODEL_BUDGET_ID?.trim();
-    const maintenanceBudget = requestedBudgetId
-      ? getModelWorkBudget(db, requestedBudgetId)
-      : getOrCreateMaintenanceModelBudget(db, {
-          parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || 'maintenance',
-        });
+    // Issue #153: a terminal run works under its own `backfill#n` run instead
+    // of the automatic maintenance lineage, whose latest run may be spent and
+    // waiting for a wake. Hook-spawned / pinned invocations keep their lineage.
+    let foregroundRun = null;
+    if (!requestedBudgetId && !process.env.MEMEX_MAINTENANCE_WAVE_ID) {
+      try {
+        // dynamic: an older dist without the export must not fail at load time
+        const { openForegroundBackfillRun } = await import('../dist/model-budget.js');
+        foregroundRun = typeof openForegroundBackfillRun === 'function' ? openForegroundBackfillRun(db, {}) : null;
+      } catch { foregroundRun = null; }
+    }
+    if (foregroundRun) {
+      log(
+        `backfill-ontology: 이 실행 전용 model run ${foregroundRun.budget.parentWaveId} (${foregroundRun.budget.budgetId})` +
+          (foregroundRun.reboundTargets > 0 ? ` — 소진된 예산의 relation 대기 ${foregroundRun.reboundTargets}건 이관` : ''),
+      );
+    }
+    const maintenanceBudget = foregroundRun
+      ? foregroundRun.budget
+      : requestedBudgetId
+        ? getModelWorkBudget(db, requestedBudgetId)
+        : getOrCreateMaintenanceModelBudget(db, {
+            parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || 'maintenance',
+          });
     if (!maintenanceBudget) {
       throw new Error(`model budget ${requestedBudgetId} does not exist`);
     }

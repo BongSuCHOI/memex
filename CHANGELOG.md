@@ -2,6 +2,23 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.20 - 2026-09-17
+
+Fix for a foreground backfill stage found idle on a second machine (#153).
+
+### Model work budgets
+
+- Every foreground `memex backfill` stage — extract, ontology and
+  consolidation — works under its own `backfill#n` run instead of the
+  automatic maintenance lineage, whose latest run may be spent and waiting
+  for a host wake that never comes while the host is closed. Hook-spawned and
+  explicitly pinned workers keep their lineage. `memex backfill ontology`
+  classified nothing on a run spent eighteen hours earlier.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.19 - 2026-09-16
 
 Hotfixes for the three findings of the post-release review of 0.7.18 (#149).

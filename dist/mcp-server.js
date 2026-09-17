@@ -10440,6 +10440,7 @@ __export(model_budget_exports, {
   modelBudgetErrorFromUnknown: () => modelBudgetErrorFromUnknown,
   modelBudgetLimitsFromEnv: () => modelBudgetLimitsFromEnv,
   nextModelWorkRunWaveId: () => nextModelWorkRunWaveId,
+  openForegroundBackfillRun: () => openForegroundBackfillRun,
   peekResolvedModelBudget: () => peekResolvedModelBudget,
   rebindMemoryJobToBudget: () => rebindMemoryJobToBudget,
   rebindSpentQueueJobsToBudget: () => rebindSpentQueueJobsToBudget,
@@ -12138,6 +12139,41 @@ function rebindSpentQueueJobsToBudget(db, input) {
 }
 function budgetStopApplies(runBudgetId, exhaustedBudgetId) {
   return runBudgetId === null || exhaustedBudgetId === null || runBudgetId === exhaustedBudgetId;
+}
+function openForegroundBackfillRun(db, input = {}) {
+  const env = input.env ?? process.env;
+  if (env.MEMEX_MAINTENANCE_WAVE_ID?.trim() || env.MEMEX_MODEL_BUDGET_ID?.trim()) return null;
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  const shared = env.MEMEX_BACKFILL_RUN_BUDGET_ID?.trim();
+  const budget = shared ? readBudgetById(db, shared) : startNewModelWorkRun(db, {
+    parentWaveId: nextModelWorkRunWaveId(db, "backfill"),
+    limits: input.limits
+  });
+  if (!budget) throw new ModelBudgetNotFoundError(shared ?? "");
+  const reboundJobIds = [];
+  for (const kind of input.kinds ?? []) {
+    reboundJobIds.push(...rebindSpentQueueJobsToBudget(db, { budgetId: budget.budgetId, kind, now }));
+  }
+  if (tableExists2(db, "model_work_targets")) {
+    const holders = db.prepare(`
+      SELECT DISTINCT b.budget_id AS budget_id FROM model_work_targets t
+      JOIN model_work_budgets b ON b.budget_id = t.budget_id
+      WHERE t.state = 'pending' AND t.budget_id <> ? AND b.state = 'active'
+    `).all(budget.budgetId);
+    for (const holder of holders) {
+      const row = readBudgetById(db, holder.budget_id);
+      if (!row) continue;
+      const spent = resolveBudgetExhaustion(db, row, now);
+      if (spent) markModelBudgetExhausted(db, row.budgetId, spent, now.toISOString());
+    }
+  }
+  const reboundTargets = tableExists2(db, "model_work_targets") ? db.prepare(`
+        UPDATE OR IGNORE model_work_targets
+        SET budget_id = ?, updated_at = ?
+        WHERE state = 'pending' AND budget_id <> ?
+          AND budget_id IN (SELECT budget_id FROM model_work_budgets WHERE state IN ('exhausted','cancelled'))
+      `).run(budget.budgetId, now.toISOString(), budget.budgetId).changes : 0;
+  return { budget, reboundJobIds, reboundTargets };
 }
 function getOrCreateMaintenanceModelBudget(db, input = {}) {
   return getOrCreateWaveModelBudget(db, {
@@ -33176,7 +33212,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.19"
+    version: "0.7.20"
   },
   {
     capabilities: {

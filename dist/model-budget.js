@@ -2295,6 +2295,70 @@ export function rebindSpentQueueJobsToBudget(db, input) {
 export function budgetStopApplies(runBudgetId, exhaustedBudgetId) {
     return runBudgetId === null || exhaustedBudgetId === null || runBudgetId === exhaustedBudgetId;
 }
+/**
+ * Issue #153 (#146 follow-up): the run a FOREGROUND backfill stage works under.
+ *
+ * A terminal `memex backfill <stage>` must not join the automatic maintenance
+ * lineage — its latest run may be spent and its rollover waits for a wake that
+ * never comes while the host is closed (observed: `backfill ontology` did no
+ * work on `maintenance#21`, spent 18 hours earlier). When the environment pins
+ * nothing (no MEMEX_MAINTENANCE_WAVE_ID / MEMEX_MODEL_BUDGET_ID — a hook-spawned
+ * or explicitly pinned worker keeps its lineage), the stage opens the next run
+ * of the `backfill` root and moves queued jobs of the given kinds that are
+ * parked on a spent budget onto it (settling clock-dead budgets first).
+ * Returns null when pinned.
+ */
+export function openForegroundBackfillRun(db, input = {}) {
+    const env = input.env ?? process.env;
+    if (env.MEMEX_MAINTENANCE_WAVE_ID?.trim() || env.MEMEX_MODEL_BUDGET_ID?.trim())
+        return null;
+    const now = input.now ?? new Date();
+    // `memex backfill all` opens one run and hands it to every stage through
+    // MEMEX_BACKFILL_RUN_BUDGET_ID, so the stages share one budget instead of
+    // each minting its own (review of #153).
+    const shared = env.MEMEX_BACKFILL_RUN_BUDGET_ID?.trim();
+    const budget = shared
+        ? readBudgetById(db, shared)
+        : startNewModelWorkRun(db, {
+            parentWaveId: nextModelWorkRunWaveId(db, "backfill"),
+            limits: input.limits,
+        });
+    if (!budget)
+        throw new ModelBudgetNotFoundError(shared ?? "");
+    const reboundJobIds = [];
+    for (const kind of input.kinds ?? []) {
+        reboundJobIds.push(...rebindSpentQueueJobsToBudget(db, { budgetId: budget.budgetId, kind, now }));
+    }
+    // Pending model-work memberships (ontology relation probes) are keyed by
+    // budget; the ones parked on a spent budget follow the work onto this run,
+    // otherwise the ontology selector never sees them again (review of #153).
+    // Settle first: a budget whose deadline passed may still be stored `active`
+    // (nothing touched it since), and only a durable `exhausted` row qualifies.
+    if (tableExists(db, "model_work_targets")) {
+        const holders = db.prepare(`
+      SELECT DISTINCT b.budget_id AS budget_id FROM model_work_targets t
+      JOIN model_work_budgets b ON b.budget_id = t.budget_id
+      WHERE t.state = 'pending' AND t.budget_id <> ? AND b.state = 'active'
+    `).all(budget.budgetId);
+        for (const holder of holders) {
+            const row = readBudgetById(db, holder.budget_id);
+            if (!row)
+                continue;
+            const spent = resolveBudgetExhaustion(db, row, now);
+            if (spent)
+                markModelBudgetExhausted(db, row.budgetId, spent, now.toISOString());
+        }
+    }
+    const reboundTargets = tableExists(db, "model_work_targets")
+        ? db.prepare(`
+        UPDATE OR IGNORE model_work_targets
+        SET budget_id = ?, updated_at = ?
+        WHERE state = 'pending' AND budget_id <> ?
+          AND budget_id IN (SELECT budget_id FROM model_work_budgets WHERE state IN ('exhausted','cancelled'))
+      `).run(budget.budgetId, now.toISOString(), budget.budgetId).changes
+        : 0;
+    return { budget, reboundJobIds, reboundTargets };
+}
 /** Stable budget used by the SessionStart maintenance sibling wave. */
 export function getOrCreateMaintenanceModelBudget(db, input = {}) {
     return getOrCreateWaveModelBudget(db, {

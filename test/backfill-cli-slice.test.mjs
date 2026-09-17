@@ -307,6 +307,20 @@ describe("memex backfill CLI 계약", () => {
     assert.match(resumed, /Rebound lease-free jobs: 2/);
   });
 
+  it("a foreground ontology stage also gets its own backfill run instead of the spent automatic one (#153)", async () => {
+    const { budget } = await seedClockDeadAutomaticBudget();
+    let stdout = "";
+    try {
+      stdout = runMemex(["backfill", "ontology"]);
+    } catch (err) {
+      assert.equal(err.status, 2, err.stderr);
+      stdout = err.stdout;
+    }
+    assert.match(stdout, /backfill-ontology: 이 실행 전용 model run backfill(?:#\d+)? \([0-9a-f-]+\)/);
+    assert.doesNotMatch(stdout, /model budget exhausted/);
+    assert.doesNotMatch(stdout, new RegExp(budget.budgetId));
+  });
+
   it("returns failure when a worker reports a fatal error", () => {
     try {
       runMemex(["backfill", "ontology"], {

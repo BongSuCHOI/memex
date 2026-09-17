@@ -1345,6 +1345,30 @@ async function main() {
         }
         if (process.exitCode) break;
         if (!background) {
+          // Issue #153: one model run for the whole invocation. Each stage
+          // would otherwise mint its own `backfill#n`; the shared id travels to
+          // the stage workers through the environment (they still rebind the
+          // queue kinds they own onto it).
+          if (target === "all" && !process.env.MEMEX_MAINTENANCE_WAVE_ID && !process.env.MEMEX_MODEL_BUDGET_ID) {
+            try {
+              const { initDatabase } = await import(join(distDir, "db.js"));
+              const { openForegroundBackfillRun } = await import(join(distDir, "model-budget.js"));
+              if (typeof openForegroundBackfillRun === "function") {
+                const runDb = initDatabase();
+                try {
+                  const run = openForegroundBackfillRun(runDb, {});
+                  if (run) {
+                    process.env.MEMEX_BACKFILL_RUN_BUDGET_ID = run.budget.budgetId;
+                    console.log(`backfill: model run ${run.budget.parentWaveId} (${run.budget.budgetId}) shared by every stage`);
+                  }
+                } finally {
+                  runDb.close();
+                }
+              }
+            } catch (error) {
+              console.error(`backfill: could not open a shared model run (${error instanceof Error ? error.message : error}) — each stage opens its own`);
+            }
+          }
           // Run stages sequentially in this terminal, stopping at the first
           // failure so each stage's ledger/idempotency state stays coherent.
           // #114: the stage's own exit code/signal and the tail of its output

@@ -203,22 +203,15 @@ async function modelConfigHeld(db) {
  * 옮긴다. 훅이 부른 경우(wave/budget 이 환경에 있음)는 종전 동작 그대로다.
  */
 async function openForegroundRun(db) {
-  if (process.env.MEMEX_MAINTENANCE_WAVE_ID || process.env.MEMEX_MODEL_BUDGET_ID) {
-    return null; // hook-spawned or explicitly pinned — not ours to redirect
-  }
   try {
-    const { startNewModelWorkRun, nextModelWorkRunWaveId, rebindSpentQueueJobsToBudget } =
-      await import('../dist/model-budget.js');
-    const budget = startNewModelWorkRun(db, {
-      parentWaveId: nextModelWorkRunWaveId(db, 'backfill'),
-    });
-    const rebound = rebindSpentQueueJobsToBudget(db, {
-      budgetId: budget.budgetId,
-      kind: 'fact_extract',
-    });
-    return { budget, rebound: rebound.length };
+    // Issue #153: one helper for every foreground stage (extract, ontology,
+    // consolidation). null = hook-spawned or explicitly pinned — not ours.
+    const { openForegroundBackfillRun } = await import('../dist/model-budget.js');
+    if (typeof openForegroundBackfillRun !== 'function') return null;
+    const run = openForegroundBackfillRun(db, { kinds: ['fact_extract'] });
+    return run ? { budget: run.budget, rebound: run.reboundJobIds.length } : null;
   } catch (e) {
-    // 구버전 dist 에는 이 헬퍼들이 없다 — 종전(maintenance 계보) 동작으로 수렴한다.
+    // 구버전 dist 에는 이 헬퍼가 없다 — 종전(maintenance 계보) 동작으로 수렴한다.
     log(
       `backfill-extract: 전용 run 을 열지 못했습니다(${e instanceof Error ? e.message : e}) — 기존 계보로 진행합니다`,
     );
