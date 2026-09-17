@@ -126,13 +126,23 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   was recorded as a healthy `outcome: "fallback"` with `db_wait_ms: 0`, and
   doctor's `hook-latency` reported ok. It is now `outcome: "error"` with the
   wait, on the cold path and on the daemon path alike.
-- `memex doctor` gains `capture-gap` (the markers, with the loss statement
-  above, verbatim) and `hook-latency` (start/done pairing over the last 200
+- `memex doctor` gains `capture-gap` (the markers, each read according to the
+  hook that left it: a capture event gets the loss statement above verbatim, a
+  `SessionStart(clear|compact)` gets "epoch advance skipped … repaired by the
+  next injection", and anything else — PostCompact is telemetry only — gets
+  "hook did not finish … (no capture at stake)" and does not raise a warning by
+  itself. The count and the oldest timestamp are taken from the whole marker set
+  sorted by time, with the 500 cap applying only to the lines printed, so an old
+  marker sitting behind 500 newer ones is still counted and still pruned) and
+  `hook-latency` (start/done pairing over the last 200
   rows: an unpaired start past budget + 10 s with no later row from the same pid
   is reported as killed by host; `db_wait_ms > 1,000` as "hooks waited on the
   database"). When `<data root>/logs/worker-transactions.jsonl` exists it names
   the top holder as "held the write lock for N ms" — from `held_ms` only, never
-  from the time a worker itself spent waiting. UserPromptSubmit has no host
+  from the time a worker itself spent waiting, and only from rows whose own
+  `[ts, ts + held_ms]` window overlaps the offending hook's run (±250 ms);
+  otherwise it says no worker transaction overlapped this hook. A healthy line
+  names no holder at all, because there is no hook to correlate one with. UserPromptSubmit has no host
   timeout, and doctor never claims one for it.
 
 ### Workers

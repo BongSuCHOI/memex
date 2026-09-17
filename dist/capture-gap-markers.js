@@ -99,21 +99,22 @@ function parseMarker(file) {
  * both, so the common case never parses a file it cannot want. `match` sees the
  * parsed marker for everything the name cannot answer (`source`, `ts`).
  */
-export function listCaptureGapMarkers(options = {}) {
+export function scanCaptureGapMarkers(options = {}) {
     const dir = captureGapDir();
     let entries;
     try {
         entries = fs.readdirSync(dir);
     }
     catch {
-        return [];
+        return { markers: [], total: 0, truncated: false };
     }
     const limit = options.limit ?? MARKER_SCAN_LIMIT;
     // `<event>-<session>-<invocation>.json`, each segment already sanitized.
     const wantedSession = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
     const wantedEvent = options.event ? `${safeSegment(options.event)}-` : null;
-    const out = [];
+    const matched = [];
     let scanned = 0;
+    let truncated = false;
     for (const name of entries) {
         if (!name.endsWith(".json"))
             continue;
@@ -124,8 +125,10 @@ export function listCaptureGapMarkers(options = {}) {
             continue;
         // A bound on work that survives a pathological directory, deliberately far
         // above the returned limit so it can never be what hides a candidate.
-        if (++scanned > MARKER_PARSE_LIMIT)
+        if (++scanned > MARKER_PARSE_LIMIT) {
+            truncated = true;
             break;
+        }
         const file = path.join(dir, name);
         const marker = parseMarker(file);
         if (!marker)
@@ -136,12 +139,18 @@ export function listCaptureGapMarkers(options = {}) {
             continue;
         if (options.match && !options.match(marker))
             continue;
-        out.push({ file, marker });
-        if (out.length >= limit)
-            break;
+        matched.push({ file, marker });
     }
-    out.sort((a, b) => (a.marker.ts < b.marker.ts ? -1 : a.marker.ts > b.marker.ts ? 1 : 0));
-    return out;
+    // Sort the WHOLE matched set before the cap. Cutting the directory listing at
+    // 500 in readdir order and sorting afterwards is how doctor reported a wrong
+    // "oldest" and a count that stopped at 500, and how the prune could never see
+    // an old marker hiding behind 500 newer ones (#162 review 10).
+    matched.sort((a, b) => (a.marker.ts < b.marker.ts ? -1 : a.marker.ts > b.marker.ts ? 1 : 0));
+    return { markers: matched.slice(0, limit), total: matched.length, truncated };
+}
+/** Oldest-first, capped at `limit` (default 500). See `scanCaptureGapMarkers`. */
+export function listCaptureGapMarkers(options = {}) {
+    return scanCaptureGapMarkers(options).markers;
 }
 /**
  * Markers of THIS session whose SessionStart source was `clear` or `compact`.
@@ -170,7 +179,9 @@ export function listEpochAdvanceMarkers(sessionId) {
 export function pruneCaptureGapMarkers(maxAgeMs = CAPTURE_GAP_MARKER_MAX_AGE_MS, now = Date.now()) {
     let pruned = 0;
     try {
-        for (const { file, marker } of listCaptureGapMarkers()) {
+        // Every marker, not the first page of them: an expired marker behind 500
+        // newer ones could never be pruned and never stopped being reported.
+        for (const { file, marker } of scanCaptureGapMarkers({ limit: MARKER_PARSE_LIMIT }).markers) {
             const ts = Date.parse(marker.ts);
             if (!Number.isFinite(ts) || now - ts <= maxAgeMs)
                 continue;

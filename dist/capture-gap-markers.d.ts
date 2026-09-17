@@ -16,6 +16,14 @@ export interface LoadedCaptureGapMarker {
     file: string;
     marker: CaptureGapMarker;
 }
+export interface CaptureGapMarkerScan {
+    /** Oldest first, capped at the caller's limit. */
+    markers: LoadedCaptureGapMarker[];
+    /** Every marker that MATCHED, before the cap — what statistics must use. */
+    total: number;
+    /** The parse bound was reached, so even `total` is an undercount. */
+    truncated: boolean;
+}
 export declare function captureGapDir(): string;
 export declare function captureGapMarkerPath(event: string, sessionId: string, invocationId: string): string;
 /**
@@ -39,6 +47,13 @@ export declare function deleteCaptureGapMarker(file: string | null | undefined):
  * both, so the common case never parses a file it cannot want. `match` sees the
  * parsed marker for everything the name cannot answer (`source`, `ts`).
  */
+export declare function scanCaptureGapMarkers(options?: {
+    sessionId?: string;
+    event?: string;
+    match?: (marker: CaptureGapMarker) => boolean;
+    limit?: number;
+}): CaptureGapMarkerScan;
+/** Oldest-first, capped at `limit` (default 500). See `scanCaptureGapMarkers`. */
 export declare function listCaptureGapMarkers(options?: {
     sessionId?: string;
     event?: string;

@@ -23,7 +23,7 @@ import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { lastObserved, readHookEventTail, type HookEventRow } from "./observe-hook-event.js";
-import { listCaptureGapMarkers } from "./capture-gap-markers.js";
+import { scanCaptureGapMarkers, type CaptureGapMarker } from "./capture-gap-markers.js";
 import { hookBudgetMs } from "./hook-budget.js";
 import { getDbPath, getMemexHome } from "./paths.js";
 import { resolveLlmSelection } from "./model-settings.js";
@@ -922,30 +922,68 @@ export const CAPTURE_GAP_LOSS_STATEMENT =
 /** How many marker lines the detail spells out before summarising. */
 const CAPTURE_GAP_DETAIL_LIMIT = 5;
 
+/** Events whose skipped hook actually costs a capture (#162 review 10). */
+const CAPTURE_MARKER_EVENTS = new Set(["Stop", "Interrupt", "PreCompact", "SessionEnd"]);
+
+/**
+ * What a leftover marker means depends on WHICH hook left it.
+ *
+ * Reporting every marker as a skipped capture told a user whose PostCompact
+ * hook was killed — telemetry only, nothing durable at stake — that their
+ * continuity tail was pending #163, for thirty days. Three classes, three
+ * statements, and only the first two are worth a warning.
+ */
+function captureGapMarkerLine(marker: CaptureGapMarker): { text: string; atStake: boolean } {
+  if (CAPTURE_MARKER_EVENTS.has(marker.event)) {
+    // `transcriptBytes` is the transcript size the invocation saw; with no
+    // database reachable at marker time there is no committed boundary to
+    // subtract, so this is the bound on what the skip left uncaptured.
+    return {
+      atStake: true,
+      text: `capture skipped at ${marker.event} ${marker.ts} (${
+        marker.transcriptBytes ?? 0} uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`,
+    };
+  }
+  if (marker.event === "SessionStart" && (marker.source === "clear" || marker.source === "compact")) {
+    // Not a capture: the epoch advance. It heals itself on the next injection,
+    // which is why this says so instead of quoting the tail statement.
+    return {
+      atStake: true,
+      text: `epoch advance skipped at SessionStart(${marker.source}) ${marker.ts}; ` +
+        "repaired by the next injection",
+    };
+  }
+  return {
+    atStake: false,
+    text: `hook did not finish at ${marker.event} ${marker.ts} (no capture at stake)`,
+  };
+}
+
 export function captureGapCheck(): Check {
   const name = "capture-gap";
-  let markers: ReturnType<typeof listCaptureGapMarkers>;
+  let scan: ReturnType<typeof scanCaptureGapMarkers>;
   try {
-    markers = listCaptureGapMarkers();
+    // The COUNT and the OLDEST come from the whole matched set, not from the
+    // first page a directory listing happened to return (#162 review 10).
+    scan = scanCaptureGapMarkers();
   } catch {
     return { name, status: "warn", detail: "unable to read the capture gap markers" };
   }
-  if (markers.length === 0) {
+  if (scan.total === 0) {
     return { name, status: "ok", detail: "no skipped captures recorded" };
   }
-  // `transcriptBytes` is the transcript size the invocation saw; with no
-  // database reachable at marker time there is no committed boundary to
-  // subtract, so this is the bound on what the skip left uncaptured.
-  const lines = markers.slice(0, CAPTURE_GAP_DETAIL_LIMIT).map(({ marker }) =>
-    `capture skipped at ${marker.event} ${marker.ts} (${
-      marker.transcriptBytes ?? 0} uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`,
-  );
-  const more = markers.length - lines.length;
+  const classified = scan.markers.map(({ marker }) => captureGapMarkerLine(marker));
+  const lines = classified.slice(0, CAPTURE_GAP_DETAIL_LIMIT).map((entry) => entry.text);
+  const more = scan.total - lines.length;
+  const atStake = classified.some((entry) => entry.atStake);
   return {
     name,
-    status: "warn",
+    // Markers whose hook had nothing durable at stake are recorded, not alarmed
+    // about: they expire on their own and no repair is pending.
+    status: atStake ? "warn" : "ok",
     detail:
-      `${markers.length} skipped capture(s), oldest ${markers[0].marker.ts} — ` +
+      `${scan.total} skipped capture(s)${scan.truncated ? "+" : ""}, oldest ${
+        scan.markers[0].marker.ts} — ` +
       lines.join(" | ") + (more > 0 ? ` | +${more} more` : ""),
   };
 }
@@ -973,7 +1011,10 @@ interface WorkerTransactionRow {
  * `wait_ms` is time the worker itself spent blocked, which names a victim, not
  * a holder. A missing file is the normal case on a healthy install.
  */
-function workerLockHolderLine(): string {
+/** Clock skew and log-write lag between two processes (#162 review 10). */
+const WORKER_OVERLAP_MARGIN_MS = 250;
+
+function workerLockHolderLine(window: { fromMs: number; toMs: number }): string {
   try {
     const file = path.join(getMemexHome(), "logs", "worker-transactions.jsonl");
     if (!fs.existsSync(file)) return "";
@@ -984,12 +1025,20 @@ function workerLockHolderLine(): string {
         const row = JSON.parse(line) as WorkerTransactionRow;
         const held = Number(row?.held_ms ?? 0);
         if (!Number.isFinite(held) || held <= 0) continue;
+        // The holder has to have been holding WHILE this hook ran. Naming the
+        // heaviest row in the log regardless of time pointed at transactions
+        // that had finished hours earlier.
+        const startedAt = Date.parse(String(row.ts ?? ""));
+        if (!Number.isFinite(startedAt)) continue;
+        const endedAt = startedAt + held;
+        if (endedAt < window.fromMs - WORKER_OVERLAP_MARGIN_MS) continue;
+        if (startedAt > window.toMs + WORKER_OVERLAP_MARGIN_MS) continue;
         if (!top || held > Number(top.held_ms ?? 0)) top = row;
       } catch {
         /* skip malformed */
       }
     }
-    if (!top) return "";
+    if (!top) return " — no worker transaction overlapped this hook";
     return ` — worker transaction ${top.label ?? "unknown"} held the write lock for ${
       Math.round(Number(top.held_ms))} ms`;
   } catch {
@@ -1032,16 +1081,22 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
   if (rows.length === 0) {
     return { name, status: "ok", detail: "no hook runs observed yet" };
   }
-  const holder = workerLockHolderLine();
   if (killed.length > 0) {
     const markers = (() => {
       try {
-        return listCaptureGapMarkers().length;
+        return scanCaptureGapMarkers().total;
       } catch {
         return 0;
       }
     })();
     const worst = killed[killed.length - 1];
+    // A killed hook has no done row, so its window is its start plus the budget
+    // the host allowed it before the kill.
+    const startedAt = Date.parse(worst.ts);
+    const holder = workerLockHolderLine({
+      fromMs: startedAt,
+      toMs: startedAt + hookBudgetMs(worst.event) + HOOK_KILL_GRACE_MS,
+    });
     return {
       name,
       status: "warn",
@@ -1053,6 +1108,12 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
   if (waited.length > 0) {
     const worst = waited.reduce((a, b) =>
       Number(a.db_wait_ms ?? 0) >= Number(b.db_wait_ms ?? 0) ? a : b);
+    // The done row's ts is the END of the run; `duration_ms` walks it back.
+    const endedAt = Date.parse(worst.ts);
+    const holder = workerLockHolderLine({
+      fromMs: endedAt - Number(worst.duration_ms ?? 0),
+      toMs: endedAt,
+    });
     return {
       name,
       status: "warn",
@@ -1062,10 +1123,12 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
           Math.round(Number(worst.db_wait_ms))} ms, ${worst.ts})` + holder,
     };
   }
+  // Nothing went wrong, so there is no hook to correlate a holder with: naming
+  // one here was the inaccuracy, not the omission.
   return {
     name,
     status: "ok",
-    detail: `${paired} hook run(s) completed, max ${maxDuration} ms` + holder,
+    detail: `${paired} hook run(s) completed, max ${maxDuration} ms`,
   };
 }
 

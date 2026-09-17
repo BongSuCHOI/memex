@@ -28776,35 +28776,41 @@ function parseMarker(file) {
     return null;
   }
 }
-function listCaptureGapMarkers(options = {}) {
+function scanCaptureGapMarkers(options = {}) {
   const dir = captureGapDir();
   let entries;
   try {
     entries = fs11.readdirSync(dir);
   } catch {
-    return [];
+    return { markers: [], total: 0, truncated: false };
   }
   const limit = options.limit ?? MARKER_SCAN_LIMIT;
   const wantedSession = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
   const wantedEvent = options.event ? `${safeSegment(options.event)}-` : null;
-  const out = [];
+  const matched = [];
   let scanned = 0;
+  let truncated = false;
   for (const name of entries) {
     if (!name.endsWith(".json")) continue;
     if (wantedSession && !name.includes(wantedSession)) continue;
     if (wantedEvent && !name.startsWith(wantedEvent)) continue;
-    if (++scanned > MARKER_PARSE_LIMIT) break;
+    if (++scanned > MARKER_PARSE_LIMIT) {
+      truncated = true;
+      break;
+    }
     const file = path12.join(dir, name);
     const marker = parseMarker(file);
     if (!marker) continue;
     if (options.sessionId && marker.sessionId !== options.sessionId) continue;
     if (options.event && marker.event !== options.event) continue;
     if (options.match && !options.match(marker)) continue;
-    out.push({ file, marker });
-    if (out.length >= limit) break;
+    matched.push({ file, marker });
   }
-  out.sort((a, b2) => a.marker.ts < b2.marker.ts ? -1 : a.marker.ts > b2.marker.ts ? 1 : 0);
-  return out;
+  matched.sort((a, b2) => a.marker.ts < b2.marker.ts ? -1 : a.marker.ts > b2.marker.ts ? 1 : 0);
+  return { markers: matched.slice(0, limit), total: matched.length, truncated };
+}
+function listCaptureGapMarkers(options = {}) {
+  return scanCaptureGapMarkers(options).markers;
 }
 function listEpochAdvanceMarkers(sessionId) {
   if (!sessionId) return [];
