@@ -585,7 +585,11 @@ describe("hook security and boundary contract", () => {
       sessionId: "session-core-1",
     });
     const result = handleContinuityHook(hook("SessionEnd"), { db });
-    expect(result).toEqual({ stdout: "" });
+    // `finalize` (#162 review) is the deferred success claim the hook script
+    // calls after delivery; the observable result is still an empty stdout.
+    expect(result.stdout).toBe("");
+    expect(result.warning).toBeUndefined();
+    expect(result.capture).toBeUndefined();
     expect(db.prepare("SELECT COUNT(*) AS n FROM checkpoints").get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT reason FROM conversation_exclusions WHERE session_id = ?")
       .get("session-core-1")).toEqual({ reason: "source_conversation_excluded" });

@@ -76,6 +76,10 @@ async function markRecallEmitted(sessionId, receipt, deadlineAt) {
       /* observability is best-effort */
     }
     process.stderr.write(`[memex continuity] recall receipt remained prepared: ${message}\n`);
+    // Issue #162 (review): the receipt is the provenance of the context this
+    // hook just emitted. Leaving it `prepared` is the documented fallback, but
+    // it is NOT an `ok` hook — the caller records `error` and keeps the marker.
+    throw error instanceof Error ? error : new Error(message);
   }
 }
 
@@ -117,11 +121,23 @@ async function main() {
   if (result.warning) {
     process.stderr.write(`[memex continuity] capture gap: ${result.warning}\n`);
   }
-  await emitContinuityResult(
-    result,
-    String(payload.session_id ?? payload.sessionId ?? ""),
-    { deadlineAt: STARTED_AT + budgetMs },
-  );
+  // Issue #162 (review): finalization — the `done` row and the intent marker's
+  // deletion — happens HERE, after delivery, not inside handleContinuityHook.
+  // Those two together are the claim "this hook succeeded"; writing them before
+  // stdout reached the host made a kill in that window look like a success and
+  // logged a failed SessionStart write as `ok`.
+  let deliveryError = null;
+  try {
+    await emitContinuityResult(
+      result,
+      String(payload.session_id ?? payload.sessionId ?? ""),
+      { deadlineAt: STARTED_AT + budgetMs },
+    );
+  } catch (error) {
+    deliveryError = error instanceof Error ? error : new Error(String(error));
+    process.stderr.write(`[memex continuity] delivery failed: ${deliveryError.message}\n`);
+  }
+  if (typeof result.finalize === "function") result.finalize(deliveryError ?? undefined);
   if (process.env.MEMEX_CONTINUITY_NO_WAKE !== "1") {
     try {
       // `--mode=hook` (#162): this worker was started by a hook, so it waits

@@ -21,7 +21,7 @@ export declare const CAPTURE_CHUNK_BYTES: number;
 export declare const DEFAULT_MAX_CAPSULE_CHARS = 12000;
 /** `MEMEX_CAPSULE_MAX_CHARS` override, parsed like the model-budget env caps. */
 export declare function capsuleMaxChars(): number;
-export { busyTimeoutForRemaining, hookBudgetMs, hookIngestBytesPerMs, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
+export { busyTimeoutForRemaining, hookBudgetMs, hookIngestBytesPerMs, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
 export type CaptureKind = "stop" | "interrupt" | "precompact" | "final";
 export type LifecycleSource = "startup" | "resume" | "clear" | "compact";
 export type ResidentFactRevision = [string, number, number];
@@ -190,6 +190,15 @@ export interface HandleHookResult {
     stdout: string;
     warning?: string;
     capture?: CaptureResult;
+    /**
+     * Issue #162 (review) — finalize this invocation AFTER its output has been
+     * delivered. The done row and the intent-marker deletion are the claim "this
+     * hook succeeded"; writing them before stdout reaches the host makes a host
+     * kill in that window look like a success, and makes a failed SessionStart
+     * write look `ok`. Present only when there is something left to claim: call
+     * it with the delivery error to record `error` and KEEP the marker.
+     */
+    finalize?: (deliveryError?: unknown) => void;
     /** Durable recall provenance is prepared before residency and emitted by the hook after stdout. */
     recallReceipt?: ContinuityRecallReceipt;
 }
@@ -219,8 +228,18 @@ export declare function ensureSessionMemoryState(db: Database.Database, input: {
     workspaceId: string;
 };
 /** Preserve Stop/byte coalescing using database capture order, never session ordinals. */
-export declare function scheduleCapsuleForCheckpoint(db: Database.Database, checkpointId: string, now?: string, force?: boolean): void;
-export declare function scheduleCapsuleBacklog(db: Database.Database): void;
+export declare function scheduleCapsuleForCheckpoint(db: Database.Database, checkpointId: string, now?: string, force?: boolean, options?: {
+    onTransactionStart?: () => void;
+}): void;
+/**
+ * `onTransactionStart` (#162 review) fires as the first statement of the FIRST
+ * transaction this call actually opens — the instant the write lock was
+ * granted. It stays silent when the backlog is empty, because then no lock was
+ * ever taken, and it never fires when the lock could not be acquired at all.
+ */
+export declare function scheduleCapsuleBacklog(db: Database.Database, options?: {
+    onTransactionStart?: () => void;
+}): void;
 export declare function captureTranscriptPrefix(db: Database.Database, input: {
     sessionId: string;
     project: string;
@@ -237,6 +256,13 @@ export declare function captureTranscriptPrefix(db: Database.Database, input: {
      * acquiring the lock — the worst case, because it also blocks everyone else.
      */
     deadlineAt?: number;
+    /**
+     * Fired as the FIRST statement inside the write transaction body, i.e. the
+     * instant the write lock was granted. Everything before it was WAITING, and
+     * a call that never fires it never held the lock at all — the only way to
+     * tell a lock holder from its victim (#162).
+     */
+    onTransactionStart?: () => void;
     afterJournalChunk?: (bytesCopied: number) => void;
     afterJournalFsync?: () => void;
     afterCheckpoint?: () => void;
@@ -324,6 +350,8 @@ export declare function applyWorkCapsulePatch(db: Database.Database, input: {
         leaseGeneration: number;
     };
     now?: string;
+    /** First statement of the real transaction body — see #162 review. */
+    onTransactionStart?: () => void;
 }): WorkCapsule | null;
 export declare function completeEmptyCapsuleCheckpoint(db: Database.Database, input: {
     checkpointId: string;
@@ -332,6 +360,8 @@ export declare function completeEmptyCapsuleCheckpoint(db: Database.Database, in
     leaseGeneration: number;
     evidencePage?: CapsulePage;
     now?: string;
+    /** First statement of the real transaction body — see #162 review. */
+    onTransactionStart?: () => void;
 }): boolean;
 export declare function readWorkCapsule(db: Database.Database, workstreamId: string): WorkCapsule | null;
 export declare function buildDeterministicTailBaton(db: Database.Database, input: {

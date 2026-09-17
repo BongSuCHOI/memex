@@ -11,7 +11,15 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
 - The continuity hook now runs against ONE budget that starts at process entry
   — 2,000 ms for the 3 s events, 3,800 ms for PreCompact,
   `MEMEX_HOOK_BUDGET_MS`-overridable — and every database wait derives from
-  what is left of it (one lock wait is capped at 800 ms). Through 0.7.23 every
+  what is left of it (one lock wait is capped at 800 ms). The budget is re-read
+  at the entry of EVERY phase, not once at connect time: capture, the session
+  state write, recovery, the epoch advance and the rehydration commit each
+  re-check what is left and re-derive their lock wait from it, and a phase with
+  less than 150 ms left is not started at all — it is skipped with
+  `outcome: "deadline"`. A busy_timeout chosen once bounds only the first wait;
+  every later statement used to get the whole timeout again, which is how a
+  SessionStart(clear) whose budget had expired ten seconds earlier still
+  advanced the context epoch and reported `ok`. Through 0.7.23 every
   hook connection waited on sqlite's 5 s `busy_timeout` default while the host
   killed the hook at 3 s, so a lock held for two seconds became a host-level
   hook failure instead of a bounded, logged skip. `initDatabase({busyTimeoutMs})`
@@ -21,13 +29,19 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   remaining budget too, and on BUSY leaves the receipt `prepared` as documented.
 - Before it touches the database at all, a hook writes a durable intent marker
   at `<data root>/continuity/gaps/<event>-<session>-<invocation id>.json`
-  (temp + rename) carrying the transcript's byte size at that moment, and
-  deletes it when the hook completes. A marker left behind is the record that a
-  hook did not finish — including the case the host killed it, where nothing was
-  written down before. On BUSY, on the budget and on an oversize delta the hook
-  makes at most ONE bounded `recordCaptureGap` attempt (only with >150 ms left),
-  appends a hook-events done row with `outcome` (`busy`/`oversize`/`deadline`)
-  and `db_wait_ms`, and exits 0 with empty stdout. Markers older than 30 days are
+  (temp + rename) carrying the transcript's byte size at that moment. It is
+  deleted — and the done row written — only AFTER the hook's stdout and its
+  recall receipt have actually been delivered: those two together are the claim
+  "this hook succeeded", and writing them first made a host kill in that window
+  look like success and logged a failed SessionStart write as `ok`. A marker
+  left behind is the record that a hook did not finish — the host killed it, it
+  skipped on the lock or the budget, or delivery failed. Failure of any kind
+  keeps the marker: BUSY, the budget and an oversize delta exit 0 with empty
+  stdout and `outcome` (`busy`/`oversize`/`deadline`), while an ordinary capture
+  failure (a transcript whose `session_meta` names another session, say) is
+  recorded as `outcome: "error"` with a bounded message instead of the `ok` it
+  used to claim. The durable `capture_gaps` row is written exactly once on every
+  path, and only with >150 ms of budget left. Markers older than 30 days are
   pruned on the success path.
 - What a skipped capture actually costs, stated correctly: it only delays that
   turn's fence IF a later capture of the same session succeeds. If the last
@@ -39,16 +53,28 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   its lock waits. A delta that cannot be ingested inside the remaining budget
   (`MEMEX_HOOK_INGEST_BYTES_PER_MS`, default 20,000 B/ms) never opens the write
   transaction at all, and a copy that runs past the deadline between chunks
-  rolls back. A partial capture is never committed.
+  rolls back. The deadline is also checked inside the reverse scan for the last
+  complete JSONL line (a multi-megabyte incomplete record makes that scan itself
+  unbounded) and as the LAST statement of the commit body, so an overrun while
+  the checkpoint and job rows are written rolls the capture back instead of
+  committing it. A partial capture is never committed.
 - A `clear`/`compact` SessionStart skipped on a busy database is the one
   transition that does not heal itself: the epoch never advanced, so residency
   from the old context kept suppressing exactly the facts the clear dropped. The
   inject path — one shared entry for the warm daemon and the cold fallback —
   now applies the pending advance from the marker before it computes anything,
-  and deletes the marker.
+  and deletes the marker. The hook derives its own `epoch_token` from the same
+  rule the marker replay uses (the turn id, or the invocation id when there is
+  none), so an advance that committed before the hook was killed cannot be
+  applied a second time by the next injection.
 - `hook-events.jsonl` gains a start row written before any database access
   (`invocation_id`, `pid`) and a matching done row (`outcome`, `duration_ms`,
-  `db_wait_ms`, bounded `error`). The inject hook reports the same pair.
+  `db_wait_ms`, bounded `error`). `db_wait_ms` is the time actually spent
+  BLOCKED: each write transaction reports the instant its body started, so the
+  connection open, the capture, the rehydration commit and the gap write are all
+  counted — not just the two that never wait. The inject hook reports the same
+  pair, including `db_wait_ms`, on both the daemon path (the daemon measures its
+  own bundle-commit wait and reports it back) and the cold fallback.
 - `memex doctor` gains `capture-gap` (the markers, with the loss statement
   above, verbatim) and `hook-latency` (start/done pairing over the last 200
   rows: an unpaired start past budget + 10 s with no later row from the same pid
@@ -76,7 +102,13 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   `{ts, pid, label, wait_ms, held_ms}`, written only when a transaction was
   held over 300 ms or waited over 1,000 ms. Waiting and holding are measured
   separately — they need opposite fixes, and only `held_ms` says this worker
-  made everyone else wait.
+  made everyone else wait. `applyWorkCapsulePatch`, `completeEmptyCapsuleCheckpoint`
+  and `scheduleCapsuleBacklog` open their own transactions, so they now take an
+  `onTransactionStart` callback (the pattern `appendSessionEvidence` already
+  used) and the worker hands them its marker. Timing them from the CALL instead
+  logged a transaction that never got the lock and died on SQLITE_BUSY as
+  `wait_ms: 0, held_ms: 477` — and doctor reads `held_ms` as "held the write
+  lock", so it named the victim as the holder.
 - `continuity-worker.js` takes `--mode=hook|foreground` (default `foreground`,
   so existing callers are unchanged). Both hook spawners — the continuity hook
   and the SessionStart maintenance hook — pass `--mode=hook`, which waits

@@ -79,10 +79,11 @@ function recordWorkerTransaction(label, waitMs, heldMs) {
  *
  * Callees that open their OWN transaction (`applyWorkCapsulePatch`,
  * `completeEmptyCapsuleCheckpoint`, `scheduleCapsuleBacklog`, which live in
- * continuity-core) cannot report that instant, so their spans are marked at the
- * call: `wait_ms` reads 0 and `held_ms` covers the whole call. That over-states
- * held time under contention rather than losing the row — the holder named is
- * still this process and this label.
+ * continuity-core) take an `onTransactionStart` callback for exactly this, and
+ * the worker hands them `markStart`. Marking at the CALL instead — which is
+ * what 0.7.24 first shipped — logged a call that died on SQLITE_BUSY without
+ * ever entering the body as `wait_ms: 0, held_ms: 477`, and doctor reads
+ * held_ms as "held the write lock for N ms": it accused the victim.
  */
 export function timeWorkerTransaction(label, run) {
     const calledAt = performance.now();
@@ -412,16 +413,14 @@ async function processCapsule(db, jobId, owner, now, model, budgeted) {
         attemptPage = page;
         const evidence = page.evidence;
         if (evidence.length === 0) {
-            if (!timeWorkerTransaction("completeEmptyCapsuleCheckpoint", (markStart) => {
-                markStart();
-                return completeEmptyCapsuleCheckpoint(db, {
-                    checkpointId: checkpoint.checkpoint_id,
-                    jobId,
-                    owner,
-                    leaseGeneration: claim.lease_generation,
-                    evidencePage: page,
-                });
-            })) {
+            if (!timeWorkerTransaction("completeEmptyCapsuleCheckpoint", (markStart) => completeEmptyCapsuleCheckpoint(db, {
+                checkpointId: checkpoint.checkpoint_id,
+                jobId,
+                owner,
+                leaseGeneration: claim.lease_generation,
+                evidencePage: page,
+                onTransactionStart: markStart,
+            }))) {
                 return { jobId, kind: "capsule_update", state: "stale", detail: "lease lost" };
             }
             return { jobId, kind: "capsule_update", state: "completed", detail: "empty segment" };
@@ -466,21 +465,19 @@ async function processCapsule(db, jobId, owner, now, model, budgeted) {
         // so the Capsule row records what the truncation removed. Validating here
         // first would hand `applyWorkCapsulePatch` an already-fitted patch and its
         // `truncated` bookkeeping would read as "nothing was removed".
-        const applied = timeWorkerTransaction("applyWorkCapsulePatch", (markStart) => {
-            markStart();
-            return applyWorkCapsulePatch(db, {
-                workstreamId: checkpoint.workstream_id,
-                expectedGeneration,
-                throughCheckpointId: checkpoint.checkpoint_id,
-                patch: parsed,
-                evidencePage: page,
-                jobLease: {
-                    jobId,
-                    owner,
-                    leaseGeneration: claim.lease_generation,
-                },
-            });
-        });
+        const applied = timeWorkerTransaction("applyWorkCapsulePatch", (markStart) => applyWorkCapsulePatch(db, {
+            workstreamId: checkpoint.workstream_id,
+            expectedGeneration,
+            throughCheckpointId: checkpoint.checkpoint_id,
+            patch: parsed,
+            evidencePage: page,
+            jobLease: {
+                jobId,
+                owner,
+                leaseGeneration: claim.lease_generation,
+            },
+            onTransactionStart: markStart,
+        }));
         if (!applied) {
             const transition = failMemoryJob(db, {
                 jobId,
@@ -652,8 +649,7 @@ export async function runContinuityWorker(db, options = {}) {
     }
     for (let index = 0; index < maxJobs; index++) {
         timeWorkerTransaction("scheduleCapsuleBacklog", (markStart) => {
-            markStart();
-            scheduleCapsuleBacklog(db);
+            scheduleCapsuleBacklog(db, { onTransactionStart: markStart });
         });
         const now = options.now ?? new Date();
         const capture = nextJob(db, "capture_index", now.toISOString());

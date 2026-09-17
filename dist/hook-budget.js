@@ -18,6 +18,17 @@ const HOOK_MAX_SINGLE_WAIT_MS = 800;
 const HOOK_WAIT_RESERVE_MS = 200;
 /** A second bounded attempt (the capture-gap row) needs at least this much. */
 export const HOOK_RETRY_FLOOR_MS = 150;
+/**
+ * The floor a PHASE needs before it may start at all.
+ *
+ * The budget is re-read at the entry of every phase and before every lock wait,
+ * because one busy_timeout chosen at connect time bounds only the first wait:
+ * the second, third and fourth lock acquisition each get the whole timeout
+ * again, and the hook-wide deadline it was derived from is long gone by then.
+ * Starting a phase with less than this left cannot finish it and can only spend
+ * someone else's lock time, so the phase is skipped with outcome "deadline".
+ */
+export const HOOK_PHASE_FLOOR_MS = 150;
 /** Assumed ingest throughput for the oversize pre-check, bytes per millisecond. */
 export const HOOK_INGEST_BYTES_PER_MS = 20_000;
 /** Headroom subtracted from the remaining budget by the oversize pre-check. */
@@ -60,6 +71,40 @@ export class HookOversizeCapture extends Error {
         super(message);
         this.name = "HookOversizeCapture";
     }
+}
+/**
+ * The capture failed for an ORDINARY reason (not BUSY, not the budget): the
+ * transcript did not match, the journal was damaged, a guard rejected it.
+ *
+ * Wrapping it distinguishes "the hook completed" from "the hook returned a
+ * warning", which the 0.7.24 first pass could not tell apart — it deleted the
+ * intent marker and recorded outcome `ok` for a capture that never happened.
+ */
+export class HookCaptureFailed extends Error {
+    code = "MEMEX_HOOK_CAPTURE_FAILED";
+    cause;
+    constructor(cause) {
+        super(cause instanceof Error ? cause.message : String(cause));
+        this.name = "HookCaptureFailed";
+        this.cause = cause;
+    }
+}
+/** Flag carried on an error whose capture gap has ALREADY been recorded. */
+const CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
+/** Mark an error so a caller does not spend a second lock wait on the same gap. */
+export function markCaptureGapRecorded(error) {
+    if (error && typeof error === "object") {
+        try {
+            error[CAPTURE_GAP_RECORDED] = true;
+        }
+        catch {
+            /* frozen error objects simply lose the optimisation */
+        }
+    }
+}
+export function captureGapAlreadyRecorded(error) {
+    return !!(error && typeof error === "object" &&
+        error[CAPTURE_GAP_RECORDED] === true);
 }
 export function isSqliteBusyError(error) {
     const code = error?.code;

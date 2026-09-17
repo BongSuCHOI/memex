@@ -247,6 +247,9 @@ describe("continuity hook budget (issue #162)", () => {
     try {
       const result = handleContinuityHook(payload2("Stop"), { db });
       expect(result.capture).toBeTruthy();
+      // #162 review: the marker outlives the hook until its output has been
+      // delivered, so the success claim is the script's `finalize` call.
+      result.finalize?.();
     } finally {
       rename.mockRestore();
     }

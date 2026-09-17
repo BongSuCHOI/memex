@@ -153,6 +153,14 @@ export interface InjectOptions {
    */
   daemon?: InjectLogEntry["daemon"];
   /**
+   * Issue #162 (review): total milliseconds this call spent BLOCKED on the
+   * database — the bundle transaction's lock wait, including its one retry.
+   * The inject hook's done row carries it so `memex doctor` can compare both
+   * hooks on the same footing; without it the inject row reported no wait at
+   * all, which is exactly the signal the "database is locked" incidents needed.
+   */
+  onDbWaitMs?: (ms: number) => void;
+  /**
    * Issue #29: the time-boxed worker that evaluates USER overlay regexes.
    *
    * The warm daemon owns one resident matcher for its whole lifetime; the cold
@@ -354,17 +362,30 @@ export function isSqliteBusy(error: unknown): boolean {
 export async function commitInjectionBundle(
   db: CommitDb,
   commit: () => void,
-  options: { retries?: number; delayMs?: number; retryBusyMs?: number; deadlineAt?: number } = {},
+  options: {
+    retries?: number; delayMs?: number; retryBusyMs?: number; deadlineAt?: number;
+    /**
+     * Issue #162 (review): fired as the FIRST statement of the transaction
+     * body, i.e. the instant the write lock was granted. Everything before it
+     * — including the retry's pause — was this hook WAITING on the database,
+     * and it is the number `db_wait_ms` has to report.
+     */
+    onTransactionStart?: () => void;
+  } = {},
 ): Promise<void> {
   const retries = options.retries ?? INJECT_COMMIT_BUSY_RETRIES;
   const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
   const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
   const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
+  const body = () => {
+    options.onTransactionStart?.();
+    commit();
+  };
   const run = () => {
     if (typeof db.transaction === "function") {
-      const tx = db.transaction(commit);
+      const tx = db.transaction(body);
       db.inTransaction ? tx() : tx.immediate();
-    } else commit();
+    } else body();
   };
   for (let attempt = 0; ; attempt++) {
     try {
@@ -1011,7 +1032,13 @@ export async function computeInjectContext(
     // Receipt, fact residency, Hot Evidence prefix and gate state either commit
     // together or remain retryable when this transaction fails. Delivery on
     // stdout happens afterwards; it is not an exactly-once transport.
-    await commitInjectionBundle(db as CommitDb, commitBundle, { deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS });
+    const commitCalledAt = Date.now();
+    let commitWaitMs = 0;
+    await commitInjectionBundle(db as CommitDb, commitBundle, {
+      deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS,
+      onTransactionStart: () => { commitWaitMs = Date.now() - commitCalledAt; },
+    });
+    options.onDbWaitMs?.(commitWaitMs);
     // The receipt is durable at this point. The transport can now carry its
     // exact id and mark only this delivery after stdout succeeds.
     if (preparedReceiptId && options.onPreparedReceipt) {

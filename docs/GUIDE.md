@@ -194,9 +194,13 @@ node scripts/translate-facts.mjs
 
 훅에는 **프로세스 진입 시점부터 세는 예산 하나**가 있습니다. 3초 이벤트는 2,000 ms, PreCompact는
 3,800 ms이고(`MEMEX_HOOK_BUDGET_MS`로 변경), stdin 읽기·`dist` import·DB 연결·migration·capture
-트랜잭션이 모두 그 안에서 끝나야 합니다. 모든 DB 대기는 남은 시간에서 파생됩니다(한 번의 잠금
-대기는 최대 800 ms). 0.7.23까지는 훅 연결이 sqlite 기본값 5초를 기다렸고, 호스트는 3초에 훅을
-죽였습니다 — 그것이 `Hook failed — hook timed out after 3s`의 정체입니다.
+트랜잭션이 모두 그 안에서 끝나야 합니다. 예산은 연결할 때 한 번만 보는 것이 아니라 **국면
+(phase)마다 다시 읽습니다**: capture, 세션 상태 기록, recovery, epoch 전진, rehydration commit은
+각각 들어가기 전에 남은 시간을 확인하고 거기서 잠금 대기를 다시 계산합니다(한 번의 잠금 대기는
+최대 800 ms). 남은 시간이 150 ms 미만이면 그 국면은 **시작하지 않고** `outcome: "deadline"`으로
+건너뜁니다 — 예산이 이미 끝난 SessionStart(clear)가 epoch을 올리고 `ok`를 남기는 일은 없습니다.
+0.7.23까지는 훅 연결이 sqlite 기본값 5초를 기다렸고, 호스트는 3초에 훅을 죽였습니다 — 그것이
+`Hook failed — hook timed out after 3s`의 정체입니다.
 
 훅은 **DB에 손대기 전에** intent marker를 씁니다:
 
@@ -205,10 +209,17 @@ node scripts/translate-facts.mjs
   { invocationId, event, source, sessionId, cwd, transcriptPath, transcriptBytes, turnId, ts }
 ```
 
-정상 종료 시 marker는 삭제됩니다. 남아 있다면 **그 훅이 끝내지 못했다**는 durable한 기록입니다
-(호스트가 죽였거나, 잠금/예산으로 capture를 건너뛰었거나). BUSY·예산 초과·oversize일 때 훅은
-exit 0 + 빈 stdout으로 끝나고 `hook-events.jsonl`에 `outcome`(`busy`\|`oversize`\|`deadline`)과
-`db_wait_ms`를 가진 done row를 남깁니다. 30일이 지난 marker는 성공 경로에서 정리합니다.
+marker는 **stdout(과 recall 영수증)이 실제로 전달된 뒤에야** 삭제되고, done row도 그때 기록됩니다.
+그 둘이 곧 "이 훅은 성공했다"는 주장이기 때문입니다 — 전달 전에 먼저 써 버리면 그 사이의 호스트
+kill이 성공으로 보이고, 실패한 SessionStart 출력도 `ok`로 남습니다. marker가 남아 있다면 **그 훅이
+끝내지 못했다**는 durable한 기록입니다(호스트가 죽였거나, 잠금/예산으로 건너뛰었거나, 전달·기록에
+실패했거나). 실패는 종류를 가리지 않고 marker를 남깁니다: BUSY·예산 초과·oversize는 exit 0 + 빈
+stdout으로 끝나면서 `outcome`(`busy`\|`oversize`\|`deadline`)을, transcript 불일치 같은 평범한
+capture 실패는 `outcome: "error"`와 200자로 자른 `error` 문구를 `hook-events.jsonl`에 남깁니다
+(capture gap row는 어느 경로에서도 **정확히 한 번** 씁니다). `db_wait_ms`는 연결과 gap 기록만이
+아니라 **실제로 잠금을 기다린 구간**(capture·rehydration 트랜잭션이 시작되기 전까지)을 합산한
+값이고, UserPromptSubmit(inject) done row도 daemon·cold 양쪽에서 같은 값을 싣습니다. 30일이 지난
+marker는 성공 경로에서 정리합니다.
 
 **건너뛴 capture가 실제로 무엇을 잃는가(정확한 표현):** 같은 세션의 **이후 capture가 성공할 때만**
 그 턴의 fence가 지연되는 것으로 끝납니다. 세션의 마지막 Stop/SessionEnd가 모두 건너뛰어지면 워커는
@@ -219,7 +230,10 @@ open/interrupted 턴은 추출에서 제외된 채 남습니다(#149의 stale-op
 
 `clear`/`compact` SessionStart를 건너뛴 경우만은 스스로 낫지 않습니다(epoch이 오르지 않아 이전
 residency가 같은 fact를 계속 억제합니다). 그래서 다음 주입이 marker를 보고 `advanceContextEpoch`를
-대신 수행한 뒤 marker를 지웁니다 — daemon·cold fallback 모두 같은 진입점을 씁니다.
+대신 수행한 뒤 marker를 지웁니다 — daemon·cold fallback 모두 같은 진입점을 씁니다. 훅이 직접
+전진시킬 때도 `epoch_token`을 marker와 **같은 규칙**(turn id가 없으면 invocation id)으로 만들기
+때문에, 전진에 성공하고 marker를 지우기 전에 죽은 훅의 전진이 다음 주입에서 한 번 더 적용되는 일은
+없습니다.
 
 Capture가 만든 durable queue의 우선순위는 `capture_index`(P0) → `capsule_update`(P1) → fact extraction(이후)입니다. Stop/Interrupt boundary 6개 또는 8KiB, PreCompact, SessionEnd에서 Capsule job을 coalesce합니다. Capture hook은 commit 뒤 detached worker를 깨우지만 완료를 기다리지 않으며, wake 실패나 expired lease는 다음 startup/resume에서 복구합니다.
 

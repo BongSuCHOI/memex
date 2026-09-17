@@ -42,6 +42,14 @@ export interface InjectOptions {
      */
     daemon?: InjectLogEntry["daemon"];
     /**
+     * Issue #162 (review): total milliseconds this call spent BLOCKED on the
+     * database — the bundle transaction's lock wait, including its one retry.
+     * The inject hook's done row carries it so `memex doctor` can compare both
+     * hooks on the same footing; without it the inject row reported no wait at
+     * all, which is exactly the signal the "database is locked" incidents needed.
+     */
+    onDbWaitMs?: (ms: number) => void;
+    /**
      * Issue #29: the time-boxed worker that evaluates USER overlay regexes.
      *
      * The warm daemon owns one resident matcher for its whole lifetime; the cold
@@ -100,6 +108,13 @@ export declare function commitInjectionBundle(db: CommitDb, commit: () => void, 
     delayMs?: number;
     retryBusyMs?: number;
     deadlineAt?: number;
+    /**
+     * Issue #162 (review): fired as the FIRST statement of the transaction
+     * body, i.e. the instant the write lock was granted. Everything before it
+     * — including the retry's pause — was this hook WAITING on the database,
+     * and it is the number `db_wait_ms` has to report.
+     */
+    onTransactionStart?: () => void;
 }): Promise<void>;
 /**
  * Compute the UserPromptSubmit context block for a prompt.

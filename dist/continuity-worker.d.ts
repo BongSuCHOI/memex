@@ -30,10 +30,11 @@ export declare function workerTransactionLogPath(): string;
  *
  * Callees that open their OWN transaction (`applyWorkCapsulePatch`,
  * `completeEmptyCapsuleCheckpoint`, `scheduleCapsuleBacklog`, which live in
- * continuity-core) cannot report that instant, so their spans are marked at the
- * call: `wait_ms` reads 0 and `held_ms` covers the whole call. That over-states
- * held time under contention rather than losing the row — the holder named is
- * still this process and this label.
+ * continuity-core) take an `onTransactionStart` callback for exactly this, and
+ * the worker hands them `markStart`. Marking at the CALL instead — which is
+ * what 0.7.24 first shipped — logged a call that died on SQLITE_BUSY without
+ * ever entering the body as `wait_ms: 0, held_ms: 477`, and doctor reads
+ * held_ms as "held the write lock for N ms": it accused the victim.
  */
 export declare function timeWorkerTransaction<T>(label: string, run: (markStart: () => void) => T): T;
 export interface ContinuityWorkerResult {

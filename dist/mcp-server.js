@@ -28713,6 +28713,9 @@ if (process.argv[1] && path11.basename(process.argv[1]) === "observe-hook-event.
   }
 }
 
+// src/hook-budget.ts
+var CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
+
 // src/capture-gap-markers.ts
 init_paths();
 import fs11 from "node:fs";
@@ -29308,11 +29311,15 @@ async function commitInjectionBundle(db, commit, options = {}) {
   const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
   const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
   const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
+  const body = () => {
+    options.onTransactionStart?.();
+    commit();
+  };
   const run = () => {
     if (typeof db.transaction === "function") {
-      const tx = db.transaction(commit);
+      const tx = db.transaction(body);
       db.inTransaction ? tx() : tx.immediate();
-    } else commit();
+    } else body();
   };
   for (let attempt = 0; ; attempt++) {
     try {
@@ -29826,7 +29833,15 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       });
       if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
     };
-    await commitInjectionBundle(db, commitBundle, { deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS });
+    const commitCalledAt = Date.now();
+    let commitWaitMs = 0;
+    await commitInjectionBundle(db, commitBundle, {
+      deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS,
+      onTransactionStart: () => {
+        commitWaitMs = Date.now() - commitCalledAt;
+      }
+    });
+    options.onDbWaitMs?.(commitWaitMs);
     if (preparedReceiptId && options.onPreparedReceipt) {
       try {
         options.onPreparedReceipt(preparedReceiptId);
@@ -30233,6 +30248,7 @@ function startInjectDaemon() {
           } catch {
           }
           let receiptId = null;
+          let dbWaitMs = 0;
           const context = await computeInjectContext(
             String(req.prompt ?? ""),
             String(req.cwd ?? process.cwd()),
@@ -30241,6 +30257,9 @@ function startInjectDaemon() {
             {
               onPreparedReceipt: (id) => {
                 receiptId = id;
+              },
+              onDbWaitMs: (ms) => {
+                dbWaitMs = ms;
               },
               // The receipt may not outlive the delivery it accounts for. If the
               // hook has fallen back by the time the bundle is ready, the whole
@@ -30251,7 +30270,7 @@ function startInjectDaemon() {
               matcher: sharedMatcher()
             }
           );
-          reply({ type: "ok", ...current, ok: true, context, receiptId });
+          reply({ type: "ok", ...current, ok: true, context, receiptId, dbWaitMs });
         } catch (error2) {
           note(`request failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
           try {

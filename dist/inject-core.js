@@ -190,13 +190,17 @@ export async function commitInjectionBundle(db, commit, options = {}) {
     const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
     const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
     const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
+    const body = () => {
+        options.onTransactionStart?.();
+        commit();
+    };
     const run = () => {
         if (typeof db.transaction === "function") {
-            const tx = db.transaction(commit);
+            const tx = db.transaction(body);
             db.inTransaction ? tx() : tx.immediate();
         }
         else
-            commit();
+            body();
     };
     for (let attempt = 0;; attempt++) {
         try {
@@ -868,7 +872,13 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         // Receipt, fact residency, Hot Evidence prefix and gate state either commit
         // together or remain retryable when this transaction fails. Delivery on
         // stdout happens afterwards; it is not an exactly-once transport.
-        await commitInjectionBundle(db, commitBundle, { deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS });
+        const commitCalledAt = Date.now();
+        let commitWaitMs = 0;
+        await commitInjectionBundle(db, commitBundle, {
+            deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS,
+            onTransactionStart: () => { commitWaitMs = Date.now() - commitCalledAt; },
+        });
+        options.onDbWaitMs?.(commitWaitMs);
         // The receipt is durable at this point. The transport can now carry its
         // exact id and mark only this delivery after stdout succeeds.
         if (preparedReceiptId && options.onPreparedReceipt) {

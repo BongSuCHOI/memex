@@ -379,6 +379,7 @@ function askDaemon(prompt, cwd, sessionId, identity) {
           served: {
             context: String(res.context ?? ""),
             receiptId: res.receiptId ? String(res.receiptId) : null,
+          dbWaitMs: typeof res.dbWaitMs === "number" ? res.dbWaitMs : 0,
             version: typeof res.version === "string" ? res.version : null,
             buildId: typeof res.buildId === "string" ? res.buildId : null,
             pid: typeof res.pid === "number" ? res.pid : null,
@@ -475,7 +476,10 @@ async function main() {
   } catch {
     /* observation is best-effort */
   }
-  const done = (outcome, error) => {
+  // Issue #162 (review): `db_wait_ms` is the time this prompt spent BLOCKED on
+  // the database — the inject bundle's lock wait, including its retry. On the
+  // daemon path the wait happens in the daemon, so the daemon reports it back.
+  const done = (outcome, error, dbWaitMs) => {
     if (!observe) return;
     try {
       observe.recordHookDone("UserPromptSubmit", {
@@ -484,6 +488,7 @@ async function main() {
         invocationId,
         outcome,
         durationMs: Date.now() - STARTED_AT,
+        ...(typeof dbWaitMs === "number" && Number.isFinite(dbWaitMs) ? { dbWaitMs } : {}),
         ...(error ? { error } : {}),
       });
     } catch {
@@ -493,7 +498,7 @@ async function main() {
   // Phase 5: the cheap gate decides what is worth retrieval. Only an empty
   // prompt is dropped here, so a short explicit memory question ("왜 Redis?")
   // still reaches the gate while acknowledgements skip without a model call.
-  if (!prompt || prompt.trim().length === 0) return done("empty-prompt");
+  if (!prompt || prompt.trim().length === 0) return done("empty-prompt", null, 0);
 
   // FAST PATH — warm daemon inside a running MCP server, but only one running
   // THIS installation's code (issue #84).
@@ -505,7 +510,7 @@ async function main() {
       await emitContext(served.context);
       await markRecallEmitted(sessionId, prompt, served.receiptId, "daemon");
     }
-    return done("daemon");
+    return done("daemon", null, served.dbWaitMs);
   }
 
   // COLD FALLBACK — compute locally (heavy imports load only here).
@@ -551,6 +556,7 @@ async function main() {
       // `doctor`'s overlay-matcher check reports it.
     }
     let receiptId = null;
+    let dbWaitMs = 0;
     const context = await computeInjectContext(
       prompt,
       cwd,
@@ -558,6 +564,7 @@ async function main() {
       sessionId || undefined,
       {
         onPreparedReceipt: (id) => { receiptId = id; },
+        onDbWaitMs: (ms) => { dbWaitMs = ms; },
         ...daemonNote,
         ...(matcher ? { matcher } : {}),
       },
@@ -566,7 +573,7 @@ async function main() {
       await emitContext(context);
       await markRecallEmitted(sessionId, prompt, receiptId, "fallback");
     }
-    done("fallback");
+    done("fallback", null, dbWaitMs);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     done("error", msg);
