@@ -585,8 +585,17 @@ export function startInjectDaemon() {
                     }
                     catch { /* gone */ }
                     let receiptId = null;
+                    // Issue #162 (review): the hook cannot measure a wait that happened
+                    // in this process, so the daemon reports it back for the done row —
+                    // and (review 6) the failure too, because computeInjectContext
+                    // deliberately never throws and an empty context alone cannot tell a
+                    // healthy no-match from a database this prompt never reached.
+                    let dbWaitMs = 0;
+                    let injectError = null;
                     const context = await computeInjectContext(String(req.prompt ?? ''), String(req.cwd ?? process.cwd()), 'daemon', req.sessionId ? String(req.sessionId) : undefined, {
                         onPreparedReceipt: (id) => { receiptId = id; },
+                        onDbWaitMs: (ms) => { dbWaitMs = ms; },
+                        onError: (message) => { injectError = message.slice(0, 200); },
                         // The receipt may not outlive the delivery it accounts for. If the
                         // hook has fallen back by the time the bundle is ready, the whole
                         // transaction rolls back and the fallback gets a clean run instead
@@ -597,7 +606,7 @@ export function startInjectDaemon() {
                         daemon: { version: current.version, buildId: current.buildId, pid: current.pid },
                         matcher: sharedMatcher(),
                     });
-                    reply({ type: 'ok', ...current, ok: true, context, receiptId });
+                    reply({ type: 'ok', ...current, ok: true, context, receiptId, dbWaitMs, injectError });
                 }
                 catch (error) {
                     note(`request failed: ${error instanceof Error ? error.message : String(error)}`);

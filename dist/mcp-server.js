@@ -3260,8 +3260,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path18) {
-      let input = path18;
+    function removeDotSegments(path19) {
+      let input = path19;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3666,8 +3666,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path18 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path18 && path18 !== "/" ? path18 : void 0;
+        const path19 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path19 && path19 !== "/" ? path19 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7173,12 +7173,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs17, exportName) {
+    function addFormats(ajv, list, fs18, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs17[f]);
+        ajv.addFormat(f, fs18[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -9604,6 +9604,17 @@ function ensureContinuitySchema(db, options = {}) {
       if (!sessionColumns.has(name)) db.exec(`ALTER TABLE session_memory_state ADD COLUMN ${name} ${type}`);
     }
     options.afterMigrationStage?.("recall-gate-columns");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_epoch_markers (
+        session_id TEXT NOT NULL,
+        marker_id TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, marker_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_epoch_markers_applied
+        ON session_epoch_markers(applied_at);
+    `);
+    options.afterMigrationStage?.("session-epoch-markers");
     db.exec(`
       CREATE TABLE IF NOT EXISTS capsule_frontiers (
         workstream_id TEXT PRIMARY KEY REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
@@ -12816,10 +12827,11 @@ function normalizeVecDistance(distance, dtype) {
 function l2DistanceToSimilarity(distance) {
   return 1 - distance * distance / 2;
 }
-function initializeConnection(db, mode) {
+function initializeConnection(db, mode, busyTimeoutMs) {
   try {
+    const timeout = Number.isFinite(busyTimeoutMs) ? Math.max(0, Math.trunc(busyTimeoutMs)) : DEFAULT_BUSY_TIMEOUT_MS;
+    db.pragma(`busy_timeout = ${timeout}`);
     sqliteVec.load(db);
-    db.pragma("busy_timeout = 5000");
     db.pragma("foreign_keys = ON");
     if (mode === "write") {
       db.pragma("journal_mode = WAL");
@@ -12832,18 +12844,15 @@ function initializeConnection(db, mode) {
     throw error2;
   }
 }
-function openWriteDb(dbPath = getDbPath()) {
+function openWriteDb(dbPath = getDbPath(), busyTimeoutMs) {
   fs6.mkdirSync(path9.dirname(dbPath), { recursive: true });
-  return initializeConnection(new Database2(dbPath), "write");
+  return initializeConnection(new Database2(dbPath), "write", busyTimeoutMs);
 }
 function initDatabase(options = {}) {
   const dbPath = options.dbPath ?? getDbPath();
   if (options.dbPath) fs6.mkdirSync(path9.dirname(dbPath), { recursive: true });
   else ensureDbDir();
-  const db = openWriteDb(dbPath);
-  if (options.busyTimeoutMs !== void 0) {
-    db.pragma(`busy_timeout = ${Math.max(0, Math.trunc(options.busyTimeoutMs))}`);
-  }
+  const db = openWriteDb(dbPath, options.busyTimeoutMs);
   db.exec(`
     CREATE TABLE IF NOT EXISTS exchanges (
       id TEXT PRIMARY KEY,
@@ -13448,7 +13457,7 @@ function recordRecallEvent(db, event) {
   );
   return id;
 }
-var VEC_INT8_SCALE, VEC_TABLES;
+var VEC_INT8_SCALE, VEC_TABLES, DEFAULT_BUSY_TIMEOUT_MS;
 var init_db = __esm({
   "src/db.ts"() {
     "use strict";
@@ -13466,6 +13475,7 @@ var init_db = __esm({
       "vec_facts_kr",
       "vec_categories"
     ]);
+    DEFAULT_BUSY_TIMEOUT_MS = 5e3;
   }
 });
 
@@ -15645,8 +15655,8 @@ var init_overlay_regex = __esm({
 
 // src/overlay-matcher.ts
 import { Worker } from "node:worker_threads";
-import fs11 from "node:fs";
-import path12 from "node:path";
+import fs12 from "node:fs";
+import path13 from "node:path";
 import { randomUUID as randomUUID6 } from "node:crypto";
 function unavailableHits(elapsedMs, timedOut = false) {
   return {
@@ -15677,7 +15687,7 @@ function quarantineMemoryGeneration() {
 }
 function readQuarantineFile() {
   try {
-    const parsed = JSON.parse(fs11.readFileSync(overlayQuarantinePath(), "utf8"));
+    const parsed = JSON.parse(fs12.readFileSync(overlayQuarantinePath(), "utf8"));
     if (parsed?.schema !== QUARANTINE_SCHEMA) return { readable: false, entries: [] };
     if (Number(parsed.version) !== QUARANTINE_VERSION) return { readable: false, entries: [] };
     if (!Array.isArray(parsed.entries)) return { readable: false, entries: [] };
@@ -15713,7 +15723,7 @@ function readQuarantine() {
 }
 function quarantineFileStamp() {
   try {
-    const stat = fs11.statSync(overlayQuarantinePath());
+    const stat = fs12.statSync(overlayQuarantinePath());
     return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
   } catch {
     return null;
@@ -15744,7 +15754,7 @@ function quarantineMutexIsDead(mutexPath) {
   let pid = -1;
   let at = 0;
   try {
-    const parsed = JSON.parse(fs11.readFileSync(mutexPath, "utf8"));
+    const parsed = JSON.parse(fs12.readFileSync(mutexPath, "utf8"));
     pid = Number(parsed.pid);
     at = Number(parsed.at);
   } catch {
@@ -15754,7 +15764,7 @@ function quarantineMutexIsDead(mutexPath) {
   if (Number.isInteger(pid) && pid > 0 && pidAlive(pid)) return false;
   if (!Number.isFinite(at) || at <= 0) {
     try {
-      at = fs11.statSync(mutexPath).mtimeMs;
+      at = fs12.statSync(mutexPath).mtimeMs;
     } catch {
       return false;
     }
@@ -15766,20 +15776,20 @@ function acquireQuarantineMutex() {
   const payload = JSON.stringify({ pid: process.pid, at: Date.now() });
   const staging = `${mutexPath}.${process.pid}.${randomUUID6()}.tmp`;
   try {
-    fs11.mkdirSync(path12.dirname(mutexPath), { recursive: true, mode: 448 });
-    fs11.writeFileSync(staging, payload, { mode: 384 });
+    fs12.mkdirSync(path13.dirname(mutexPath), { recursive: true, mode: 448 });
+    fs12.writeFileSync(staging, payload, { mode: 384 });
     try {
-      fs11.linkSync(staging, mutexPath);
+      fs12.linkSync(staging, mutexPath);
       return payload;
     } catch (error2) {
       if (error2.code !== "EEXIST") return null;
       if (!quarantineMutexIsDead(mutexPath)) return null;
       try {
-        fs11.unlinkSync(mutexPath);
+        fs12.unlinkSync(mutexPath);
       } catch {
       }
       try {
-        fs11.linkSync(staging, mutexPath);
+        fs12.linkSync(staging, mutexPath);
       } catch {
         return null;
       }
@@ -15789,14 +15799,14 @@ function acquireQuarantineMutex() {
     return null;
   } finally {
     try {
-      fs11.unlinkSync(staging);
+      fs12.unlinkSync(staging);
     } catch {
     }
   }
 }
 function holdsOurMutex(mutexPath, payload) {
   try {
-    return fs11.readFileSync(mutexPath, "utf8") === payload;
+    return fs12.readFileSync(mutexPath, "utf8") === payload;
   } catch {
     return false;
   }
@@ -15805,7 +15815,7 @@ function releaseQuarantineMutex(payload) {
   const mutexPath = quarantineMutexPath();
   if (!holdsOurMutex(mutexPath, payload)) return;
   try {
-    fs11.unlinkSync(mutexPath);
+    fs12.unlinkSync(mutexPath);
   } catch {
   }
 }
@@ -15834,22 +15844,22 @@ function writeQuarantineAtomic(entries, expectedStamp) {
 `;
   const tmp = `${target}.${process.pid}.${randomUUID6()}.tmp`;
   try {
-    fs11.mkdirSync(path12.dirname(target), { recursive: true, mode: 448 });
-    const stat = fs11.existsSync(target) ? fs11.lstatSync(target) : null;
+    fs12.mkdirSync(path13.dirname(target), { recursive: true, mode: 448 });
+    const stat = fs12.existsSync(target) ? fs12.lstatSync(target) : null;
     if (stat?.isSymbolicLink()) return false;
-    fs11.writeFileSync(tmp, body, { mode: 384 });
+    fs12.writeFileSync(tmp, body, { mode: 384 });
     if (expectedStamp !== void 0 && quarantineFileStamp() !== expectedStamp) {
       try {
-        fs11.unlinkSync(tmp);
+        fs12.unlinkSync(tmp);
       } catch {
       }
       return false;
     }
-    fs11.renameSync(tmp, target);
+    fs12.renameSync(tmp, target);
     return true;
   } catch {
     try {
-      fs11.unlinkSync(tmp);
+      fs12.unlinkSync(tmp);
     } catch {
     }
     return false;
@@ -16154,7 +16164,7 @@ var init_overlay_matcher = __esm({
 });
 
 // src/recall-gate-overlay.ts
-import fs12 from "node:fs";
+import fs13 from "node:fs";
 function overriddenGateConfigKeys(config2 = {}) {
   return GATE_CONFIG_KEYS.filter((key) => config2[key] !== void 0);
 }
@@ -16473,7 +16483,7 @@ function configValueProblem(field, value) {
 }
 function statKey(file) {
   try {
-    const stat = fs12.statSync(file);
+    const stat = fs13.statSync(file);
     return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
   } catch {
     return "absent";
@@ -16485,11 +16495,11 @@ function overlaysDisabled() {
 function readRecallGateOverlayFile(file = recallGateOverlayPath()) {
   let text;
   try {
-    const stat = fs12.lstatSync(file);
+    const stat = fs13.lstatSync(file);
     if (stat.isSymbolicLink()) {
       return { raw: null, bytes: 0, present: true, readError: "the overlay path is a symbolic link" };
     }
-    text = fs12.readFileSync(file, "utf8");
+    text = fs13.readFileSync(file, "utf8");
   } catch (err) {
     const code = err.code;
     if (code === "ENOENT") return { raw: null, bytes: 0, present: false, readError: null };
@@ -16669,22 +16679,22 @@ var init_recall_gate_overlay = __esm({
 });
 
 // src/ontology-admin.ts
-import fs15 from "node:fs";
-import path15 from "node:path";
+import fs16 from "node:fs";
+import path16 from "node:path";
 function appendUiAuditLine(action, detail) {
   try {
-    const dir = path15.join(getMemexHome(), "logs");
-    fs15.mkdirSync(dir, { recursive: true, mode: 448 });
-    const file = path15.join(dir, "ui-audit.jsonl");
-    const stat = fs15.existsSync(file) ? fs15.lstatSync(file) : null;
+    const dir = path16.join(getMemexHome(), "logs");
+    fs16.mkdirSync(dir, { recursive: true, mode: 448 });
+    const file = path16.join(dir, "ui-audit.jsonl");
+    const stat = fs16.existsSync(file) ? fs16.lstatSync(file) : null;
     if (stat?.isSymbolicLink()) return;
     if (stat && stat.size > 1024 * 1024) {
       try {
-        fs15.renameSync(file, `${file}.old`);
+        fs16.renameSync(file, `${file}.old`);
       } catch {
       }
     }
-    fs15.appendFileSync(
+    fs16.appendFileSync(
       file,
       `${JSON.stringify({
         ts: (/* @__PURE__ */ new Date()).toISOString(),
@@ -17187,8 +17197,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path18, errorMaps, issueData } = params;
-  const fullPath = [...path18, ...issueData.path || []];
+  const { data, path: path19, errorMaps, issueData } = params;
+  const fullPath = [...path19, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -17304,11 +17314,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path18, key) {
+  constructor(parent, value, path19, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path18;
+    this._path = path19;
     this._key = key;
   }
   get path() {
@@ -20946,10 +20956,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path18) {
-  if (!path18)
+function getElementAtPath(obj, path19) {
+  if (!path19)
     return obj;
-  return path18.reduce((acc, key) => acc?.[key], obj);
+  return path19.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -21269,11 +21279,11 @@ function aborted(x2, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path18, issues) {
+function prefixIssues(path19, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path18);
+    iss.path.unshift(path19);
     return iss;
   });
 }
@@ -27848,8 +27858,8 @@ var StdioServerTransport = class {
 init_paths();
 import { createHash as createHash8, randomUUID as randomUUID7 } from "node:crypto";
 import net from "node:net";
-import fs13 from "node:fs";
-import path13 from "node:path";
+import fs14 from "node:fs";
+import path14 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/search.ts
@@ -28665,9 +28675,9 @@ function estimateContextTokens(text) {
 init_paths();
 
 // src/observe-hook-event.ts
-init_paths();
 import fs10 from "node:fs";
 import path11 from "node:path";
+init_paths();
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 function dataRoot() {
   return getMemexHome();
@@ -28680,12 +28690,21 @@ function recordHookEvent(event, info) {
   if (!name || name === "Unknown") return false;
   try {
     const detail = typeof info.detail === "string" ? info.detail.trim() : "";
+    const num = (value) => typeof value === "number" && Number.isFinite(value) ? Math.round(value) : void 0;
+    const errorText = typeof info.error === "string" ? info.error.trim().slice(0, 200) : "";
     const line = JSON.stringify({
       ts: (/* @__PURE__ */ new Date()).toISOString(),
       event: name,
       session_id: typeof info.sessionId === "string" ? info.sessionId : "",
       cwd: typeof info.cwd === "string" ? info.cwd : "",
-      ...detail ? { detail } : {}
+      ...detail ? { detail } : {},
+      ...info.phase ? { phase: info.phase } : {},
+      ...typeof info.invocationId === "string" && info.invocationId ? { invocation_id: info.invocationId } : {},
+      ...num(info.pid) !== void 0 ? { pid: num(info.pid) } : {},
+      ...typeof info.outcome === "string" && info.outcome ? { outcome: info.outcome } : {},
+      ...num(info.durationMs) !== void 0 ? { duration_ms: num(info.durationMs) } : {},
+      ...num(info.dbWaitMs) !== void 0 ? { db_wait_ms: num(info.dbWaitMs) } : {},
+      ...errorText ? { error: errorText } : {}
     }) + "\n";
     const file = observationLogPath();
     fs10.mkdirSync(path11.dirname(file), { recursive: true });
@@ -28703,6 +28722,103 @@ if (process.argv[1] && path11.basename(process.argv[1]) === "observe-hook-event.
     );
     process.exit(2);
   }
+}
+
+// src/hook-budget.ts
+var CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
+function isSqliteBusyError(error2) {
+  const code = error2?.code;
+  if (typeof code === "string" && /^SQLITE_BUSY/.test(code)) return true;
+  const message = error2 instanceof Error ? error2.message : String(error2 ?? "");
+  return /SQLITE_BUSY|database is locked|database table is locked/i.test(message);
+}
+
+// src/capture-gap-markers.ts
+init_paths();
+import fs11 from "node:fs";
+import path12 from "node:path";
+var CAPTURE_GAP_MARKER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1e3;
+var MARKER_SCAN_LIMIT = 500;
+var MARKER_PARSE_LIMIT = 2e4;
+function captureGapDir() {
+  return path12.join(getMemexHome(), "continuity", "gaps");
+}
+function safeSegment(value) {
+  const cleaned = String(value ?? "").replace(/[^A-Za-z0-9._-]/g, "_");
+  return cleaned.slice(0, 80) || "unknown";
+}
+function deleteCaptureGapMarker(file) {
+  if (!file) return false;
+  try {
+    fs11.rmSync(file, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function parseMarker(file) {
+  try {
+    const value = JSON.parse(fs11.readFileSync(file, "utf8"));
+    if (!value || typeof value !== "object") return null;
+    if (typeof value.event !== "string" || typeof value.sessionId !== "string") return null;
+    return {
+      invocationId: typeof value.invocationId === "string" ? value.invocationId : "",
+      event: value.event,
+      source: typeof value.source === "string" ? value.source : null,
+      sessionId: value.sessionId,
+      cwd: typeof value.cwd === "string" ? value.cwd : "",
+      transcriptPath: typeof value.transcriptPath === "string" ? value.transcriptPath : null,
+      transcriptBytes: typeof value.transcriptBytes === "number" ? value.transcriptBytes : null,
+      turnId: typeof value.turnId === "string" ? value.turnId : null,
+      ts: typeof value.ts === "string" ? value.ts : ""
+    };
+  } catch {
+    return null;
+  }
+}
+function scanCaptureGapMarkers(options = {}) {
+  const dir = captureGapDir();
+  let entries;
+  try {
+    entries = fs11.readdirSync(dir);
+  } catch {
+    return { markers: [], total: 0, truncated: false };
+  }
+  const limit = options.limit ?? MARKER_SCAN_LIMIT;
+  const wantedSession = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
+  const wantedEvent = options.event ? `${safeSegment(options.event)}-` : null;
+  const matched = [];
+  let scanned = 0;
+  let truncated = false;
+  for (const name of entries) {
+    if (!name.endsWith(".json")) continue;
+    if (wantedSession && !name.includes(wantedSession)) continue;
+    if (wantedEvent && !name.startsWith(wantedEvent)) continue;
+    if (++scanned > MARKER_PARSE_LIMIT) {
+      truncated = true;
+      break;
+    }
+    const file = path12.join(dir, name);
+    const marker = parseMarker(file);
+    if (!marker) continue;
+    if (options.sessionId && marker.sessionId !== options.sessionId) continue;
+    if (options.event && marker.event !== options.event) continue;
+    if (options.match && !options.match(marker)) continue;
+    matched.push({ file, marker });
+  }
+  matched.sort((a, b2) => a.marker.ts < b2.marker.ts ? -1 : a.marker.ts > b2.marker.ts ? 1 : 0);
+  return { markers: matched.slice(0, limit), total: matched.length, truncated };
+}
+function listCaptureGapMarkers(options = {}) {
+  return scanCaptureGapMarkers(options).markers;
+}
+function listEpochAdvanceMarkers(sessionId) {
+  if (!sessionId) return [];
+  return listCaptureGapMarkers({
+    sessionId,
+    event: "SessionStart",
+    match: (marker) => marker.source === "clear" || marker.source === "compact"
+  });
 }
 
 // src/conversation-policy.ts
@@ -28829,6 +28945,63 @@ function ensureSessionMemoryState(db, input) {
     projectId: identity.projectId,
     workspaceId: identity.workspaceId
   };
+}
+function advanceContextEpoch(db, input) {
+  const now = input.now ?? (/* @__PURE__ */ new Date()).toISOString();
+  const apply = () => {
+    input.onTransactionStart?.();
+    const state = db.prepare(`
+    SELECT context_epoch, epoch_token, latest_checkpoint_id,
+           resident_fact_revisions_json, carry_fact_revisions_json
+    FROM session_memory_state WHERE session_id = ?
+  `).get(input.sessionId);
+    if (!state) throw new Error("session memory state is missing");
+    if (input.markerId && db.prepare(
+      "SELECT 1 FROM session_epoch_markers WHERE session_id = ? AND marker_id = ?"
+    ).get(input.sessionId, input.markerId)) {
+      return Number(state.context_epoch);
+    }
+    const token = input.source === "compact" ? `compact:${String(state.latest_checkpoint_id ?? input.turnId ?? "unknown")}` : `clear:${input.turnId ?? now}`;
+    if (String(state.epoch_token) === token) {
+      rememberEpochMarker(db, input.sessionId, input.markerId, now);
+      return Number(state.context_epoch);
+    }
+    const next = Number(state.context_epoch) + 1;
+    db.prepare(`
+    UPDATE session_memory_state
+    SET context_epoch = ?, epoch_token = ?,
+        carry_fact_revisions_json = CASE WHEN ? = 'compact'
+          THEN CASE WHEN carry_fact_revisions_json = '[]'
+            THEN resident_fact_revisions_json ELSE carry_fact_revisions_json END
+          ELSE '[]' END,
+        resident_fact_revisions_json = '[]',
+        capsule_generation_seen = 0,
+        last_retrieval_at = NULL,
+        hot_evidence_cursor = 0,
+        last_source = ?, updated_at = ?
+    WHERE session_id = ? AND context_epoch = ?
+  `).run(next, token, input.source, input.source, now, input.sessionId, state.context_epoch);
+    rememberEpochMarker(db, input.sessionId, input.markerId, now);
+    return next;
+  };
+  return db.inTransaction ? apply() : db.transaction(apply).immediate();
+}
+var EPOCH_HISTORY_RETENTION_MARGIN_MS = 24 * 60 * 60 * 1e3;
+function rememberEpochMarker(db, sessionId, markerId, now) {
+  if (!markerId) return;
+  db.prepare(`
+    INSERT OR IGNORE INTO session_epoch_markers (session_id, marker_id, applied_at)
+    VALUES (?, ?, ?)
+  `).run(sessionId, markerId, now);
+  const cutoff = new Date(
+    Date.parse(now) - CAPTURE_GAP_MARKER_MAX_AGE_MS - EPOCH_HISTORY_RETENTION_MARGIN_MS
+  ).toISOString();
+  db.prepare(`
+    DELETE FROM session_epoch_markers
+    WHERE rowid IN (
+      SELECT rowid FROM session_epoch_markers WHERE applied_at < ? LIMIT 200
+    )
+  `).run(cutoff);
 }
 function readResidentFactRevisions(db, sessionId) {
   const row = db.prepare(`
@@ -28962,6 +29135,55 @@ function readWorkCapsule(db, workstreamId) {
     overBudget: truncationRecord.overBudget,
     originalChars: row.original_chars == null ? null : Number(row.original_chars)
   };
+}
+function applyPendingEpochAdvance(db, sessionId, options = {}) {
+  let applied = 0;
+  let dbWaitMs = 0;
+  const expiredBefore = Date.now() - CAPTURE_GAP_MARKER_MAX_AGE_MS;
+  try {
+    for (const { file, marker } of listEpochAdvanceMarkers(sessionId)) {
+      const calledAt = Date.now();
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        dbWaitMs += Date.now() - calledAt;
+      };
+      try {
+        const ts = Date.parse(marker.ts);
+        if (!Number.isFinite(ts) || ts <= expiredBefore) {
+          deleteCaptureGapMarker(file);
+          continue;
+        }
+        const state = db.prepare(
+          "SELECT context_epoch FROM session_memory_state WHERE session_id = ?"
+        ).get(sessionId);
+        if (state) {
+          const before = Number(state.context_epoch);
+          const after = advanceContextEpoch(db, {
+            sessionId,
+            source: marker.source === "compact" ? "compact" : "clear",
+            turnId: marker.turnId ?? marker.invocationId ?? null,
+            // The marker's own id: an advance this marker already produced is
+            // refused durably, whatever `latest_checkpoint_id` or any LATER
+            // advance has since done.
+            markerId: marker.invocationId || null,
+            onTransactionStart: settle
+          });
+          if (after !== before) applied++;
+        }
+        deleteCaptureGapMarker(file);
+      } catch (error2) {
+        if (isSqliteBusyError(error2)) settle();
+      }
+    }
+  } catch {
+  }
+  try {
+    options.onDbWaitMs?.(dbWaitMs);
+  } catch {
+  }
+  return applied;
 }
 
 // src/inject-core.ts
@@ -29186,32 +29408,51 @@ async function commitInjectionBundle(db, commit, options = {}) {
   const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
   const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
   const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
+  const calledAt = Date.now();
+  let waitReported = false;
+  let bodyStarted = false;
+  const reportWait = () => {
+    if (waitReported) return;
+    waitReported = true;
+    options.onDbWaitMs?.(Date.now() - calledAt);
+  };
+  const body = () => {
+    options.onTransactionStart?.();
+    bodyStarted = true;
+    reportWait();
+    commit();
+  };
   const run = () => {
     if (typeof db.transaction === "function") {
-      const tx = db.transaction(commit);
+      const tx = db.transaction(body);
       db.inTransaction ? tx() : tx.immediate();
-    } else commit();
+    } else body();
   };
-  for (let attempt = 0; ; attempt++) {
-    try {
-      if (attempt === 0 || typeof db.pragma !== "function") {
-        run();
-      } else {
-        const previous = Number(db.pragma("busy_timeout", { simple: true }));
-        db.pragma(`busy_timeout = ${retryBusyMs}`);
-        try {
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        if (attempt === 0 || typeof db.pragma !== "function") {
           run();
-        } finally {
-          db.pragma(`busy_timeout = ${Number.isFinite(previous) ? previous : 5e3}`);
+        } else {
+          const previous = Number(db.pragma("busy_timeout", { simple: true }));
+          db.pragma(`busy_timeout = ${retryBusyMs}`);
+          try {
+            run();
+          } finally {
+            db.pragma(`busy_timeout = ${Number.isFinite(previous) ? previous : 5e3}`);
+          }
         }
+        return;
+      } catch (error2) {
+        if (!isSqliteBusy(error2) || attempt >= retries || db.inTransaction) throw error2;
+        if (Date.now() + delayMs + retryBusyMs > deadlineAt) throw error2;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (Date.now() + retryBusyMs > deadlineAt) throw error2;
       }
-      return;
-    } catch (error2) {
-      if (!isSqliteBusy(error2) || attempt >= retries || db.inTransaction) throw error2;
-      if (Date.now() + delayMs + retryBusyMs > deadlineAt) throw error2;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      if (Date.now() + retryBusyMs > deadlineAt) throw error2;
     }
+  } catch (error2) {
+    if (!bodyStarted && isSqliteBusy(error2)) reportWait();
+    throw error2;
   }
 }
 function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
@@ -29222,6 +29463,25 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
   const t0 = Date.now();
   const now = options.now ?? (/* @__PURE__ */ new Date()).toISOString();
   const daemonNote = options.daemon ? { daemon: options.daemon } : {};
+  let dbWaitMs = 0;
+  let waitReported = false;
+  const reportDbWait = () => {
+    if (waitReported) return;
+    waitReported = true;
+    try {
+      options.onDbWaitMs?.(dbWaitMs);
+    } catch {
+    }
+  };
+  const measureAttempt = (run) => {
+    const calledAt = Date.now();
+    try {
+      return run();
+    } catch (error2) {
+      if (isSqliteBusy(error2)) dbWaitMs += Date.now() - calledAt;
+      throw error2;
+    }
+  };
   if (!sessionId) {
     appendInjectLog({
       status: "no-session-provenance",
@@ -29230,16 +29490,22 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       via,
       ...daemonNote
     });
+    reportDbWait();
     return "";
   }
   try {
-    const db = getSearchDb();
-    const sessionScope = ensureSessionMemoryState(db, {
+    const db = measureAttempt(() => getSearchDb());
+    measureAttempt(() => applyPendingEpochAdvance(db, sessionId, {
+      onDbWaitMs: (ms) => {
+        dbWaitMs += ms;
+      }
+    }));
+    const sessionScope = measureAttempt(() => ensureSessionMemoryState(db, {
       sessionId,
       project,
       prompt: userPrompt,
       source: "UserPromptSubmit"
-    });
+    }));
     const revisionState = sessionProjectRevisionState(db, sessionId);
     const currentProjectRevision = revisionState.current;
     const gateRow = readGateRow(db, sessionId);
@@ -29275,10 +29541,10 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       const current = embeddingCallStats();
       return { calls: current.modelCalls - statsBefore.modelCalls, hits: current.cacheHits - statsBefore.cacheHits };
     };
-    const sampleEmbeddingMetrics = (path18, unavailable) => {
+    const sampleEmbeddingMetrics = (path19, unavailable) => {
       const { calls: calls2, hits } = embeddingMetrics();
-      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path18, unavailable } });
-      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path18 } });
+      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path19, unavailable } });
+      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path19 } });
       return calls2;
     };
     const gateOverlay = loadRecallGateOverlay();
@@ -29703,7 +29969,14 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       });
       if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
     };
-    await commitInjectionBundle(db, commitBundle, { deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS });
+    await commitInjectionBundle(db, commitBundle, {
+      deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS,
+      // Reported from inside, so a commit that timed out still accounts for
+      // the whole wait it paid (#162 review 2). It joins the same total.
+      onDbWaitMs: (ms) => {
+        dbWaitMs += ms;
+      }
+    });
     if (preparedReceiptId && options.onPreparedReceipt) {
       try {
         options.onPreparedReceipt(preparedReceiptId);
@@ -29794,7 +30067,13 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       via,
       ...daemonNote
     });
+    try {
+      options.onError?.(message);
+    } catch {
+    }
     return "";
+  } finally {
+    reportDbWait();
   }
 }
 
@@ -29804,26 +30083,26 @@ init_embeddings();
 init_plugin_root();
 var INJECT_DAEMON_PROTOCOL = 1;
 var INJECT_DAEMON_WARMING = "warming";
-var HERE2 = path13.dirname(fileURLToPath4(import.meta.url));
+var HERE2 = path14.dirname(fileURLToPath4(import.meta.url));
 function realpathOrSelf(target) {
   try {
-    return fs13.realpathSync(target);
+    return fs14.realpathSync(target);
   } catch {
-    return path13.resolve(target);
+    return path14.resolve(target);
   }
 }
 function injectDaemonExecutionRoot() {
-  return realpathOrSelf(path13.resolve(HERE2, ".."));
+  return realpathOrSelf(path14.resolve(HERE2, ".."));
 }
 function injectDaemonBuildId(root = injectDaemonExecutionRoot()) {
-  const bundle = path13.join(root, "dist", "mcp-server.js");
+  const bundle = path14.join(root, "dist", "mcp-server.js");
   try {
-    return `sha256:${createHash8("sha256").update(fs13.readFileSync(bundle)).digest("hex")}`;
+    return `sha256:${createHash8("sha256").update(fs14.readFileSync(bundle)).digest("hex")}`;
   } catch {
   }
-  for (const entry of [path13.join(root, "dist", "inject-daemon.js"), path13.join(root, "src", "inject-daemon.ts")]) {
+  for (const entry of [path14.join(root, "dist", "inject-daemon.js"), path14.join(root, "src", "inject-daemon.ts")]) {
     try {
-      return `mtime:${readManifestVersion(root) ?? "unknown"}:${Math.trunc(fs13.statSync(entry).mtimeMs)}`;
+      return `mtime:${readManifestVersion(root) ?? "unknown"}:${Math.trunc(fs14.statSync(entry).mtimeMs)}`;
     } catch {
     }
   }
@@ -29842,7 +30121,7 @@ function injectDaemonIdentityFor(root) {
     };
     identityCache.set(pluginRoot, code);
   }
-  return { ...code, dbPath: path13.resolve(getDbPath()) };
+  return { ...code, dbPath: path14.resolve(getDbPath()) };
 }
 function injectDaemonIdentity() {
   return injectDaemonIdentityFor(injectDaemonExecutionRoot());
@@ -29874,7 +30153,7 @@ function injectDaemonPolicy() {
   return { ...base, open: true, reason: `execution root is the installed root (${installedSource})` };
 }
 function injectSocketPath() {
-  return path13.join(getIndexDir(), "inject-daemon.sock");
+  return path14.join(getIndexDir(), "inject-daemon.sock");
 }
 function injectSocketPathLimitBytes() {
   return process.platform === "linux" ? 107 : 103;
@@ -29885,10 +30164,10 @@ function injectSocketPathTooLong(sockPath = injectSocketPath()) {
   return bytes > limit ? { bytes, limit } : null;
 }
 function injectDaemonLockPath() {
-  return path13.join(getIndexDir(), "inject-daemon.lock");
+  return path14.join(getIndexDir(), "inject-daemon.lock");
 }
 function injectDaemonCandidateDir() {
-  return path13.join(getIndexDir(), "inject-daemon.candidates");
+  return path14.join(getIndexDir(), "inject-daemon.candidates");
 }
 var INJECT_DAEMON_REQUEST_TIMEOUT_MS = 1e4;
 var PROBE_TIMEOUT_MS = 500;
@@ -30110,6 +30389,8 @@ function startInjectDaemon() {
           } catch {
           }
           let receiptId = null;
+          let dbWaitMs = 0;
+          let injectError = null;
           const context = await computeInjectContext(
             String(req.prompt ?? ""),
             String(req.cwd ?? process.cwd()),
@@ -30118,6 +30399,12 @@ function startInjectDaemon() {
             {
               onPreparedReceipt: (id) => {
                 receiptId = id;
+              },
+              onDbWaitMs: (ms) => {
+                dbWaitMs = ms;
+              },
+              onError: (message) => {
+                injectError = message.slice(0, 200);
               },
               // The receipt may not outlive the delivery it accounts for. If the
               // hook has fallen back by the time the bundle is ready, the whole
@@ -30128,7 +30415,7 @@ function startInjectDaemon() {
               matcher: sharedMatcher()
             }
           );
-          reply({ type: "ok", ...current, ok: true, context, receiptId });
+          reply({ type: "ok", ...current, ok: true, context, receiptId, dbWaitMs, injectError });
         } catch (error2) {
           note(`request failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
           try {
@@ -30163,7 +30450,7 @@ function startInjectDaemon() {
     } catch {
     }
     try {
-      if (fs13.existsSync(sockPath)) fs13.unlinkSync(sockPath);
+      if (fs14.existsSync(sockPath)) fs14.unlinkSync(sockPath);
     } catch {
     }
     note(`retired in favour of the installed root ${from.pluginRoot} (version ${from.version ?? "unknown"})`);
@@ -30225,16 +30512,16 @@ function startInjectDaemon() {
     owning = true;
     disarmReacquire();
     try {
-      fs13.chmodSync(sockPath, 384);
+      fs14.chmodSync(sockPath, 384);
     } catch {
     }
     warmUp();
   };
-  const candidatePath = () => path13.join(injectDaemonCandidateDir(), `${process.pid}.json`);
+  const candidatePath = () => path14.join(injectDaemonCandidateDir(), `${process.pid}.json`);
   function publishCandidate() {
     try {
-      fs13.mkdirSync(injectDaemonCandidateDir(), { recursive: true });
-      fs13.writeFileSync(
+      fs14.mkdirSync(injectDaemonCandidateDir(), { recursive: true });
+      fs14.writeFileSync(
         candidatePath(),
         JSON.stringify({ ...injectDaemonIdentity(), pid: self.pid, instanceId: self.instanceId, startedAt: self.startedAt, reprobeMs: injectDaemonReacquireIntervalMs() })
       );
@@ -30243,7 +30530,7 @@ function startInjectDaemon() {
   }
   function dropCandidate() {
     try {
-      fs13.unlinkSync(candidatePath());
+      fs14.unlinkSync(candidatePath());
     } catch {
     }
   }
@@ -30270,7 +30557,7 @@ function startInjectDaemon() {
     } catch {
     }
     try {
-      if (fs13.existsSync(sockPath)) fs13.unlinkSync(sockPath);
+      if (fs14.existsSync(sockPath)) fs14.unlinkSync(sockPath);
     } catch {
     }
     releaseLockIfOurs();
@@ -30278,7 +30565,7 @@ function startInjectDaemon() {
   const lockPayload = JSON.stringify({ pid: process.pid, startedAt: self.startedAt });
   function holdsOurLock() {
     try {
-      return fs13.readFileSync(injectDaemonLockPath(), "utf8") === lockPayload;
+      return fs14.readFileSync(injectDaemonLockPath(), "utf8") === lockPayload;
     } catch {
       return false;
     }
@@ -30286,7 +30573,7 @@ function startInjectDaemon() {
   function releaseLockIfOurs() {
     if (!holdsOurLock()) return;
     try {
-      fs13.unlinkSync(injectDaemonLockPath());
+      fs14.unlinkSync(injectDaemonLockPath());
     } catch {
     }
   }
@@ -30299,12 +30586,12 @@ function startInjectDaemon() {
       try {
         const staging = `${lockPath}.${process.pid}.${randomUUID7()}.tmp`;
         try {
-          fs13.writeFileSync(staging, mine);
-          fs13.linkSync(staging, lockPath);
+          fs14.writeFileSync(staging, mine);
+          fs14.linkSync(staging, lockPath);
           held = true;
         } finally {
           try {
-            fs13.unlinkSync(staging);
+            fs14.unlinkSync(staging);
           } catch {
           }
         }
@@ -30313,8 +30600,8 @@ function startInjectDaemon() {
         let text = null;
         let stamp = "";
         try {
-          text = fs13.readFileSync(lockPath, "utf8");
-          const stat = fs13.statSync(lockPath);
+          text = fs14.readFileSync(lockPath, "utf8");
+          const stat = fs14.statSync(lockPath);
           stamp = `${stat.mtimeMs}:${stat.size}`;
         } catch {
         }
@@ -30338,7 +30625,7 @@ function startInjectDaemon() {
           note(`${lockPath} is still unreadable on a second look \u2014 treating it as abandoned`);
         }
         try {
-          fs13.unlinkSync(lockPath);
+          fs14.unlinkSync(lockPath);
         } catch {
         }
       }
@@ -30352,7 +30639,7 @@ function startInjectDaemon() {
     } finally {
       if (holdsOurLock()) {
         try {
-          fs13.unlinkSync(lockPath);
+          fs14.unlinkSync(lockPath);
         } catch {
         }
       }
@@ -30387,7 +30674,7 @@ function startInjectDaemon() {
       const probe = await probeInjectDaemon(sockPath);
       if (!probe.listening) {
         try {
-          fs13.unlinkSync(sockPath);
+          fs14.unlinkSync(sockPath);
         } catch {
         }
         note(`reclaiming the socket (${trigger}; ${probe.code ?? "absent"})`);
@@ -30413,7 +30700,7 @@ function startInjectDaemon() {
       if (reply?.type === "retired") {
         note(`took over from ${String(reply.version ?? "unknown")} at ${String(reply.pluginRoot ?? "?")} (pid ${String(reply.pid ?? "?")})`);
         try {
-          if (fs13.existsSync(sockPath)) fs13.unlinkSync(sockPath);
+          if (fs14.existsSync(sockPath)) fs14.unlinkSync(sockPath);
         } catch {
         }
         bind();
@@ -31960,7 +32247,7 @@ init_db();
 
 // src/llm.ts
 init_paths();
-import path16 from "node:path";
+import path17 from "node:path";
 import os6 from "node:os";
 
 // src/llm-error-class.ts
@@ -32027,9 +32314,9 @@ function classifyLlmError(err) {
 
 // src/codex-exec.ts
 import { spawn } from "node:child_process";
-import fs14 from "node:fs";
+import fs15 from "node:fs";
 import os5 from "node:os";
-import path14 from "node:path";
+import path15 from "node:path";
 var INNER_GUARD_ENV = "MEMEX_CODEX_EXEC_INNER";
 var DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
 var CodexRequestRejectedError = class extends Error {
@@ -32303,7 +32590,7 @@ async function modelBudgetLimitError(kind, observed, limit) {
 function readOutputFile(filePath, maxOutputChars) {
   let stat;
   try {
-    stat = fs14.statSync(filePath);
+    stat = fs15.statSync(filePath);
   } catch {
     return { text: "", exceeded: false };
   }
@@ -32313,17 +32600,17 @@ function readOutputFile(filePath, maxOutputChars) {
     Math.max(1, charCap * 4 + 4)
   );
   const bytesToRead = Math.min(stat.size, byteCap + 1);
-  const fd = fs14.openSync(filePath, "r");
+  const fd = fs15.openSync(filePath, "r");
   try {
     const buffer = Buffer.alloc(bytesToRead);
-    const read = fs14.readSync(fd, buffer, 0, bytesToRead, 0);
+    const read = fs15.readSync(fd, buffer, 0, bytesToRead, 0);
     const text = buffer.subarray(0, read).toString("utf8").trim();
     return {
       text,
       exceeded: stat.size > byteCap || text.length > charCap
     };
   } finally {
-    fs14.closeSync(fd);
+    fs15.closeSync(fd);
   }
 }
 async function runCodex(opts = {}) {
@@ -32343,8 +32630,8 @@ async function runCodex(opts = {}) {
     model: opts.model,
     reasoningEffort: opts.reasoningEffort
   });
-  const workdir = fs14.mkdtempSync(path14.join(os5.tmpdir(), "memex-llm-"));
-  const outPath = path14.join(workdir, "last-message.txt");
+  const workdir = fs15.mkdtempSync(path15.join(os5.tmpdir(), "memex-llm-"));
+  const outPath = path15.join(workdir, "last-message.txt");
   const started = performance.now();
   let observed = false;
   const observe = (token_usage) => {
@@ -32375,8 +32662,8 @@ async function runCodex(opts = {}) {
       1,
       Math.min(timeoutMs, remaining === null ? timeoutMs : remaining)
     );
-    const schemaPath = opts.outputSchema ? path14.join(workdir, "output-schema.json") : void 0;
-    if (schemaPath) fs14.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
+    const schemaPath = opts.outputSchema ? path15.join(workdir, "output-schema.json") : void 0;
+    if (schemaPath) fs15.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
     const args = buildCodexExecArgs({
       model: selection.model,
       reasoningEffort: selection.reasoningEffort,
@@ -32433,7 +32720,7 @@ async function runCodex(opts = {}) {
     throw error2;
   } finally {
     try {
-      fs14.rmSync(workdir, { recursive: true, force: true });
+      fs15.rmSync(workdir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -32443,7 +32730,7 @@ async function runCodex(opts = {}) {
 init_model_budget();
 init_model_settings();
 init_ontology_admin();
-var LLM_WORKDIR = path16.join(os6.tmpdir(), LLM_WORKDIR_BASENAME);
+var LLM_WORKDIR = path17.join(os6.tmpdir(), LLM_WORKDIR_BASENAME);
 function retryBudget(options = {}) {
   const requested = options.maxRetries;
   if (typeof requested === "number" && Number.isInteger(requested) && requested >= 0) {
@@ -33014,8 +33301,8 @@ var CLAUSE_PREAMBLE = [
 ].join("\n");
 
 // src/mcp-server.ts
-import path17 from "path";
-import fs16 from "fs";
+import path18 from "path";
+import fs17 from "fs";
 init_paths();
 init_continuity_identity();
 var SearchModeEnum = external_exports.enum(["vector", "text", "both"]);
@@ -33227,7 +33514,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.23"
+    version: "0.7.24"
   },
   {
     capabilities: {
@@ -33753,7 +34040,7 @@ async function handleToolCall(name, args) {
     }
     if (name === "read") {
       const params = ShowConversationInputSchema.parse(args);
-      const resolvedPath = path17.resolve(params.path);
+      const resolvedPath = path18.resolve(params.path);
       if (!resolvedPath.endsWith(".jsonl") && !resolvedPath.endsWith(".jsonl.zst")) {
         throw new Error(`Invalid file type: only .jsonl files are supported`);
       }
@@ -33761,16 +34048,16 @@ async function handleToolCall(name, args) {
       if (!resolvedFile) {
         throw new Error(`File not found: ${resolvedPath}`);
       }
-      const realFile = fs16.realpathSync(resolvedFile);
+      const realFile = fs17.realpathSync(resolvedFile);
       const allowedRoots = [getArchiveDir(), sessionsRoot()].map((root) => {
         try {
-          return fs16.realpathSync(root);
+          return fs17.realpathSync(root);
         } catch {
-          return path17.resolve(root);
+          return path18.resolve(root);
         }
       });
       const isAllowed = allowedRoots.some(
-        (root) => realFile === root || realFile.startsWith(root + path17.sep)
+        (root) => realFile === root || realFile.startsWith(root + path18.sep)
       );
       if (!isAllowed) {
         throw new Error(

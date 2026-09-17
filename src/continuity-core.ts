@@ -17,7 +17,28 @@ import {
   wrapMemoryContext,
 } from "./context-envelope.js";
 import { getMemexHome, getSessionsRoot } from "./paths.js";
-import { recordHookEvent } from "./observe-hook-event.js";
+import { recordHookDone, recordHookStart } from "./observe-hook-event.js";
+import {
+  busyTimeoutForRemaining,
+  captureGapAlreadyRecorded,
+  hookBudgetMs,
+  hookIngestBytesPerMs,
+  HookCaptureFailed,
+  HookDeadlineExceeded,
+  HookOversizeCapture,
+  isSqliteBusyError,
+  markCaptureGapRecorded,
+  HOOK_INGEST_RESERVE_MS,
+  HOOK_PHASE_FLOOR_MS,
+  HOOK_RETRY_FLOOR_MS,
+} from "./hook-budget.js";
+import {
+  deleteCaptureGapMarker,
+  listEpochAdvanceMarkers,
+  pruneCaptureGapMarkers,
+  writeCaptureGapMarker,
+  CAPTURE_GAP_MARKER_MAX_AGE_MS,
+} from "./capture-gap-markers.js";
 import { isConversationExcludedSession } from "./conversation-policy.js";
 import { CAPSULE_POLICY_VERSION, capsulePageIsCurrent, commitCapsulePage, type CapsulePage } from "./continuity-evidence.js";
 import {
@@ -69,6 +90,25 @@ export function capsuleMaxChars(): number {
   if (!Number.isSafeInteger(parsed)) return DEFAULT_MAX_CAPSULE_CHARS;
   return Math.max(MIN_MAX_CAPSULE_CHARS, parsed);
 }
+
+// Issue #162 — the hook budget, its typed give-up errors and the SQLITE_BUSY
+// predicate live in a leaf module so `memex doctor` can quote the same numbers
+// without importing better-sqlite3. Re-exported here because the hook scripts
+// load exactly one module from dist.
+export {
+  busyTimeoutForRemaining,
+  hookBudgetMs,
+  hookIngestBytesPerMs,
+  HookCaptureFailed,
+  HookDeadlineExceeded,
+  HookOversizeCapture,
+  isSqliteBusyError,
+  HOOK_BUDGET_MS,
+  HOOK_BUDGET_PRECOMPACT_MS,
+  HOOK_INGEST_BYTES_PER_MS,
+  HOOK_PHASE_FLOOR_MS,
+  HOOK_RETRY_FLOOR_MS,
+} from "./hook-budget.js";
 
 export type CaptureKind = "stop" | "interrupt" | "precompact" | "final";
 export type LifecycleSource = "startup" | "resume" | "clear" | "compact";
@@ -188,6 +228,15 @@ export interface HandleHookResult {
   stdout: string;
   warning?: string;
   capture?: CaptureResult;
+  /**
+   * Issue #162 (review) — finalize this invocation AFTER its output has been
+   * delivered. The done row and the intent-marker deletion are the claim "this
+   * hook succeeded"; writing them before stdout reaches the host makes a host
+   * kill in that window look like a success, and makes a failed SessionStart
+   * write look `ok`. Present only when there is something left to claim: call
+   * it with the delivery error to record `error` and KEEP the marker.
+   */
+  finalize?: (deliveryError?: unknown) => void;
   /** Durable recall provenance is prepared before residency and emitted by the hook after stdout. */
   recallReceipt?: ContinuityRecallReceipt;
 }
@@ -530,8 +579,10 @@ function checkpointOrdinal(streamEpoch: number, throughByte: number): number {
 /** Preserve Stop/byte coalescing using database capture order, never session ordinals. */
 export function scheduleCapsuleForCheckpoint(
   db: Database.Database, checkpointId: string, now = new Date().toISOString(), force = false,
+  options: { onTransactionStart?: () => void } = {},
 ): void {
   const tx = db.transaction(() => {
+    options.onTransactionStart?.();
     const checkpoint = db.prepare("SELECT workstream_id, kind FROM checkpoints WHERE checkpoint_id = ?")
       .get(checkpointId) as { workstream_id: string; kind: string } | undefined;
     if (!checkpoint?.workstream_id || checkpoint.kind === "extraction") return;
@@ -632,7 +683,23 @@ export function scheduleCapsuleForCheckpoint(
   db.inTransaction ? tx() : tx.immediate();
 }
 
-export function scheduleCapsuleBacklog(db: Database.Database): void {
+/**
+ * A backlog is SEVERAL transactions, one per workstream, so `timeTransaction`
+ * wraps each of them individually (#162 review 5). Timing the whole call as one
+ * span charged every wait after the first transaction to held time — a second
+ * transaction blocked by another writer was logged `wait_ms: 1, held_ms: 535`,
+ * and doctor reads held_ms as "held the write lock for N ms".
+ *
+ * The callback it receives is the same `markStart` contract as everywhere else:
+ * fired as the first statement of that transaction's body, silent when the
+ * transaction was never entered.
+ */
+export function scheduleCapsuleBacklog(
+  db: Database.Database,
+  options: {
+    timeTransaction?: <T>(label: string, run: (markStart: () => void) => T) => T;
+  } = {},
+): void {
   const streams = db.prepare(`
     SELECT f.workstream_id, f.revision, f.through_seq,
       EXISTS (SELECT 1 FROM work_capsules w WHERE w.workstream_id = f.workstream_id) AS has_capsule,
@@ -645,9 +712,18 @@ export function scheduleCapsuleBacklog(db: Database.Database): void {
         AND j.kind = 'capsule_update' AND j.state IN ('pending','running','retry','dead'))
     ORDER BY f.workstream_id LIMIT 32
   `).all() as Array<{ checkpoint_id: string | null; revision: number; through_seq: number; has_capsule: number }>;
+  let index = 0;
   for (const stream of streams) {
-    if (stream.checkpoint_id) scheduleCapsuleForCheckpoint(db, stream.checkpoint_id, undefined,
-      stream.through_seq === 0 && (stream.revision > 0 || !!stream.has_capsule));
+    const checkpointId = stream.checkpoint_id;
+    if (!checkpointId) continue;
+    const force = stream.through_seq === 0 && (stream.revision > 0 || !!stream.has_capsule);
+    const run = (markStart: () => void) =>
+      scheduleCapsuleForCheckpoint(db, checkpointId, undefined, force, {
+        onTransactionStart: markStart,
+      });
+    index++;
+    if (options.timeTransaction) options.timeTransaction(`scheduleCapsuleBacklog#${index}`, run);
+    else run(() => { /* untimed */ });
   }
 }
 
@@ -661,16 +737,63 @@ export function captureTranscriptPrefix(
     turnId?: string | null;
     workstreamId?: string | null;
     now?: string;
+    /**
+     * Issue #162 (R1''): absolute wall-clock bound (Date.now() ms) for the
+     * EXECUTION phase. busy_timeout only bounds lock waits; the copy, the
+     * hashes and the fsync below happen while the write lock is already held,
+     * so without this a large transcript delta blows the hook budget after
+     * acquiring the lock — the worst case, because it also blocks everyone else.
+     */
+    deadlineAt?: number;
+    /**
+     * Fired as the FIRST statement inside the write transaction body, i.e. the
+     * instant the write lock was granted. Everything before it was WAITING, and
+     * a call that never fires it never held the lock at all — the only way to
+     * tell a lock holder from its victim (#162).
+     */
+    onTransactionStart?: () => void;
     afterJournalChunk?: (bytesCopied: number) => void;
     afterJournalFsync?: () => void;
     afterCheckpoint?: () => void;
     afterJob?: () => void;
   },
 ): CaptureResult {
+  // Pre-check BEFORE opening the write transaction: a delta that cannot be
+  // ingested inside the remaining budget must not take the lock at all.
+  if (input.deadlineAt !== undefined) {
+    const remaining = input.deadlineAt - Date.now();
+    if (remaining <= 0) throw new HookDeadlineExceeded();
+    const pending = db.prepare(`
+      SELECT copied_byte_end FROM journal_streams
+      WHERE session_id = ? ORDER BY stream_epoch DESC LIMIT 1
+    `).get(input.sessionId) as { copied_byte_end: number } | undefined;
+    let sourceBytes = 0;
+    try {
+      sourceBytes = fs.statSync(input.transcriptPath).size;
+    } catch {
+      sourceBytes = 0;
+    }
+    const bytesToIngest = Math.max(0, sourceBytes - Number(pending?.copied_byte_end ?? 0));
+    if (bytesToIngest / hookIngestBytesPerMs() > remaining - HOOK_INGEST_RESERVE_MS) {
+      throw new HookOversizeCapture(
+        `${bytesToIngest} pending bytes exceed the remaining ${remaining} ms hook budget`,
+      );
+    }
+  }
   const capture = db.transaction(() => captureTranscriptPrefixInTransaction(db, input));
   try {
     return db.inTransaction ? capture() : capture.immediate();
   } catch (error) {
+    // A bounded skip is not a capture failure: the hook records the gap once,
+    // inside what is left of its budget. Retrying the write here would spend a
+    // second full busy_timeout precisely when there is none left.
+    if (
+      error instanceof HookDeadlineExceeded ||
+      error instanceof HookOversizeCapture ||
+      isSqliteBusyError(error)
+    ) {
+      throw error;
+    }
     // File bytes can be fsynced before a transaction aborts. Keep the failure
     // visible in a separate transaction; the next serialized capture trims the
     // orphan tail and replays the exact source delta.
@@ -682,6 +805,9 @@ export function captureTranscriptPrefix(
         reason: error instanceof Error ? error.message : String(error),
         now: input.now,
       });
+      // Tell the hook the durable gap row already exists, so it does not spend
+      // a second lock wait writing the identical row (#162 review).
+      markCaptureGapRecorded(error);
     } catch { /* the caller still receives the original capture failure */ }
     throw error;
   }
@@ -697,12 +823,30 @@ function captureTranscriptPrefixInTransaction(
     turnId?: string | null;
     workstreamId?: string | null;
     now?: string;
+    deadlineAt?: number;
+    /**
+     * Fired as the FIRST statement inside the write transaction body, i.e. the
+     * instant the write lock was granted. Everything before it was WAITING, and
+     * a call that never fires it never held the lock at all — the only way to
+     * tell a lock holder from its victim (#162).
+     */
+    onTransactionStart?: () => void;
     afterJournalChunk?: (bytesCopied: number) => void;
     afterJournalFsync?: () => void;
     afterCheckpoint?: () => void;
     afterJob?: () => void;
   },
 ): CaptureResult {
+  // Throwing rolls the enclosing transaction back, so a capture is committed
+  // whole or not at all — the uncommitted journal tail is truncated by the next
+  // capture against the still-intact committed boundary.
+  const checkDeadline = () => {
+    if (input.deadlineAt !== undefined && Date.now() > input.deadlineAt) {
+      throw new HookDeadlineExceeded();
+    }
+  };
+  input.onTransactionStart?.();
+  checkDeadline();
   const now = input.now ?? new Date().toISOString();
   const source = validateTranscriptPath(input.transcriptPath);
   const meta = readCanonicalSessionMeta(source.realpath);
@@ -810,6 +954,9 @@ function captureTranscriptPrefixInTransaction(
       const newline = buffer.subarray(0, length).lastIndexOf(0x0a);
       if (newline >= 0) { sourceThroughByte = start + newline + 1; break; }
       end = start;
+      // A multi-megabyte incomplete record makes this scan itself unbounded,
+      // and it runs with the write lock already held (#162 review).
+      checkDeadline();
     }
     const journalFd = fs.openSync(journalPath, "a+");
     try {
@@ -835,6 +982,7 @@ function captureTranscriptPrefixInTransaction(
         }
         copied += read;
         input.afterJournalChunk?.(copied);
+        checkDeadline();
       }
       sourceGuardStart = Math.max(0, sourceThroughByte - SOURCE_PREFIX_GUARD_BYTES);
       const guard = Buffer.alloc(sourceThroughByte - sourceGuardStart);
@@ -862,6 +1010,8 @@ function captureTranscriptPrefixInTransaction(
   const segmentHash = segmentDigest.digest("hex");
   const prefixHash = completeBytes > 0 ? prefixDigest.digest("hex") : priorPrefixHash || sha256(Buffer.alloc(0));
   input.afterJournalFsync?.();
+  // Last gate before the row writes: past here the capture commits as a whole.
+  checkDeadline();
 
   const journalThroughByte = journalByteEnd + completeBytes;
   const blockId = stableId(
@@ -1021,6 +1171,11 @@ function captureTranscriptPrefixInTransaction(
       UPDATE capture_gaps SET state = 'recovered', recovered_at = ?
       WHERE session_id = ? AND state = 'open'
     `).run(now, input.sessionId);
+    // The LAST gate, and the only one inside the body: checkpoint and job rows
+    // are written under the lock, so an overrun here must roll the whole
+    // capture back rather than commit a capture the hook no longer has the
+    // budget to own (#162 review). The pre-commit check above cannot see it.
+    checkDeadline();
     return checkpointResult.changes === 1;
   });
   let created: boolean;
@@ -1059,19 +1214,46 @@ export function advanceContextEpoch(
     source: "compact" | "clear";
     turnId?: string | null;
     now?: string;
+    /**
+     * Issue #162 (review 2/3): the IMMUTABLE identity of this transition — the
+     * capture-gap marker's invocation id. Applied ids are remembered as a SET
+     * in `session_epoch_markers`, written in the same transaction as the epoch,
+     * and an advance whose id is already in that set is a no-op.
+     *
+     * Neither of the cheaper records works. `epoch_token` is derived from
+     * `latest_checkpoint_id` for `compact`, which any later Stop moves, so an
+     * applied marker looked unapplied again (1 -> 2). A single "last marker id"
+     * column fails the next step: A advances and its marker survives a kill, B
+     * advances, and A looks unapplied once more (1 -> 2 -> 3), clearing
+     * residency the session had legitimately rebuilt. Only set membership stays
+     * true.
+     */
+    markerId?: string | null;
+    /** First statement of the real transaction body — see #162. */
+    onTransactionStart?: () => void;
   },
 ): number {
   const now = input.now ?? new Date().toISOString();
+  const apply = () => {
+  input.onTransactionStart?.();
   const state = db.prepare(`
     SELECT context_epoch, epoch_token, latest_checkpoint_id,
            resident_fact_revisions_json, carry_fact_revisions_json
     FROM session_memory_state WHERE session_id = ?
   `).get(input.sessionId) as Record<string, unknown> | undefined;
   if (!state) throw new Error("session memory state is missing");
+  if (input.markerId && db.prepare(
+    "SELECT 1 FROM session_epoch_markers WHERE session_id = ? AND marker_id = ?",
+  ).get(input.sessionId, input.markerId)) {
+    return Number(state.context_epoch);
+  }
   const token = input.source === "compact"
     ? `compact:${String(state.latest_checkpoint_id ?? input.turnId ?? "unknown")}`
     : `clear:${input.turnId ?? now}`;
-  if (String(state.epoch_token) === token) return Number(state.context_epoch);
+  if (String(state.epoch_token) === token) {
+    rememberEpochMarker(db, input.sessionId, input.markerId, now);
+    return Number(state.context_epoch);
+  }
   const next = Number(state.context_epoch) + 1;
   db.prepare(`
     UPDATE session_memory_state
@@ -1087,7 +1269,50 @@ export function advanceContextEpoch(
         last_source = ?, updated_at = ?
     WHERE session_id = ? AND context_epoch = ?
   `).run(next, token, input.source, input.source, now, input.sessionId, state.context_epoch);
+  rememberEpochMarker(db, input.sessionId, input.markerId, now);
   return next;
+  };
+  // The epoch row and the applied-marker row must move together: a crash
+  // between them would leave an advance nobody can recognise as applied.
+  return db.inTransaction ? apply() : db.transaction(apply).immediate();
+}
+
+/**
+ * How much longer than a marker file the applied-marker history is kept.
+ *
+ * A marker is replayable for `CAPTURE_GAP_MARKER_MAX_AGE_MS`; its history row
+ * lives for that plus this, so a marker that can still be replayed always still
+ * has the row that says it was applied.
+ */
+export const EPOCH_HISTORY_RETENTION_MARGIN_MS = 24 * 60 * 60 * 1_000;
+
+/** Applied-marker bookkeeping: remember this id, and keep the set bounded. */
+function rememberEpochMarker(
+  db: Database.Database,
+  sessionId: string,
+  markerId: string | null | undefined,
+  now: string,
+): void {
+  if (!markerId) return;
+  db.prepare(`
+    INSERT OR IGNORE INTO session_epoch_markers (session_id, marker_id, applied_at)
+    VALUES (?, ?, ?)
+  `).run(sessionId, markerId, now);
+  // History must OUTLIVE every marker that is still replayable, or the two
+  // windows race: an old marker file whose history row had just been pruned was
+  // applied all over again (epoch 5 -> 6, residency reset). The margin is what
+  // makes "still replayable" strictly imply "still remembered" (#162 review 4);
+  // `applyPendingEpochAdvance` refuses anything past retention, so nothing in
+  // the gap between the two can ever be replayed either way.
+  const cutoff = new Date(
+    Date.parse(now) - CAPTURE_GAP_MARKER_MAX_AGE_MS - EPOCH_HISTORY_RETENTION_MARGIN_MS,
+  ).toISOString();
+  db.prepare(`
+    DELETE FROM session_epoch_markers
+    WHERE rowid IN (
+      SELECT rowid FROM session_epoch_markers WHERE applied_at < ? LIMIT 200
+    )
+  `).run(cutoff);
 }
 
 export function readResidentFactRevisions(
@@ -1753,6 +1978,8 @@ export function applyWorkCapsulePatch(
       leaseGeneration: number;
     };
     now?: string;
+    /** First statement of the real transaction body — see #162 review. */
+    onTransactionStart?: () => void;
   },
 ): WorkCapsule | null {
   // Issue #143: only the structural pass runs here. The bounds, the
@@ -1764,6 +1991,7 @@ export function applyWorkCapsulePatch(
   const applied: { truncation: CapsuleTruncation | null } = { truncation: null };
   const now = input.now ?? new Date().toISOString();
   const tx = db.transaction(() => {
+    input.onTransactionStart?.();
     if (input.evidencePage && !capsulePageIsCurrent(db, input.workstreamId, input.evidencePage)) return null;
     if (input.jobLease) {
       const owned = db.prepare(`
@@ -1962,10 +2190,13 @@ export function completeEmptyCapsuleCheckpoint(
     leaseGeneration: number;
     evidencePage?: CapsulePage;
     now?: string;
+    /** First statement of the real transaction body — see #162 review. */
+    onTransactionStart?: () => void;
   },
 ): boolean {
   const now = input.now ?? new Date().toISOString();
   const tx = db.transaction(() => {
+    input.onTransactionStart?.();
     const workstream = db.prepare("SELECT workstream_id FROM capsule_checkpoint_state WHERE checkpoint_id = ?")
       .get(input.checkpointId) as { workstream_id: string } | undefined;
     if (input.evidencePage && (!workstream || !capsulePageIsCurrent(db, workstream.workstream_id, input.evidencePage))) return false;
@@ -2493,18 +2724,312 @@ function captureKind(event: string): CaptureKind | null {
   return null;
 }
 
+/** Bounded-skip classification: the three ways a hook gives up inside budget. */
+function boundedSkipOutcome(error: unknown): "busy" | "deadline" | "oversize" | null {
+  if (error instanceof HookOversizeCapture) return "oversize";
+  if (error instanceof HookDeadlineExceeded) return "deadline";
+  if (isSqliteBusyError(error)) return "busy";
+  return null;
+}
+
+function transcriptSizeAt(transcriptPath: string | null): number | null {
+  if (!transcriptPath) return null;
+  try {
+    return fs.statSync(transcriptPath).size;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Replay the ONE lifecycle transition a skipped hook cannot heal by itself.
+ *
+ * A `clear`/`compact` SessionStart advances the context epoch, which clears
+ * residency; when that hook is skipped, inject-core still sees the old
+ * residency and suppresses exactly the facts the cleared context just lost. So
+ * the inject path (daemon and cold fallback share `computeInjectContext`)
+ * applies the pending advance from the marker before computing an injection.
+ *
+ * `advanceContextEpoch` is idempotent through `epoch_token`; for `clear` that
+ * token is derived from the turn id, so the marker's invocation id is used when
+ * the payload carried no turn id. Best effort by design — an inject must never
+ * fail because a marker could not be replayed.
+ *
+ * That "best effort" swallows SQLITE_BUSY, which also swallowed the WAIT it
+ * paid: 1,163 ms blocked here was invisible to `db_wait_ms`, the later phases
+ * succeeded, and doctor reported ok (#162 review 8). `onDbWaitMs` hands the
+ * accumulated lock wait back to the caller; the repair's own semantics — never
+ * throw, keep the marker on failure, continue with the next one — are unchanged.
+ */
+export function applyPendingEpochAdvance(
+  db: Database.Database,
+  sessionId: string,
+  options: { onDbWaitMs?: (ms: number) => void } = {},
+): number {
+  let applied = 0;
+  let dbWaitMs = 0;
+  const expiredBefore = Date.now() - CAPTURE_GAP_MARKER_MAX_AGE_MS;
+  try {
+    for (const { file, marker } of listEpochAdvanceMarkers(sessionId)) {
+      // One acquisition attempt per marker, under the same rule as every other
+      // wait: call -> transaction body start, or the whole span when the
+      // attempt ended blocked. A slow uncontended repair counts zero.
+      const calledAt = Date.now();
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        dbWaitMs += Date.now() - calledAt;
+      };
+      try {
+        // Past the retention window this marker is no longer replayable: its
+        // history row is allowed to be gone by now, so "not in the set" no
+        // longer means "never applied". Retire it instead of guessing, which is
+        // what re-advanced a month-old epoch and reset residency (#162 rev 4).
+        const ts = Date.parse(marker.ts);
+        if (!Number.isFinite(ts) || ts <= expiredBefore) {
+          deleteCaptureGapMarker(file);
+          continue;
+        }
+        const state = db.prepare(
+          "SELECT context_epoch FROM session_memory_state WHERE session_id = ?",
+        ).get(sessionId) as { context_epoch: number } | undefined;
+        // No session state means nothing was ever resident: there is no stale
+        // residency to clear, so retiring the marker is the whole repair.
+        if (state) {
+          const before = Number(state.context_epoch);
+          const after = advanceContextEpoch(db, {
+            sessionId,
+            source: marker.source === "compact" ? "compact" : "clear",
+            turnId: marker.turnId ?? marker.invocationId ?? null,
+            // The marker's own id: an advance this marker already produced is
+            // refused durably, whatever `latest_checkpoint_id` or any LATER
+            // advance has since done.
+            markerId: marker.invocationId || null,
+            onTransactionStart: settle,
+          });
+          if (after !== before) applied++;
+        }
+        deleteCaptureGapMarker(file);
+      } catch (error) {
+        /* keep the marker: doctor still reports it, the next inject retries */
+        if (isSqliteBusyError(error)) settle();
+      }
+    }
+  } catch {
+    /* listing failures never break an injection */
+  }
+  try { options.onDbWaitMs?.(dbWaitMs); } catch { /* observability only */ }
+  return applied;
+}
+
 export function handleContinuityHook(
   payloadValue: unknown,
-  options: { db?: Database.Database; strictCapture?: boolean } = {},
+  options: {
+    db?: Database.Database;
+    strictCapture?: boolean;
+    /** Process entry time (ms). The budget covers stdin and dist import too. */
+    startedAt?: number;
+    budgetMs?: number;
+    invocationId?: string;
+  } = {},
 ): HandleHookResult {
   const payload = normalizeHookPayload(payloadValue);
+  const startedAt = options.startedAt ?? Date.now();
+  const deadlineAt = startedAt + (options.budgetMs ?? hookBudgetMs(payload.hookEventName));
+  const strictCapture = options.strictCapture ?? process.env.MEMEX_STRICT_CAPTURE === "1";
+  // R5: the START row is written before any database access, because a hook the
+  // host kills never reaches a done row — the pair is what makes the kill visible.
+  const invocationId = recordHookStart(payload.hookEventName, {
+    sessionId: payload.sessionId,
+    cwd: payload.cwd,
+    invocationId: options.invocationId,
+  });
+  // R1': the durable intent marker, also before any database access, carrying
+  // the transcript byte boundary this invocation was supposed to capture.
+  const markerFile = writeCaptureGapMarker({
+    invocationId,
+    event: payload.hookEventName,
+    source: payload.source,
+    sessionId: payload.sessionId,
+    cwd: payload.cwd,
+    transcriptPath: payload.transcriptPath,
+    transcriptBytes: transcriptSizeAt(payload.transcriptPath),
+    turnId: payload.turnId,
+    ts: new Date(startedAt).toISOString(),
+  });
+
+  let dbWaitMs = 0;
+  let finalized = false;
   const ownDb = !options.db;
-  const db = options.db ?? initDatabase();
-  try {
-    recordHookEvent(payload.hookEventName, {
+  let db: Database.Database;
+  const finish = (outcome: "ok" | "busy" | "oversize" | "deadline" | "error", error?: unknown) => {
+    if (finalized) return;
+    finalized = true;
+    recordHookDone(payload.hookEventName, {
       sessionId: payload.sessionId,
       cwd: payload.cwd,
+      invocationId,
+      outcome,
+      durationMs: Date.now() - startedAt,
+      dbWaitMs,
+      ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
     });
+  };
+  /**
+   * The deferred success claim. The hook script calls it once its stdout (and
+   * the recall receipt that accounts for it) has actually been delivered; a
+   * delivery failure keeps the marker and records `error`, because the capture
+   * or rehydration this invocation performed was never handed to the host.
+   */
+  const finalize = (deliveryError?: unknown) => {
+    if (finalized) return;
+    if (deliveryError) {
+      finish("error", deliveryError);
+      return;
+    }
+    deleteCaptureGapMarker(markerFile);
+    finish("ok");
+    // Bounded, best-effort maintenance on the success path only (R1'/#162):
+    // markers are how a skipped capture stays visible, so they expire slowly.
+    pruneCaptureGapMarkers();
+  };
+  const openedAt = Date.now();
+  try {
+    db = options.db ??
+      initDatabase({ busyTimeoutMs: busyTimeoutForRemaining(deadlineAt - openedAt) });
+  } catch (error) {
+    // The open includes the whole migration pass, which is work, not waiting —
+    // so it counts only when it ended blocked (#162 review 7).
+    if (isSqliteBusyError(error)) dbWaitMs += Date.now() - openedAt;
+    const outcome = boundedSkipOutcome(error);
+    // The marker is NEVER deleted on a failure path — that is the whole point
+    // of writing it before the database was touched.
+    finish(outcome ?? "error", error);
+    if (!outcome) throw error;
+    // No connection at all: the marker is the entire record. Exit 0, no stdout.
+    if (strictCapture && captureKind(payload.hookEventName)) throw error;
+    return { stdout: "", warning: `continuity hook skipped (${outcome})` };
+  }
+
+  /**
+   * Re-read the budget at the entry of every phase and re-derive the lock wait
+   * from what is LEFT (#162 review). One busy_timeout chosen at connect time
+   * bounds only the first wait; every later statement got the whole timeout
+   * again, so a hook whose deadline had already passed still advanced the epoch
+   * and reported `ok`.
+   */
+  const enterPhase = (write: boolean) => {
+    const left = deadlineAt - Date.now();
+    if (left < HOOK_PHASE_FLOOR_MS) {
+      throw new HookDeadlineExceeded(
+        `hook budget exhausted before the next phase (${Math.max(0, left)} ms left)`,
+      );
+    }
+    if (!write) return;
+    try {
+      db.pragma(`busy_timeout = ${busyTimeoutForRemaining(left)}`);
+    } catch {
+      /* a connection that cannot take a pragma will fail loudly on the write */
+    }
+  };
+  /**
+   * Measure ONE lock acquisition attempt. `db_wait_ms` means time spent WAITING
+   * FOR A LOCK and nothing else, so exactly two things count (#162 review 7):
+   *
+   *  - a phase that can say when its transaction body began: call -> body start
+   *    is the wait, everything after it is work;
+   *  - a phase with no such instant (an autocommit statement, a migration pass)
+   *    ONLY when it ended blocked — SQLITE_BUSY or the budget expiring on the
+   *    wait. Then the whole span was the wait.
+   *
+   * A slow but UNCONTENDED phase therefore contributes ZERO. Charging it
+   * anything made a 1.2 s migration pass or marker scan read as "hooks waited
+   * on the database" in `memex doctor`, which points at the wrong fix entirely.
+   *
+   * The cost of that honesty: on a SUCCESSFUL hook `db_wait_ms` is a LOWER
+   * BOUND — an autocommit statement that waited 300 ms and then got the lock
+   * has no instant to report, so its wait is invisible. On a busy/deadline
+   * outcome it is the blocked time.
+   */
+  const measureAttempt = <T>(run: (onTransactionStart: () => void) => T): T => {
+    const calledAt = Date.now();
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      dbWaitMs += Date.now() - calledAt;
+    };
+    try {
+      return run(settle);
+    } catch (error) {
+      if (isSqliteBusyError(error) || error instanceof HookDeadlineExceeded) settle();
+      throw error;
+    }
+  };
+
+  try {
+    const result = runContinuityHook(db, payload, {
+      deadlineAt, strictCapture, enterPhase, measureAttempt, invocationId,
+    });
+    return { ...result, finalize };
+  } catch (error) {
+    const captureFailure = error instanceof HookCaptureFailed;
+    const cause = captureFailure ? error.cause : error;
+    const outcome = boundedSkipOutcome(cause);
+    const kind = captureKind(payload.hookEventName);
+    // Exactly ONE bounded attempt at the durable gap row: only when the capture
+    // path has not already written it, and only when enough of the budget is
+    // left for it to finish rather than time out again.
+    const remaining = deadlineAt - Date.now();
+    if (kind && !captureGapAlreadyRecorded(cause) && remaining > HOOK_RETRY_FLOOR_MS) {
+      const gapStartedAt = Date.now();
+      try {
+        db.pragma(`busy_timeout = ${busyTimeoutForRemaining(remaining)}`);
+        recordCaptureGap(db, {
+          sessionId: payload.sessionId,
+          sourcePath: payload.transcriptPath,
+          eventKind: kind,
+          reason: cause instanceof Error ? cause.message : String(cause),
+        });
+      } catch (gapError) {
+        /* the marker already records the skip durably */
+        if (isSqliteBusyError(gapError)) dbWaitMs += Date.now() - gapStartedAt;
+      }
+    }
+    // Failure of ANY kind keeps the marker: a capture that did not happen is
+    // not an `ok` hook, which is what deleting it here used to claim.
+    finish(outcome ?? "error", cause);
+    if (outcome) {
+      if (strictCapture && kind) throw cause;
+      return { stdout: "", warning: `continuity hook skipped (${outcome})` };
+    }
+    if (captureFailure) {
+      if (strictCapture) throw cause;
+      return { stdout: "", warning: error.message };
+    }
+    throw cause;
+  } finally {
+    if (ownDb) db.close();
+  }
+}
+
+function runContinuityHook(
+  db: Database.Database,
+  payload: NormalizedHookPayload,
+  options: {
+    deadlineAt: number;
+    strictCapture: boolean;
+    /** Re-checks the budget (and re-derives the lock wait) before a phase. */
+    enterPhase: (write: boolean) => void;
+    /** Runs one lock acquisition attempt, counting its wait either way. */
+    measureAttempt: <T>(run: (onTransactionStart: () => void) => T) => T;
+    /** This invocation's id — also the epoch token fallback, see below. */
+    invocationId: string;
+  },
+): HandleHookResult {
+  {
+    options.enterPhase(false);
     if (isConversationExcludedSession(db, payload.sessionId)) {
       // Conversation exclusion is terminal privacy state. Do not recreate a
       // journal/checkpoint/session projection after a prior purge.
@@ -2512,37 +3037,37 @@ export function handleContinuityHook(
     }
     const kind = captureKind(payload.hookEventName);
     if (kind) {
-      if (!payload.transcriptPath) throw new Error("capture hook requires transcript_path");
+      if (!payload.transcriptPath) {
+        throw new HookCaptureFailed(new Error("capture hook requires transcript_path"));
+      }
+      const transcriptPath = payload.transcriptPath;
+      options.enterPhase(true);
       try {
-        const capture = captureTranscriptPrefix(db, {
-          sessionId: payload.sessionId,
-          project: payload.cwd,
-          transcriptPath: payload.transcriptPath,
-          kind,
-          turnId: payload.turnId,
-          workstreamId: payload.workstreamId,
-        });
+        const capture = options.measureAttempt((onTransactionStart) =>
+          captureTranscriptPrefix(db, {
+            sessionId: payload.sessionId,
+            project: payload.cwd,
+            transcriptPath,
+            kind,
+            turnId: payload.turnId,
+            workstreamId: payload.workstreamId,
+            deadlineAt: options.deadlineAt,
+            onTransactionStart,
+          }));
         return { stdout: "", capture };
       } catch (error) {
-        const warning = error instanceof Error ? error.message : String(error);
-        try {
-          recordCaptureGap(db, {
-            sessionId: payload.sessionId,
-            sourcePath: payload.transcriptPath,
-            eventKind: kind,
-            reason: warning,
-          });
-        } catch {
-          // If even the gap record cannot persist, strict capture must fail.
-        }
-        if (options.strictCapture ?? process.env.MEMEX_STRICT_CAPTURE === "1") throw error;
-        return { stdout: "", warning };
+        // Every failure belongs to the caller: it owns the single gap-row
+        // attempt, the done row and the marker that survives a host kill. A
+        // warning returned from here used to be indistinguishable from success.
+        if (boundedSkipOutcome(error)) throw error;
+        throw new HookCaptureFailed(error);
       }
     }
     if (payload.hookEventName === "PostCompact") {
       // Optional telemetry only. No correctness transition is allowed here.
       return { stdout: "" };
     }
+    options.enterPhase(false);
     let canonicalProject = payload.cwd;
     let canonicalBranch: string | null = null;
     if (payload.transcriptPath) {
@@ -2562,32 +3087,70 @@ export function handleContinuityHook(
       }
       canonicalProject = existing.project;
     }
-    ensureSessionMemoryState(db, {
-      sessionId: payload.sessionId,
-      project: canonicalProject,
-      explicitWorkstreamId: payload.workstreamId,
-      prompt: payload.hookEventName === "UserPromptSubmit" ? payload.prompt : null,
-      branch: canonicalBranch,
-      source: payload.source ?? payload.hookEventName,
-    });
+    options.enterPhase(true);
+    // Issue #162 (review 5): these phases are write phases too, and a lock that
+    // killed the hook here reported db_wait_ms 0 — the number that was supposed
+    // to name the cause. They have no body-start callback to offer (single
+    // autocommit statements), so the whole attempt counts: it over-states a
+    // successful phase by its own small work, and it is the only way a phase
+    // that never acquired the lock contributes at all.
+    options.measureAttempt(() =>
+      ensureSessionMemoryState(db, {
+        sessionId: payload.sessionId,
+        project: canonicalProject,
+        explicitWorkstreamId: payload.workstreamId,
+        prompt: payload.hookEventName === "UserPromptSubmit" ? payload.prompt : null,
+        branch: canonicalBranch,
+        source: payload.source ?? payload.hookEventName,
+      }));
     if (payload.hookEventName === "SessionStart") {
       const source = payload.source as LifecycleSource | null;
       if (!source || !["startup", "resume", "clear", "compact"].includes(source)) {
         throw new Error("invalid SessionStart source");
       }
-      const recoveryWarning = recoverContinuitySession(db, payload.sessionId);
+      // Recovery, the epoch advance and the rehydration commit are three more
+      // write phases, each with its own lock wait. Before #162's review none of
+      // them looked at the clock, so a SessionStart(clear) whose budget had
+      // expired 10 s earlier still advanced the epoch and reported `ok`.
+      options.enterPhase(true);
+      const recoveryWarning = options.measureAttempt(() =>
+        recoverContinuitySession(db, payload.sessionId));
       if (source === "clear" || source === "compact") {
-        advanceContextEpoch(db, {
+        options.enterPhase(true);
+        options.measureAttempt((onTransactionStart) => advanceContextEpoch(db, {
           sessionId: payload.sessionId,
           source,
-          turnId: payload.turnId,
-        });
+          // The invocation id, not `now`, is the fallback token (#162 review).
+          turnId: payload.turnId ?? options.invocationId,
+          // …and it joins the applied-marker set in the same transaction, so
+          // the marker this invocation left behind cannot make ANY later
+          // injection advance again (#162 review 2/3).
+          markerId: options.invocationId,
+          onTransactionStart,
+        }));
       }
       if (source === "resume" || source === "compact") {
+        options.enterPhase(false);
         const rehydrated = buildRehydrationContext(db, { sessionId: payload.sessionId });
         const epoch = rehydrated.contextEpoch;
         let recallReceipt: ContinuityRecallReceipt | undefined;
+        options.enterPhase(true);
+        // The budget has to bind the BODY too, not only the wait in front of
+        // it: the receipt, the residency and the cursor are all written under
+        // the lock, and a hook that ran 10 s past a 2 s budget still committed
+        // them and reported `ok` (#162 review 2). Throwing rolls the whole
+        // bundle back and the caller records outcome "deadline".
+        const failPastDeadline = () => {
+          if (Date.now() > options.deadlineAt) {
+            throw new HookDeadlineExceeded(
+              "hook budget exhausted before the rehydration bundle committed",
+            );
+          }
+        };
+        options.measureAttempt((onTransactionStart) => {
         const commitRehydration = db.transaction(() => {
+          onTransactionStart();
+          failPastDeadline();
           if (rehydrated.context.trim()) {
             // Keep continuity rehydration provenance in the same transaction
             // as residency. The hook marks it emitted only after stdout is
@@ -2642,8 +3205,11 @@ export function handleContinuityHook(
               fromSeq: rehydrated.hotEvidenceCursor, emittedSeqs: rehydrated.hotEvidenceSeqs,
             });
           }
+          // Last gate, inside the body: past here the bundle commits whole.
+          failPastDeadline();
         });
         commitRehydration.immediate();
+        });
         return {
           stdout: emitAdditionalContext("SessionStart", rehydrated.context),
           warning: recoveryWarning,
@@ -2653,8 +3219,6 @@ export function handleContinuityHook(
       return { stdout: "", warning: recoveryWarning };
     }
     throw new Error(`unsupported continuity hook event: ${payload.hookEventName}`);
-  } finally {
-    if (ownDb) db.close();
   }
 }
 

@@ -77,14 +77,71 @@ export function appendExchangeEvidence(db, exchangeId) {
     }
     return parts.length;
 }
-export function appendSessionEvidence(db, sessionId) {
-    const tx = db.transaction(() => {
+/**
+ * Issue #162 — candidates for `appendSessionEvidence`, read WITHOUT a write
+ * transaction.
+ *
+ * Identical scope/privacy predicates to `appendExchangeEvidence` (same
+ * `COALESCE(e.workstream_id, s.workstream_id)`, same project/workstream/
+ * exclusion guards), plus the LEFT JOIN that makes "already has evidence" a
+ * three-key fact: (workstream_id, exchange_id, content_generation). Anything
+ * this query returns is a candidate; anything it skips would have been a
+ * no-op inside the transaction anyway.
+ *
+ * It is deliberately only a FILTER. The transaction re-runs
+ * `appendExchangeEvidence` per candidate, which re-checks every one of these
+ * predicates against the state it can actually see — so a generation bump, a
+ * rebind or a privacy purge between the scan and the transaction can only
+ * remove work, never let a stale insert through.
+ */
+const SESSION_EVIDENCE_CANDIDATES = `
+  SELECT e.id
+  FROM exchanges e
+  JOIN session_memory_state s ON s.session_id = e.session_id
+  JOIN minimal_workstreams w ON w.workstream_id = COALESCE(e.workstream_id, s.workstream_id)
+  LEFT JOIN workstream_evidence v
+    ON v.workstream_id = COALESCE(e.workstream_id, s.workstream_id)
+   AND v.exchange_id = e.id
+   AND v.content_generation = e.content_generation
+  WHERE e.session_id = ? AND e.project_id = s.project_id AND e.project_id = w.project_id
+    AND COALESCE(e.workstream_id, s.workstream_id) = s.workstream_id
+    AND NOT EXISTS (SELECT 1 FROM conversation_exclusions x WHERE x.session_id = e.session_id)
+    AND v.seq IS NULL
+  ORDER BY e.exchange_seq, e.rowid
+`;
+/**
+ * Backfill this session's missing evidence generations.
+ *
+ * Out of transaction (the worker's per-page call, issue #162) the scan runs
+ * FIRST, as a read: the steady state — every exchange already has evidence for
+ * its current generation — then costs no write lock at all, instead of one
+ * immediate transaction that re-read every exchange of a 1,400-exchange session
+ * while a 3-second hook waited on the same lock.
+ *
+ * Inside a caller's transaction (the rebind in continuity-identity.ts and
+ * `refreshWorkspaceEvidence`) the full scan stays exactly as it was: that
+ * caller already holds the write lock, the pre-scan would not shorten it, and
+ * the rows it would read are the caller's own uncommitted ones.
+ */
+export function appendSessionEvidence(db, sessionId, options = {}) {
+    const fullScan = () => {
         const rows = db.prepare("SELECT id FROM exchanges WHERE session_id = ? ORDER BY exchange_seq, rowid")
             .all(sessionId);
         for (const row of rows)
             appendExchangeEvidence(db, row.id);
-    });
-    db.inTransaction ? tx() : tx.immediate();
+    };
+    if (db.inTransaction) {
+        fullScan();
+        return;
+    }
+    const candidates = db.prepare(SESSION_EVIDENCE_CANDIDATES).all(sessionId);
+    if (candidates.length === 0)
+        return;
+    db.transaction(() => {
+        options.onTransactionStart?.();
+        for (const candidate of candidates)
+            appendExchangeEvidence(db, candidate.id);
+    }).immediate();
 }
 export function readCapsulePage(db, checkpointId) {
     if (!db.inTransaction)

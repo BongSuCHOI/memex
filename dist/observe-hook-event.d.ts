@@ -1,3 +1,6 @@
+/** Outcomes a hook may report on its done row. Never a host-timeout claim. */
+export type HookOutcome = "ok" | "busy" | "oversize" | "deadline" | "error" | "empty-prompt" | "daemon" | "fallback" | "skipped";
+export declare function newInvocationId(): string;
 export declare function dataRoot(): string;
 export declare function observationLogPath(): string;
 /**
@@ -23,5 +26,53 @@ export declare function recordHookEvent(event: string, info: {
     sessionId?: unknown;
     cwd?: unknown;
     detail?: unknown;
+    /**
+     * Issue #162 (R5). A hook that the host kills leaves no done row at all, so
+     * the START row — written before any database access — is the only proof
+     * the hook ran. `invocation_id` pairs the two rows and `pid` is what lets
+     * doctor tell "killed by host" from "still running".
+     */
+    phase?: "start" | "done";
+    invocationId?: unknown;
+    pid?: unknown;
+    outcome?: unknown;
+    durationMs?: unknown;
+    dbWaitMs?: unknown;
+    error?: unknown;
 }): boolean;
+/**
+ * The pre-DB start row. Returns the invocation id to carry into the done row.
+ */
+export declare function recordHookStart(event: string, info: {
+    sessionId?: unknown;
+    cwd?: unknown;
+    invocationId?: string;
+    detail?: unknown;
+}): string;
+/** The completion row. Absent in the log = the hook never got here. */
+export declare function recordHookDone(event: string, info: {
+    sessionId?: unknown;
+    cwd?: unknown;
+    invocationId?: string;
+    outcome: HookOutcome;
+    durationMs?: number;
+    dbWaitMs?: number;
+    error?: unknown;
+    detail?: unknown;
+}): boolean;
+export interface HookEventRow {
+    ts: string;
+    event: string;
+    session_id?: string;
+    cwd?: string;
+    phase?: string;
+    invocation_id?: string;
+    pid?: number;
+    outcome?: string;
+    duration_ms?: number;
+    db_wait_ms?: number;
+    error?: string;
+}
+/** Last `limit` parseable rows of hook-events.jsonl, oldest first. */
+export declare function readHookEventTail(limit: number): HookEventRow[];
 export declare function lastObserved(event: string): string | null;

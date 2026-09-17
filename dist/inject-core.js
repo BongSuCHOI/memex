@@ -8,7 +8,7 @@ import { detectRepeat } from "./repeat-detector.js";
 import { appendInjectLog } from "./inject-log.js";
 import { recordRecallEvent } from "./db.js";
 import { matchIncidentPatterns, readChronicleTimeline, recordTelemetrySample, } from "./chronicle.js";
-import { ensureSessionMemoryState, readResidentFactRevisions, readResidentRevisionCorrections, readWorkCapsule, recordResidentFactRevisions, } from "./continuity-core.js";
+import { applyPendingEpochAdvance, ensureSessionMemoryState, readResidentFactRevisions, readResidentRevisionCorrections, readWorkCapsule, recordResidentFactRevisions, } from "./continuity-core.js";
 import { commitHotEvidenceCursor, markSessionProjectRevisionSeen, readHotEvidence, sessionProjectRevisionState, } from "./continuity-identity.js";
 import { blobToEmbedding, decideRecall, embeddingToBlob, resolveAmbiguousDecision, tokenizePrompt, } from "./recall-gate.js";
 import { NORMAL_BUNDLE_BUDGET, renderMemoryBundle, } from "./memory-bundle.js";
@@ -190,46 +190,70 @@ export async function commitInjectionBundle(db, commit, options = {}) {
     const delayMs = options.delayMs ?? INJECT_COMMIT_BUSY_DELAY_MS;
     const retryBusyMs = options.retryBusyMs ?? INJECT_COMMIT_RETRY_BUSY_MS;
     const deadlineAt = options.deadlineAt ?? Number.POSITIVE_INFINITY;
+    const calledAt = Date.now();
+    let waitReported = false;
+    let bodyStarted = false;
+    const reportWait = () => {
+        if (waitReported)
+            return;
+        waitReported = true;
+        options.onDbWaitMs?.(Date.now() - calledAt);
+    };
+    const body = () => {
+        options.onTransactionStart?.();
+        bodyStarted = true;
+        reportWait();
+        commit();
+    };
     const run = () => {
         if (typeof db.transaction === "function") {
-            const tx = db.transaction(commit);
+            const tx = db.transaction(body);
             db.inTransaction ? tx() : tx.immediate();
         }
         else
-            commit();
+            body();
     };
-    for (let attempt = 0;; attempt++) {
-        try {
-            if (attempt === 0 || typeof db.pragma !== "function") {
-                run();
-            }
-            else {
-                // The retry waits for the lock only briefly (see INJECT_COMMIT_RETRY_BUSY_MS);
-                // the connection's own budget is restored afterwards whatever happens.
-                const previous = Number(db.pragma("busy_timeout", { simple: true }));
-                db.pragma(`busy_timeout = ${retryBusyMs}`);
-                try {
+    try {
+        for (let attempt = 0;; attempt++) {
+            try {
+                if (attempt === 0 || typeof db.pragma !== "function") {
                     run();
                 }
-                finally {
-                    db.pragma(`busy_timeout = ${Number.isFinite(previous) ? previous : 5000}`);
+                else {
+                    // The retry waits for the lock only briefly (see INJECT_COMMIT_RETRY_BUSY_MS);
+                    // the connection's own budget is restored afterwards whatever happens.
+                    const previous = Number(db.pragma("busy_timeout", { simple: true }));
+                    db.pragma(`busy_timeout = ${retryBusyMs}`);
+                    try {
+                        run();
+                    }
+                    finally {
+                        db.pragma(`busy_timeout = ${Number.isFinite(previous) ? previous : 5000}`);
+                    }
                 }
+                return;
             }
-            return;
+            catch (error) {
+                if (!isSqliteBusy(error) || attempt >= retries || db.inTransaction)
+                    throw error;
+                // A retry that could not finish before the deadline is not started.
+                if (Date.now() + delayMs + retryBusyMs > deadlineAt)
+                    throw error;
+                // The pause is an await: a hook that disconnected during the first wait is
+                // observed here, and `deliverable()` inside the bundle refuses the retry.
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
+                // The event loop may have been held up during the pause; re-check.
+                if (Date.now() + retryBusyMs > deadlineAt)
+                    throw error;
+            }
         }
-        catch (error) {
-            if (!isSqliteBusy(error) || attempt >= retries || db.inTransaction)
-                throw error;
-            // A retry that could not finish before the deadline is not started.
-            if (Date.now() + delayMs + retryBusyMs > deadlineAt)
-                throw error;
-            // The pause is an await: a hook that disconnected during the first wait is
-            // observed here, and `deliverable()` inside the bundle refuses the retry.
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-            // The event loop may have been held up during the pause; re-check.
-            if (Date.now() + retryBusyMs > deadlineAt)
-                throw error;
-        }
+    }
+    catch (error) {
+        // An attempt that never reached the body AND ended blocked spent all of its
+        // time waiting. Any other failure was not a wait at all (#162 review 7).
+        if (!bodyStarted && isSqliteBusy(error))
+            reportWait();
+        throw error;
     }
 }
 function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
@@ -262,6 +286,44 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
     const t0 = Date.now();
     const now = options.now ?? new Date().toISOString();
     const daemonNote = options.daemon ? { daemon: options.daemon } : {};
+    // Issue #162 (review 6): ONE total for every database wait this call pays —
+    // the connection open and its migration pass, the epoch replay, the session
+    // state write and the bundle commit — reported on the success path AND the
+    // failure path. Measuring only the last of them left the case the number
+    // exists for (blocked from the first statement, never got the lock) at zero.
+    let dbWaitMs = 0;
+    let waitReported = false;
+    const reportDbWait = () => {
+        if (waitReported)
+            return;
+        waitReported = true;
+        try {
+            options.onDbWaitMs?.(dbWaitMs);
+        }
+        catch { /* observability only */ }
+    };
+    /**
+     * One acquisition attempt. `db_wait_ms` means time spent WAITING FOR A LOCK,
+     * so a phase with no "body started" instant to report — an autocommit
+     * statement, the connection's migration pass, the marker scan — counts ONLY
+     * when it ended blocked (#162 review 7). A slow but uncontended phase
+     * contributes zero; charging it anything made a cold migration pass read as
+     * "hooks waited on the database" in `memex doctor`.
+     *
+     * The trade: on a successful call this total is a LOWER BOUND, because an
+     * autocommit wait that then succeeded has no instant to report.
+     */
+    const measureAttempt = (run) => {
+        const calledAt = Date.now();
+        try {
+            return run();
+        }
+        catch (error) {
+            if (isSqliteBusy(error))
+                dbWaitMs += Date.now() - calledAt;
+            throw error;
+        }
+    };
     if (!sessionId) {
         appendInjectLog({
             status: "no-session-provenance",
@@ -270,19 +332,30 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             via,
             ...daemonNote,
         });
+        reportDbWait();
         return "";
     }
     try {
         // Cached long-lived handle (file-identity checked) — initDatabase()'s
         // full migration pass per request costs ~38ms and is pure overhead in the
         // warm daemon. NOT closed here: getSearchDb owns its lifecycle.
-        const db = getSearchDb();
-        const sessionScope = ensureSessionMemoryState(db, {
+        const db = measureAttempt(() => getSearchDb());
+        // Issue #162 (R1''): a SessionStart(clear|compact) skipped on a busy
+        // database left the epoch un-advanced, and residency from the OLD context
+        // then suppressed the very facts the clear/compact just dropped. This is
+        // the single shared entry for both the daemon and the cold fallback, so
+        // replaying the marker here covers every injection path.
+        // The repair swallows its own failures, so it reports its lock wait
+        // directly rather than through the throw-based rule above (#162 review 8).
+        measureAttempt(() => applyPendingEpochAdvance(db, sessionId, {
+            onDbWaitMs: (ms) => { dbWaitMs += ms; },
+        }));
+        const sessionScope = measureAttempt(() => ensureSessionMemoryState(db, {
             sessionId,
             project,
             prompt: userPrompt,
             source: "UserPromptSubmit",
-        });
+        }));
         const revisionState = sessionProjectRevisionState(db, sessionId);
         const currentProjectRevision = revisionState.current;
         const gateRow = readGateRow(db, sessionId);
@@ -862,7 +935,12 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         // Receipt, fact residency, Hot Evidence prefix and gate state either commit
         // together or remain retryable when this transaction fails. Delivery on
         // stdout happens afterwards; it is not an exactly-once transport.
-        await commitInjectionBundle(db, commitBundle, { deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS });
+        await commitInjectionBundle(db, commitBundle, {
+            deadlineAt: t0 + INJECT_COMMIT_DEADLINE_MS,
+            // Reported from inside, so a commit that timed out still accounts for
+            // the whole wait it paid (#162 review 2). It joins the same total.
+            onDbWaitMs: (ms) => { dbWaitMs += ms; },
+        });
         // The receipt is durable at this point. The transport can now carry its
         // exact id and mark only this delivery after stdout succeeds.
         if (preparedReceiptId && options.onPreparedReceipt) {
@@ -961,6 +1039,14 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             via,
             ...daemonNote,
         });
+        try {
+            options.onError?.(message);
+        }
+        catch { /* observability only */ }
         return ""; // non-fatal: never disrupt the user's prompt
+    }
+    finally {
+        // Both paths, always exactly once.
+        reportDbWait();
     }
 }

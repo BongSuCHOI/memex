@@ -573,8 +573,8 @@ describe("Final Integration: cross-phase end-to-end", () => {
 
     // Replay after purge: hooks, worker, extraction and injection recreate nothing.
     appendTurn(A, 16, "Private follow-up that must never be indexed");
-    expect(handleContinuityHook(hook(A, "Stop", { turn_id: "turn-16" }), { db })).toEqual({ stdout: "" });
-    expect(handleContinuityHook(hook(A, "SessionEnd", { reason: "other" }), { db })).toEqual({ stdout: "" });
+    expect(handleContinuityHook(hook(A, "Stop", { turn_id: "turn-16" }), { db }).stdout).toBe("");
+    expect(handleContinuityHook(hook(A, "SessionEnd", { reason: "other" }), { db }).stdout).toBe("");
     expect(await runContinuityWorker(db, { maxJobs: 4, model: capsuleModel })).toEqual([]);
     // #149: a no-op is named, never silent
     expect(await runFactExtraction(db, A, PROJECT)).toEqual({ extracted: 0, saved: 0, skipped: "no_eligible_exchanges" });

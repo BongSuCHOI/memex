@@ -99,5 +99,20 @@ export interface Check {
  * second matters most: a hold fails no job and consumes no attempt, so without
  * this check the only symptom is "nothing is being extracted any more".
  */
+/**
+ * Issue #162 — what a skipped capture actually costs, stated once.
+ *
+ * NOT "content is never lost". Skipping a capture only delays that turn's fence
+ * IF a later capture of the same session succeeds. When the last Stop/SessionEnd
+ * of a session are all skipped, the worker reads only the existing journal
+ * boundary: the tail never reaches the continuity journal/capsule, and the last
+ * open/interrupted turn stays out of extraction (#149 settles only turns
+ * followed by a later main-line exchange). `memex sync` still indexes the
+ * rollout file, so search/RAG see the content — continuity and the final turn's
+ * extraction do not until #163 lands.
+ */
+export declare const CAPTURE_GAP_LOSS_STATEMENT = "continuity/extraction of the tail is pending #163";
+export declare function captureGapCheck(): Check;
+export declare function hookLatencyCheck(now?: number): Check;
 export declare function llmModelCheck(): Check;
 export declare function doctor(): Promise<DoctorReport>;

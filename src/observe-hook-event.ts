@@ -6,8 +6,29 @@
 // prompt, transcript contents, or extracted facts.
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { getMemexHome } from "./paths.js";
+
+/** Outcomes a hook may report on its done row. Never a host-timeout claim. */
+export type HookOutcome =
+  | "ok"
+  | "busy"
+  | "oversize"
+  | "deadline"
+  | "error"
+  | "empty-prompt"
+  | "daemon"
+  | "fallback"
+  | "skipped";
+
+export function newInvocationId(): string {
+  try {
+    return randomUUID();
+  } catch {
+    return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
 
 export function dataRoot(): string {
   // Single-source resolution — see getMemexHome() for the precedence chain.
@@ -39,12 +60,32 @@ export function observationLogPath(): string {
  */
 export function recordHookEvent(
   event: string,
-  info: { sessionId?: unknown; cwd?: unknown; detail?: unknown },
+  info: {
+    sessionId?: unknown;
+    cwd?: unknown;
+    detail?: unknown;
+    /**
+     * Issue #162 (R5). A hook that the host kills leaves no done row at all, so
+     * the START row — written before any database access — is the only proof
+     * the hook ran. `invocation_id` pairs the two rows and `pid` is what lets
+     * doctor tell "killed by host" from "still running".
+     */
+    phase?: "start" | "done";
+    invocationId?: unknown;
+    pid?: unknown;
+    outcome?: unknown;
+    durationMs?: unknown;
+    dbWaitMs?: unknown;
+    error?: unknown;
+  },
 ): boolean {
   const name = typeof event === "string" ? event.trim() : "";
   if (!name || name === "Unknown") return false;
   try {
     const detail = typeof info.detail === "string" ? info.detail.trim() : "";
+    const num = (value: unknown) =>
+      typeof value === "number" && Number.isFinite(value) ? Math.round(value) : undefined;
+    const errorText = typeof info.error === "string" ? info.error.trim().slice(0, 200) : "";
     const line =
       JSON.stringify({
         ts: new Date().toISOString(),
@@ -52,6 +93,15 @@ export function recordHookEvent(
         session_id: typeof info.sessionId === "string" ? info.sessionId : "",
         cwd: typeof info.cwd === "string" ? info.cwd : "",
         ...(detail ? { detail } : {}),
+        ...(info.phase ? { phase: info.phase } : {}),
+        ...(typeof info.invocationId === "string" && info.invocationId
+          ? { invocation_id: info.invocationId }
+          : {}),
+        ...(num(info.pid) !== undefined ? { pid: num(info.pid) } : {}),
+        ...(typeof info.outcome === "string" && info.outcome ? { outcome: info.outcome } : {}),
+        ...(num(info.durationMs) !== undefined ? { duration_ms: num(info.durationMs) } : {}),
+        ...(num(info.dbWaitMs) !== undefined ? { db_wait_ms: num(info.dbWaitMs) } : {}),
+        ...(errorText ? { error: errorText } : {}),
       }) + "\n";
     const file = observationLogPath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -60,6 +110,75 @@ export function recordHookEvent(
   } catch {
     // Observation must never break the hook pipeline.
     return false;
+  }
+}
+
+/**
+ * The pre-DB start row. Returns the invocation id to carry into the done row.
+ */
+export function recordHookStart(
+  event: string,
+  info: { sessionId?: unknown; cwd?: unknown; invocationId?: string; detail?: unknown },
+): string {
+  const invocationId = info.invocationId ?? newInvocationId();
+  recordHookEvent(event, {
+    ...info,
+    phase: "start",
+    invocationId,
+    pid: process.pid,
+  });
+  return invocationId;
+}
+
+/** The completion row. Absent in the log = the hook never got here. */
+export function recordHookDone(
+  event: string,
+  info: {
+    sessionId?: unknown;
+    cwd?: unknown;
+    invocationId?: string;
+    outcome: HookOutcome;
+    durationMs?: number;
+    dbWaitMs?: number;
+    error?: unknown;
+    detail?: unknown;
+  },
+): boolean {
+  return recordHookEvent(event, { ...info, phase: "done", pid: process.pid });
+}
+
+export interface HookEventRow {
+  ts: string;
+  event: string;
+  session_id?: string;
+  cwd?: string;
+  phase?: string;
+  invocation_id?: string;
+  pid?: number;
+  outcome?: string;
+  duration_ms?: number;
+  db_wait_ms?: number;
+  error?: string;
+}
+
+/** Last `limit` parseable rows of hook-events.jsonl, oldest first. */
+export function readHookEventTail(limit: number): HookEventRow[] {
+  try {
+    const file = observationLogPath();
+    if (!fs.existsSync(file)) return [];
+    const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+    const out: HookEventRow[] = [];
+    for (const line of lines.slice(Math.max(0, lines.length - limit))) {
+      try {
+        const row = JSON.parse(line) as HookEventRow;
+        if (row && typeof row.ts === "string" && typeof row.event === "string") out.push(row);
+      } catch {
+        /* skip malformed */
+      }
+    }
+    return out;
+  } catch {
+    return [];
   }
 }
 

@@ -23,10 +23,16 @@ export declare function normalizeVecDistance(distance: number, dtype: VecDtype):
  * (run it through normalizeVecDistance first for int8 tables).
  */
 export declare function l2DistanceToSimilarity(distance: number): number;
+/**
+ * Install every connection-local runtime invariant. sqlite-vec registration
+ * belongs to a connection, not the database file, so production callers must
+ * use the factories below before touching vec0 tables.
+ */
+export declare const DEFAULT_BUSY_TIMEOUT_MS = 5000;
 /** Open an existing database read-only with sqlite-vec registered. */
 export declare function openReadDb(dbPath?: string): Database.Database;
 /** Open a writable database with sqlite-vec and writer pragmas registered. */
-export declare function openWriteDb(dbPath?: string): Database.Database;
+export declare function openWriteDb(dbPath?: string, busyTimeoutMs?: number): Database.Database;
 export declare function initDatabase(options?: {
     busyTimeoutMs?: number;
     dbPath?: string;

@@ -6,8 +6,17 @@
 // prompt, transcript contents, or extracted facts.
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { getMemexHome } from "./paths.js";
+export function newInvocationId() {
+    try {
+        return randomUUID();
+    }
+    catch {
+        return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+}
 export function dataRoot() {
     // Single-source resolution — see getMemexHome() for the precedence chain.
     return getMemexHome();
@@ -40,12 +49,23 @@ export function recordHookEvent(event, info) {
         return false;
     try {
         const detail = typeof info.detail === "string" ? info.detail.trim() : "";
+        const num = (value) => typeof value === "number" && Number.isFinite(value) ? Math.round(value) : undefined;
+        const errorText = typeof info.error === "string" ? info.error.trim().slice(0, 200) : "";
         const line = JSON.stringify({
             ts: new Date().toISOString(),
             event: name,
             session_id: typeof info.sessionId === "string" ? info.sessionId : "",
             cwd: typeof info.cwd === "string" ? info.cwd : "",
             ...(detail ? { detail } : {}),
+            ...(info.phase ? { phase: info.phase } : {}),
+            ...(typeof info.invocationId === "string" && info.invocationId
+                ? { invocation_id: info.invocationId }
+                : {}),
+            ...(num(info.pid) !== undefined ? { pid: num(info.pid) } : {}),
+            ...(typeof info.outcome === "string" && info.outcome ? { outcome: info.outcome } : {}),
+            ...(num(info.durationMs) !== undefined ? { duration_ms: num(info.durationMs) } : {}),
+            ...(num(info.dbWaitMs) !== undefined ? { db_wait_ms: num(info.dbWaitMs) } : {}),
+            ...(errorText ? { error: errorText } : {}),
         }) + "\n";
         const file = observationLogPath();
         fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -55,6 +75,47 @@ export function recordHookEvent(event, info) {
     catch {
         // Observation must never break the hook pipeline.
         return false;
+    }
+}
+/**
+ * The pre-DB start row. Returns the invocation id to carry into the done row.
+ */
+export function recordHookStart(event, info) {
+    const invocationId = info.invocationId ?? newInvocationId();
+    recordHookEvent(event, {
+        ...info,
+        phase: "start",
+        invocationId,
+        pid: process.pid,
+    });
+    return invocationId;
+}
+/** The completion row. Absent in the log = the hook never got here. */
+export function recordHookDone(event, info) {
+    return recordHookEvent(event, { ...info, phase: "done", pid: process.pid });
+}
+/** Last `limit` parseable rows of hook-events.jsonl, oldest first. */
+export function readHookEventTail(limit) {
+    try {
+        const file = observationLogPath();
+        if (!fs.existsSync(file))
+            return [];
+        const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+        const out = [];
+        for (const line of lines.slice(Math.max(0, lines.length - limit))) {
+            try {
+                const row = JSON.parse(line);
+                if (row && typeof row.ts === "string" && typeof row.event === "string")
+                    out.push(row);
+            }
+            catch {
+                /* skip malformed */
+            }
+        }
+        return out;
+    }
+    catch {
+        return [];
     }
 }
 export function lastObserved(event) {

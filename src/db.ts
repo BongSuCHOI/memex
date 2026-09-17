@@ -115,13 +115,24 @@ export function l2DistanceToSimilarity(distance: number): number {
  * belongs to a connection, not the database file, so production callers must
  * use the factories below before touching vec0 tables.
  */
+export const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
+
 function initializeConnection(
   db: Database.Database,
   mode: "read" | "write",
+  busyTimeoutMs?: number,
 ): Database.Database {
   try {
+    // Issue #162 (R3): busy_timeout is the FIRST pragma, before sqlite-vec and
+    // before `journal_mode = WAL`. Setting it afterwards (as 0.7.23 did, from
+    // initDatabase) meant every init pragma and every migration statement of a
+    // hook connection still waited the 5 s default while the host kills the
+    // hook at 3 s — the bounded wait has to cover the connection's own setup.
+    const timeout = Number.isFinite(busyTimeoutMs as number)
+      ? Math.max(0, Math.trunc(busyTimeoutMs as number))
+      : DEFAULT_BUSY_TIMEOUT_MS;
+    db.pragma(`busy_timeout = ${timeout}`);
     sqliteVec.load(db);
-    db.pragma("busy_timeout = 5000");
     // FK enforcement happens to be better-sqlite3's connection default, but
     // that is a driver default, not our invariant. Declare it explicitly so
     // the schema's REFERENCES clauses stay enforced regardless of driver
@@ -155,9 +166,12 @@ export function openReadDb(dbPath: string = getDbPath()): Database.Database {
 }
 
 /** Open a writable database with sqlite-vec and writer pragmas registered. */
-export function openWriteDb(dbPath: string = getDbPath()): Database.Database {
+export function openWriteDb(
+  dbPath: string = getDbPath(),
+  busyTimeoutMs?: number,
+): Database.Database {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  return initializeConnection(new Database(dbPath), "write");
+  return initializeConnection(new Database(dbPath), "write", busyTimeoutMs);
 }
 
 export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string } = {}): Database.Database {
@@ -167,10 +181,9 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
   if (options.dbPath) fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   else ensureDbDir();
 
-  const db = openWriteDb(dbPath);
-  if (options.busyTimeoutMs !== undefined) {
-    db.pragma(`busy_timeout = ${Math.max(0, Math.trunc(options.busyTimeoutMs))}`);
-  }
+  // The bounded wait must be in force for the schema/migration pass below, not
+  // only for the caller's own statements (issue #162 R3).
+  const db = openWriteDb(dbPath, options.busyTimeoutMs);
 
   // Create exchanges table
   db.exec(`

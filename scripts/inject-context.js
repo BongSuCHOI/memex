@@ -26,6 +26,9 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/** Wall clock at process entry — the duration every done row reports (#162). */
+const STARTED_AT = Date.now();
+
 const SOCKET_CONNECT_TIMEOUT_MS = 300;
 /**
  * Connect + handshake ONLY (issue #89 split it out of the old response budget).
@@ -229,8 +232,27 @@ async function logReceiptFailure(via, prompt, message) {
   process.stderr.write(`inject-context: recall receipt remained prepared: ${message}\n`);
 }
 
+/** Mirrors isSqliteBusyError() in src/hook-budget.ts without importing dist. */
+function looksSqliteBusy(error) {
+  const code = error && typeof error.code === "string" ? error.code : "";
+  if (/^SQLITE_BUSY/.test(code)) return true;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /SQLITE_BUSY|database is locked|database table is locked/i.test(message);
+}
+
+/**
+ * Mark the delivered context's receipt emitted.
+ *
+ * Issue #162 (review 9): this phase opens its OWN connection — a full migration
+ * pass plus one UPDATE — and it is the last thing the hook does. Swallowing its
+ * failure also hid its cost: a receipt write blocked by a lock made the hook
+ * take 5,267 ms and still log `outcome: "daemon"`, `db_wait_ms: 0`, with doctor
+ * reporting ok. Returns what the done row needs; leaving the receipt `prepared`
+ * on failure is the documented fallback and is unchanged.
+ */
 async function markRecallEmitted(sessionId, prompt, receiptId = null, via = "fallback") {
-  if (!sessionId || !prompt) return;
+  if (!sessionId || !prompt) return { waitMs: 0, error: null };
+  const startedAt = Date.now();
   try {
     const { initDatabase, markRecallEventEmitted } = await import(
       path.join(__dirname, "../dist/db.js")
@@ -243,12 +265,13 @@ async function markRecallEmitted(sessionId, prompt, receiptId = null, via = "fal
     } finally {
       db.close();
     }
+    // Same rule as every other phase: a phase with no "lock granted" instant
+    // counts only when it ended blocked, so a successful receipt counts zero.
+    return { waitMs: 0, error: null };
   } catch (error) {
-    await logReceiptFailure(
-      via,
-      prompt,
-      error instanceof Error ? error.message : String(error),
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    await logReceiptFailure(via, prompt, message);
+    return { waitMs: looksSqliteBusy(error) ? Date.now() - startedAt : 0, error: message };
   }
 }
 /**
@@ -376,6 +399,8 @@ function askDaemon(prompt, cwd, sessionId, identity) {
           served: {
             context: String(res.context ?? ""),
             receiptId: res.receiptId ? String(res.receiptId) : null,
+          dbWaitMs: typeof res.dbWaitMs === "number" ? res.dbWaitMs : 0,
+          injectError: typeof res.injectError === "string" ? res.injectError : null,
             version: typeof res.version === "string" ? res.version : null,
             buildId: typeof res.buildId === "string" ? res.buildId : null,
             pid: typeof res.pid === "number" ? res.pid : null,
@@ -459,30 +484,63 @@ async function main() {
   if (!sessionId) sessionId = process.env.SESSION_ID || "";
 
   // CX-01: privacy-safe event observation (event/ts/session/cwd only).
+  //
+  // Issue #162 (R5/R6'): a start row and a matching done row, so doctor can
+  // report this hook's duration on the SAME footing as the continuity hook.
+  // UserPromptSubmit has no host timeout in hooks.json, so nothing here — and
+  // nothing in doctor — may ever claim one for it.
+  let observe = null;
+  let invocationId = "";
   try {
-    const { recordHookEvent } = await import(
-      path.join(__dirname, "../dist/observe-hook-event.js")
-    );
-    recordHookEvent("UserPromptSubmit", { sessionId, cwd });
+    observe = await import(path.join(__dirname, "../dist/observe-hook-event.js"));
+    invocationId = observe.recordHookStart("UserPromptSubmit", { sessionId, cwd });
   } catch {
     /* observation is best-effort */
   }
+  // Issue #162 (review): `db_wait_ms` is the time this prompt spent BLOCKED on
+  // the database — the inject bundle's lock wait, including its retry. On the
+  // daemon path the wait happens in the daemon, so the daemon reports it back.
+  const done = (outcome, error, dbWaitMs) => {
+    if (!observe) return;
+    try {
+      observe.recordHookDone("UserPromptSubmit", {
+        sessionId,
+        cwd,
+        invocationId,
+        outcome,
+        durationMs: Date.now() - STARTED_AT,
+        ...(typeof dbWaitMs === "number" && Number.isFinite(dbWaitMs) ? { dbWaitMs } : {}),
+        ...(error ? { error } : {}),
+      });
+    } catch {
+      /* observation is best-effort */
+    }
+  };
   // Phase 5: the cheap gate decides what is worth retrieval. Only an empty
   // prompt is dropped here, so a short explicit memory question ("왜 Redis?")
   // still reaches the gate while acknowledgements skip without a model call.
-  if (!prompt || prompt.trim().length === 0) return;
+  if (!prompt || prompt.trim().length === 0) return done("empty-prompt", null, 0);
 
   // FAST PATH — warm daemon inside a running MCP server, but only one running
   // THIS installation's code (issue #84).
+  // Totals for the ONE done row this hook writes, after the receipt step.
+  let dbWaitMs = 0;
+  let injectError = null;
   const identity = localIdentity();
   const daemonResult = await askDaemon(prompt, cwd, sessionId, identity);
   if (daemonResult && daemonResult.served) {
     const served = daemonResult.served;
+    dbWaitMs += Number(served.dbWaitMs) || 0;
+    injectError = served.injectError;
     if (served.context) {
       await emitContext(served.context);
-      await markRecallEmitted(sessionId, prompt, served.receiptId, "daemon");
+      const receipt = await markRecallEmitted(sessionId, prompt, served.receiptId, "daemon");
+      dbWaitMs += receipt.waitMs;
+      if (receipt.error) injectError = receipt.error;
     }
-    return;
+    // A daemon that computed but failed is not a served prompt, and neither is
+    // a delivery whose provenance could not be recorded (#162 review 6/9).
+    return done(injectError ? "error" : "daemon", injectError, dbWaitMs);
   }
 
   // COLD FALLBACK — compute locally (heavy imports load only here).
@@ -535,16 +593,25 @@ async function main() {
       sessionId || undefined,
       {
         onPreparedReceipt: (id) => { receiptId = id; },
+        onDbWaitMs: (ms) => { dbWaitMs += ms; },
+        onError: (message) => { injectError = message; },
         ...daemonNote,
         ...(matcher ? { matcher } : {}),
       },
     );
     if (context) {
       await emitContext(context);
-      await markRecallEmitted(sessionId, prompt, receiptId, "fallback");
+      const receipt = await markRecallEmitted(sessionId, prompt, receiptId, "fallback");
+      dbWaitMs += receipt.waitMs;
+      if (receipt.error) injectError = receipt.error;
     }
+    // computeInjectContext never throws — it logs and returns "" so a failure
+    // cannot disrupt the prompt — so the done row is the only place a cold run
+    // that never reached the database can be seen (#162 review 6).
+    done(injectError ? "error" : "fallback", injectError, dbWaitMs);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    done("error", msg, dbWaitMs);
     process.stderr.write(`inject-context: error: ${msg}\n`);
     if (/Cannot find (package|module)|ERR_MODULE_NOT_FOUND/.test(msg)) {
       // Fail loud, never auto-install: missing deps are an explicit setup step.

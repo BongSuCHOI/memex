@@ -21,6 +21,7 @@ export declare const CAPTURE_CHUNK_BYTES: number;
 export declare const DEFAULT_MAX_CAPSULE_CHARS = 12000;
 /** `MEMEX_CAPSULE_MAX_CHARS` override, parsed like the model-budget env caps. */
 export declare function capsuleMaxChars(): number;
+export { busyTimeoutForRemaining, hookBudgetMs, hookIngestBytesPerMs, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
 export type CaptureKind = "stop" | "interrupt" | "precompact" | "final";
 export type LifecycleSource = "startup" | "resume" | "clear" | "compact";
 export type ResidentFactRevision = [string, number, number];
@@ -189,6 +190,15 @@ export interface HandleHookResult {
     stdout: string;
     warning?: string;
     capture?: CaptureResult;
+    /**
+     * Issue #162 (review) — finalize this invocation AFTER its output has been
+     * delivered. The done row and the intent-marker deletion are the claim "this
+     * hook succeeded"; writing them before stdout reaches the host makes a host
+     * kill in that window look like a success, and makes a failed SessionStart
+     * write look `ok`. Present only when there is something left to claim: call
+     * it with the delivery error to record `error` and KEEP the marker.
+     */
+    finalize?: (deliveryError?: unknown) => void;
     /** Durable recall provenance is prepared before residency and emitted by the hook after stdout. */
     recallReceipt?: ContinuityRecallReceipt;
 }
@@ -218,8 +228,23 @@ export declare function ensureSessionMemoryState(db: Database.Database, input: {
     workspaceId: string;
 };
 /** Preserve Stop/byte coalescing using database capture order, never session ordinals. */
-export declare function scheduleCapsuleForCheckpoint(db: Database.Database, checkpointId: string, now?: string, force?: boolean): void;
-export declare function scheduleCapsuleBacklog(db: Database.Database): void;
+export declare function scheduleCapsuleForCheckpoint(db: Database.Database, checkpointId: string, now?: string, force?: boolean, options?: {
+    onTransactionStart?: () => void;
+}): void;
+/**
+ * A backlog is SEVERAL transactions, one per workstream, so `timeTransaction`
+ * wraps each of them individually (#162 review 5). Timing the whole call as one
+ * span charged every wait after the first transaction to held time — a second
+ * transaction blocked by another writer was logged `wait_ms: 1, held_ms: 535`,
+ * and doctor reads held_ms as "held the write lock for N ms".
+ *
+ * The callback it receives is the same `markStart` contract as everywhere else:
+ * fired as the first statement of that transaction's body, silent when the
+ * transaction was never entered.
+ */
+export declare function scheduleCapsuleBacklog(db: Database.Database, options?: {
+    timeTransaction?: <T>(label: string, run: (markStart: () => void) => T) => T;
+}): void;
 export declare function captureTranscriptPrefix(db: Database.Database, input: {
     sessionId: string;
     project: string;
@@ -228,6 +253,21 @@ export declare function captureTranscriptPrefix(db: Database.Database, input: {
     turnId?: string | null;
     workstreamId?: string | null;
     now?: string;
+    /**
+     * Issue #162 (R1''): absolute wall-clock bound (Date.now() ms) for the
+     * EXECUTION phase. busy_timeout only bounds lock waits; the copy, the
+     * hashes and the fsync below happen while the write lock is already held,
+     * so without this a large transcript delta blows the hook budget after
+     * acquiring the lock — the worst case, because it also blocks everyone else.
+     */
+    deadlineAt?: number;
+    /**
+     * Fired as the FIRST statement inside the write transaction body, i.e. the
+     * instant the write lock was granted. Everything before it was WAITING, and
+     * a call that never fires it never held the lock at all — the only way to
+     * tell a lock holder from its victim (#162).
+     */
+    onTransactionStart?: () => void;
     afterJournalChunk?: (bytesCopied: number) => void;
     afterJournalFsync?: () => void;
     afterCheckpoint?: () => void;
@@ -238,7 +278,32 @@ export declare function advanceContextEpoch(db: Database.Database, input: {
     source: "compact" | "clear";
     turnId?: string | null;
     now?: string;
+    /**
+     * Issue #162 (review 2/3): the IMMUTABLE identity of this transition — the
+     * capture-gap marker's invocation id. Applied ids are remembered as a SET
+     * in `session_epoch_markers`, written in the same transaction as the epoch,
+     * and an advance whose id is already in that set is a no-op.
+     *
+     * Neither of the cheaper records works. `epoch_token` is derived from
+     * `latest_checkpoint_id` for `compact`, which any later Stop moves, so an
+     * applied marker looked unapplied again (1 -> 2). A single "last marker id"
+     * column fails the next step: A advances and its marker survives a kill, B
+     * advances, and A looks unapplied once more (1 -> 2 -> 3), clearing
+     * residency the session had legitimately rebuilt. Only set membership stays
+     * true.
+     */
+    markerId?: string | null;
+    /** First statement of the real transaction body — see #162. */
+    onTransactionStart?: () => void;
 }): number;
+/**
+ * How much longer than a marker file the applied-marker history is kept.
+ *
+ * A marker is replayable for `CAPTURE_GAP_MARKER_MAX_AGE_MS`; its history row
+ * lives for that plus this, so a marker that can still be replayed always still
+ * has the row that says it was applied.
+ */
+export declare const EPOCH_HISTORY_RETENTION_MARGIN_MS: number;
 export declare function readResidentFactRevisions(db: Database.Database, sessionId: string): {
     contextEpoch: number;
     resident: ResidentFactRevision[];
@@ -315,6 +380,8 @@ export declare function applyWorkCapsulePatch(db: Database.Database, input: {
         leaseGeneration: number;
     };
     now?: string;
+    /** First statement of the real transaction body — see #162 review. */
+    onTransactionStart?: () => void;
 }): WorkCapsule | null;
 export declare function completeEmptyCapsuleCheckpoint(db: Database.Database, input: {
     checkpointId: string;
@@ -323,6 +390,8 @@ export declare function completeEmptyCapsuleCheckpoint(db: Database.Database, in
     leaseGeneration: number;
     evidencePage?: CapsulePage;
     now?: string;
+    /** First statement of the real transaction body — see #162 review. */
+    onTransactionStart?: () => void;
 }): boolean;
 export declare function readWorkCapsule(db: Database.Database, workstreamId: string): WorkCapsule | null;
 export declare function buildDeterministicTailBaton(db: Database.Database, input: {
@@ -345,9 +414,36 @@ export declare function buildRehydrationContext(db: Database.Database, input: {
     hotEvidenceCursor: number;
     hotEvidenceSeqs: number[];
 };
+/**
+ * Replay the ONE lifecycle transition a skipped hook cannot heal by itself.
+ *
+ * A `clear`/`compact` SessionStart advances the context epoch, which clears
+ * residency; when that hook is skipped, inject-core still sees the old
+ * residency and suppresses exactly the facts the cleared context just lost. So
+ * the inject path (daemon and cold fallback share `computeInjectContext`)
+ * applies the pending advance from the marker before computing an injection.
+ *
+ * `advanceContextEpoch` is idempotent through `epoch_token`; for `clear` that
+ * token is derived from the turn id, so the marker's invocation id is used when
+ * the payload carried no turn id. Best effort by design — an inject must never
+ * fail because a marker could not be replayed.
+ *
+ * That "best effort" swallows SQLITE_BUSY, which also swallowed the WAIT it
+ * paid: 1,163 ms blocked here was invisible to `db_wait_ms`, the later phases
+ * succeeded, and doctor reported ok (#162 review 8). `onDbWaitMs` hands the
+ * accumulated lock wait back to the caller; the repair's own semantics — never
+ * throw, keep the marker on failure, continue with the next one — are unchanged.
+ */
+export declare function applyPendingEpochAdvance(db: Database.Database, sessionId: string, options?: {
+    onDbWaitMs?: (ms: number) => void;
+}): number;
 export declare function handleContinuityHook(payloadValue: unknown, options?: {
     db?: Database.Database;
     strictCapture?: boolean;
+    /** Process entry time (ms). The budget covers stdin and dist import too. */
+    startedAt?: number;
+    budgetMs?: number;
+    invocationId?: string;
 }): HandleHookResult;
 export declare function runtimePlatformSummary(): string;
 /**

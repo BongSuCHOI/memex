@@ -42,6 +42,23 @@ export interface InjectOptions {
      */
     daemon?: InjectLogEntry["daemon"];
     /**
+     * Issue #162 (review): total milliseconds this call spent BLOCKED on the
+     * database — the bundle transaction's lock wait, including its one retry.
+     * The inject hook's done row carries it so `memex doctor` can compare both
+     * hooks on the same footing; without it the inject row reported no wait at
+     * all, which is exactly the signal the "database is locked" incidents needed.
+     */
+    onDbWaitMs?: (ms: number) => void;
+    /**
+     * Issue #162 (review 6): this function never throws — it logs and returns ""
+     * so a failure can never disrupt the user's prompt. That also made a failed
+     * injection indistinguishable from a healthy one in `hook-events.jsonl`: a
+     * cold run that spent 5.4 s blocked on the write lock and gave up was
+     * recorded as `outcome: "fallback"`, and doctor's `hook-latency` said ok.
+     * This hands the caller the failure so its done row can say so.
+     */
+    onError?: (message: string) => void;
+    /**
      * Issue #29: the time-boxed worker that evaluates USER overlay regexes.
      *
      * The warm daemon owns one resident matcher for its whole lifetime; the cold
@@ -100,6 +117,21 @@ export declare function commitInjectionBundle(db: CommitDb, commit: () => void, 
     delayMs?: number;
     retryBusyMs?: number;
     deadlineAt?: number;
+    /**
+     * Issue #162 (review): fired as the FIRST statement of the transaction
+     * body, i.e. the instant the write lock was granted. Everything before it
+     * — including the retry's pause — was this hook WAITING on the database,
+     * and it is the number `db_wait_ms` has to report.
+     */
+    onTransactionStart?: () => void;
+    /**
+     * Issue #162 (review 2): the wait this call actually paid, reported
+     * EXACTLY once — when the body started, or, if it never did, when the
+     * attempt gave up. Reporting only after a successful commit is why a
+     * commit that timed out ("database is locked … 5.2 s", the line the whole
+     * incident turns on) contributed nothing to `db_wait_ms`.
+     */
+    onDbWaitMs?: (ms: number) => void;
 }): Promise<void>;
 /**
  * Compute the UserPromptSubmit context block for a prompt.
