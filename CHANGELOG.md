@@ -114,8 +114,13 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   path. The epoch replay is best-effort and swallows SQLITE_BUSY, which used to
   swallow the wait with it (1,163 ms blocked, reported 0, every later phase
   fine, doctor ok), so it now hands its accumulated lock wait back to the caller
-  while keeping its own never-throw, keep-the-marker semantics.
-  `computeInjectContext` deliberately never throws (a failure must not
+  while keeping its own never-throw, keep-the-marker semantics. The recall
+  receipt is the last step and opens its own connection (a migration pass plus
+  one UPDATE); swallowing its failure hid its cost too — a receipt write blocked
+  by a lock took 5,267 ms and still logged `outcome: "daemon"`, `db_wait_ms: 0`,
+  doctor ok. Its wait now joins the total and its failure makes the done row
+  `error` on both transports, while the receipt itself still stays `prepared` as
+  documented. `computeInjectContext` deliberately never throws (a failure must not
   disrupt the prompt), which is why it now also hands the caller the error:
   without it a cold run that spent 5.4 s blocked on the write lock and gave up
   was recorded as a healthy `outcome: "fallback"` with `db_wait_ms: 0`, and

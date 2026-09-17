@@ -19,7 +19,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
-import { initDatabase } from "../src/db.js";
+import { initDatabase, recordRecallEvent } from "../src/db.js";
 import { commitInjectionBundle } from "../src/inject-core.js";
 import { hookLatencyCheck } from "../src/lifecycle.js";
 import { ensureSessionMemoryState } from "../src/continuity-core.js";
@@ -47,7 +47,10 @@ function hookEventRows(): Array<Record<string, unknown>> {
  * A daemon that answers the real handshake by echoing the identity it was
  * asked for, and reports the wait it paid inside its own process.
  */
-function fakeDaemon(dbWaitMs: number): Promise<void> {
+function fakeDaemon(
+  dbWaitMs: number,
+  options: { context?: string; receiptId?: string | null; beforeOk?: () => Promise<void> } = {},
+): Promise<void> {
   const sock = path.join(root, "conversation-index", "inject-daemon.sock");
   fs.mkdirSync(path.dirname(sock), { recursive: true });
   return new Promise((resolve, reject) => {
@@ -66,16 +69,21 @@ function fakeDaemon(dbWaitMs: number): Promise<void> {
           dbPath: request.dbPath,
         };
         conn.write(JSON.stringify({ type: "ack", ...identity }) + "\n");
-        conn.write(
-          JSON.stringify({
-            type: "ok",
-            ...identity,
-            ok: true,
-            context: "",
-            receiptId: null,
-            dbWaitMs,
-          }) + "\n",
-        );
+        void (async () => {
+          // A seam that fires between the ack and the served context: the only
+          // DB access left on the daemon path is the receipt write.
+          if (options.beforeOk) await options.beforeOk();
+          conn.write(
+            JSON.stringify({
+              type: "ok",
+              ...identity,
+              ok: true,
+              context: options.context ?? "",
+              receiptId: options.receiptId ?? null,
+              dbWaitMs,
+            }) + "\n",
+          );
+        })();
       });
     });
     server.on("error", reject);
@@ -383,6 +391,68 @@ it("carries the epoch repair's lock wait into the inject done row", async () => 
   expect(done).toBeTruthy();
   expect(done!.outcome).toBe("fallback");
   expect(Number(done!.db_wait_ms)).toBeGreaterThanOrEqual(1_000);
+  const check = hookLatencyCheck();
+  expect(check.status).toBe("warn");
+  expect(check.detail).toContain("waited on the database");
+}, 60_000);
+
+it("accounts the recall receipt's lock wait and failure in the done row", async () => {
+  // A prepared receipt the hook will try to mark emitted.
+  const db = initDatabase();
+  const receiptId = recordRecallEvent(db, {
+    sessionId: "s-inject-receipt",
+    project: "/project",
+    prompt: "왜 Redis?",
+    factIds: [],
+    context: "[CURRENT TRUTH] something",
+  });
+  db.close();
+  expect(receiptId).toBeTruthy();
+
+  // The lock is taken BEFORE the served context reaches the hook, so the only
+  // thing it can block is the receipt write — the last step, after stdout.
+  let lock: { marker: string; done: Promise<void>; release: () => void } | null = null;
+  await fakeDaemon(3, {
+    context: "[CURRENT TRUTH] something",
+    receiptId,
+    beforeOk: async () => {
+      lock = holdWriteLock(60_000);
+      const deadline = Date.now() + 15_000;
+      while (!fs.existsSync((lock as { marker: string }).marker)) {
+        if (Date.now() > deadline) throw new Error("the lock holder never started");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    },
+  });
+
+  const startedAt = Date.now();
+  const child = spawn(process.execPath, [HOOK], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, MEMEX_HOME: root, MEMEX_DB_PATH: dbPath },
+  });
+  let stdout = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+  child.stdin.end(
+    JSON.stringify({ prompt: "왜 Redis?", cwd: "/project", session_id: "s-inject-receipt" }),
+  );
+  const status = await new Promise<number>((resolve) =>
+    child.on("exit", (code) => resolve(code ?? -1)),
+  );
+  const elapsed = Date.now() - startedAt;
+  (lock as unknown as { release: () => void } | null)?.release();
+  if (lock) await (lock as { done: Promise<void> }).done;
+
+  // The context WAS delivered; only its provenance could not be recorded.
+  expect(status).toBe(0);
+  expect(stdout).toContain("CURRENT TRUTH");
+  const done = hookEventRows().find(
+    (row) => row.event === "UserPromptSubmit" && row.phase === "done",
+  );
+  expect(done).toBeTruthy();
+  expect(done!.outcome).toBe("error");
+  expect(String(done!.error)).toMatch(/SQLITE_BUSY|database is locked/i);
+  expect(Number(done!.db_wait_ms)).toBeGreaterThanOrEqual(4_500);
+  expect(Number(done!.db_wait_ms)).toBeLessThanOrEqual(elapsed);
   const check = hookLatencyCheck();
   expect(check.status).toBe("warn");
   expect(check.detail).toContain("waited on the database");

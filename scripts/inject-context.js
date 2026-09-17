@@ -232,8 +232,27 @@ async function logReceiptFailure(via, prompt, message) {
   process.stderr.write(`inject-context: recall receipt remained prepared: ${message}\n`);
 }
 
+/** Mirrors isSqliteBusyError() in src/hook-budget.ts without importing dist. */
+function looksSqliteBusy(error) {
+  const code = error && typeof error.code === "string" ? error.code : "";
+  if (/^SQLITE_BUSY/.test(code)) return true;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /SQLITE_BUSY|database is locked|database table is locked/i.test(message);
+}
+
+/**
+ * Mark the delivered context's receipt emitted.
+ *
+ * Issue #162 (review 9): this phase opens its OWN connection — a full migration
+ * pass plus one UPDATE — and it is the last thing the hook does. Swallowing its
+ * failure also hid its cost: a receipt write blocked by a lock made the hook
+ * take 5,267 ms and still log `outcome: "daemon"`, `db_wait_ms: 0`, with doctor
+ * reporting ok. Returns what the done row needs; leaving the receipt `prepared`
+ * on failure is the documented fallback and is unchanged.
+ */
 async function markRecallEmitted(sessionId, prompt, receiptId = null, via = "fallback") {
-  if (!sessionId || !prompt) return;
+  if (!sessionId || !prompt) return { waitMs: 0, error: null };
+  const startedAt = Date.now();
   try {
     const { initDatabase, markRecallEventEmitted } = await import(
       path.join(__dirname, "../dist/db.js")
@@ -246,12 +265,13 @@ async function markRecallEmitted(sessionId, prompt, receiptId = null, via = "fal
     } finally {
       db.close();
     }
+    // Same rule as every other phase: a phase with no "lock granted" instant
+    // counts only when it ended blocked, so a successful receipt counts zero.
+    return { waitMs: 0, error: null };
   } catch (error) {
-    await logReceiptFailure(
-      via,
-      prompt,
-      error instanceof Error ? error.message : String(error),
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    await logReceiptFailure(via, prompt, message);
+    return { waitMs: looksSqliteBusy(error) ? Date.now() - startedAt : 0, error: message };
   }
 }
 /**
@@ -503,21 +523,24 @@ async function main() {
 
   // FAST PATH — warm daemon inside a running MCP server, but only one running
   // THIS installation's code (issue #84).
+  // Totals for the ONE done row this hook writes, after the receipt step.
+  let dbWaitMs = 0;
+  let injectError = null;
   const identity = localIdentity();
   const daemonResult = await askDaemon(prompt, cwd, sessionId, identity);
   if (daemonResult && daemonResult.served) {
     const served = daemonResult.served;
+    dbWaitMs += Number(served.dbWaitMs) || 0;
+    injectError = served.injectError;
     if (served.context) {
       await emitContext(served.context);
-      await markRecallEmitted(sessionId, prompt, served.receiptId, "daemon");
+      const receipt = await markRecallEmitted(sessionId, prompt, served.receiptId, "daemon");
+      dbWaitMs += receipt.waitMs;
+      if (receipt.error) injectError = receipt.error;
     }
-    // A daemon that computed but failed is not a served prompt: say so, and
-    // carry the wait it paid (#162 review 6).
-    return done(
-      served.injectError ? "error" : "daemon",
-      served.injectError,
-      served.dbWaitMs,
-    );
+    // A daemon that computed but failed is not a served prompt, and neither is
+    // a delivery whose provenance could not be recorded (#162 review 6/9).
+    return done(injectError ? "error" : "daemon", injectError, dbWaitMs);
   }
 
   // COLD FALLBACK — compute locally (heavy imports load only here).
@@ -543,10 +566,6 @@ async function main() {
       }
     : {};
   let matcher = null;
-  // Declared out here so the catch below can still report what the cold path
-  // paid before it failed.
-  let dbWaitMs = 0;
-  let injectError = null;
   try {
     const { computeInjectContext } = await import(
       path.join(__dirname, "../dist/inject-core.js")
@@ -574,7 +593,7 @@ async function main() {
       sessionId || undefined,
       {
         onPreparedReceipt: (id) => { receiptId = id; },
-        onDbWaitMs: (ms) => { dbWaitMs = ms; },
+        onDbWaitMs: (ms) => { dbWaitMs += ms; },
         onError: (message) => { injectError = message; },
         ...daemonNote,
         ...(matcher ? { matcher } : {}),
@@ -582,7 +601,9 @@ async function main() {
     );
     if (context) {
       await emitContext(context);
-      await markRecallEmitted(sessionId, prompt, receiptId, "fallback");
+      const receipt = await markRecallEmitted(sessionId, prompt, receiptId, "fallback");
+      dbWaitMs += receipt.waitMs;
+      if (receipt.error) injectError = receipt.error;
     }
     // computeInjectContext never throws — it logs and returns "" so a failure
     // cannot disrupt the prompt — so the done row is the only place a cold run
