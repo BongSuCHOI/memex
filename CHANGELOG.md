@@ -27,12 +27,15 @@ have (#156).
 
 ### Jobs display
 
-- A successful capsule page clears `memory_jobs.last_error` (#157). A job that
-  succeeded a page and was reopened for the next one kept showing the previous
-  attempt's failure on a healthy `pending`, `attempts = 0` row, contradicting
-  its own `capsule_checkpoint_state`. The failure itself is still in
-  `retry_history` and the recovery audit; a failing attempt still records its
-  error.
+- A successful capsule page clears `memory_jobs.last_error` and preserves the
+  cleared failure in `retry_history` (#157). A job that succeeded a page and was
+  reopened for the next one kept showing the previous attempt's failure on a
+  healthy `pending`, `attempts = 0` row, contradicting its own
+  `capsule_checkpoint_state`. The cleared text is appended to `retry_history`
+  as an `action: "success"` entry — with the attempts count and a timestamp —
+  and `memex jobs show` prints it as `retryHistory`, so an auto-retry that
+  succeeds no longer erases the failure it recovered from. A success with no
+  prior error appends nothing, and a failing attempt still records its error.
 
 ### Upgrade
 

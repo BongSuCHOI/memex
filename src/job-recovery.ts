@@ -55,8 +55,13 @@ export interface RetryHistoryEntry {
   fromState: string;
   attempts: number;
   lastError: string | null;
-  /** 'retry' (operator re-queued) or 'dismiss'. */
-  action: "retry" | "dismiss";
+  /**
+   * 'retry' (operator re-queued), 'dismiss', or 'success' — issue #157: a
+   * succeeding attempt clears `last_error`, and the failure it cleared is
+   * appended here instead of disappearing. `clearedBy` is set on that entry.
+   */
+  action: "retry" | "dismiss" | "success";
+  clearedBy?: "success";
 }
 
 export interface MemoryJobDetail extends MemoryJobSummary {

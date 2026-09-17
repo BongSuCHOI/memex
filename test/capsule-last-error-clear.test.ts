@@ -86,12 +86,23 @@ function capsuleJob(): {
   state: string;
   attempts: number;
   last_error: string | null;
+  retry_history: string | null;
 } {
   return db
     .prepare(
-      "SELECT job_id, state, attempts, last_error FROM memory_jobs WHERE kind = 'capsule_update'",
+      "SELECT job_id, state, attempts, last_error, retry_history FROM memory_jobs WHERE kind = 'capsule_update'",
     )
-    .get() as { job_id: string; state: string; attempts: number; last_error: string | null };
+    .get() as {
+      job_id: string;
+      state: string;
+      attempts: number;
+      last_error: string | null;
+      retry_history: string | null;
+    };
+}
+
+function history(raw: string | null): Array<Record<string, unknown>> {
+  return raw ? (JSON.parse(raw) as Array<Record<string, unknown>>) : [];
 }
 
 /** Undeclared evidence sources: the exact failure class the issue reported. */
@@ -151,6 +162,21 @@ it("a succeeding capsule page clears the previous attempt's last_error, and the 
   expect(afterSuccess.state).toBe("completed");
   expect(afterSuccess.last_error).toBeNull();
 
+  // The cleared text must survive somewhere the operator can read: nothing
+  // else records it (an auto-retry leaves no recovery audit, and a capsule
+  // validation error raised after a completed model call is not in the
+  // model-attempt log). `memex jobs show` prints this array as `retryHistory`.
+  const preserved = history(afterSuccess.retry_history);
+  expect(preserved).toHaveLength(1);
+  expect(preserved[0].lastError).toContain(
+    "capsule evidence sources must be declared in sourceExchangeIds",
+  );
+  expect(preserved[0].action).toBe("success");
+  expect(preserved[0].clearedBy).toBe("success");
+  expect(preserved[0].fromState).toBe("running");
+  expect(preserved[0].attempts).toBeGreaterThan(0);
+  expect(typeof preserved[0].at).toBe("string");
+
   // 3) Evidence arrives past the frontier, so the same job is reopened for the
   //    next page — the state the issue's `memex jobs show` was reporting.
   put("source-2");
@@ -160,6 +186,8 @@ it("a succeeding capsule page clears the previous attempt's last_error, and the 
   expect(reopened.state).toBe("pending");
   expect(reopened.attempts).toBe(0);
   expect(reopened.last_error).toBeNull();
+  // The reopen neither loses nor duplicates the preserved failure.
+  expect(history(reopened.retry_history)).toHaveLength(1);
 
   // The checkpoint projection and the job now agree, which was the contradiction.
   const checkpointState = db
@@ -168,6 +196,40 @@ it("a succeeding capsule page clears the previous attempt's last_error, and the 
     )
     .get(workstream) as { last_error: string | null } | undefined;
   expect(checkpointState?.last_error ?? null).toBeNull();
+});
+
+it("a success with no prior failure appends nothing to retry_history (#157)", async () => {
+  put("source-1");
+  capture();
+
+  const succeeded = await runContinuityWorker(db, {
+    maxJobs: 1,
+    model: async () => JSON.stringify(PATCH),
+  });
+  expect(succeeded[0].state).toBe("completed");
+  const job = capsuleJob();
+  expect(job.last_error).toBeNull();
+  expect(history(job.retry_history)).toEqual([]);
+});
+
+it("memex jobs show surfaces the preserved failure as retryHistory (#157)", async () => {
+  put("source-1");
+  capture();
+  await runContinuityWorker(db, { maxJobs: 1, model: UNDECLARED_SOURCES });
+  await runContinuityWorker(db, {
+    maxJobs: 1,
+    now: new Date(Date.now() + 60 * 60_000),
+    model: async () => JSON.stringify(PATCH),
+  });
+
+  const { showMemoryJob } = await import("../src/job-recovery.js");
+  const detail = showMemoryJob(db, capsuleJob().job_id);
+  expect(detail?.lastError).toBeNull();
+  expect(detail?.retryHistory).toHaveLength(1);
+  expect(detail?.retryHistory[0].action).toBe("success");
+  expect(detail?.retryHistory[0].lastError).toContain(
+    "capsule evidence sources must be declared in sourceExchangeIds",
+  );
 });
 
 it("a genuinely failed attempt still records its last_error (#157)", async () => {

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { settleStaleOpenExchanges } from "./continuity-store.js";
+import {
+  readJobFailureToClear,
+  recordClearedJobFailure,
+  settleStaleOpenExchanges,
+} from "./continuity-store.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1881,8 +1885,11 @@ export function applyWorkCapsulePatch(
       // failure it followed. `last_error` used to survive it, so a partial page
       // left the job `pending` with `attempts = 0` while still displaying the
       // previous attempt's message — contradicting its own checkpoint state,
-      // which this same transaction clears. The failure is not lost:
-      // `retry_history` and the recovery audit keep it.
+      // which this same transaction clears. The text is not lost: it moves to
+      // `retry_history`, which is where `memex jobs show` prints it. Nothing
+      // else records it — a capsule validation error raised after a completed
+      // model call is not in the model-attempt log either.
+      const cleared = readJobFailureToClear(db, input.jobLease.jobId);
       const completed = db.prepare(`
         UPDATE memory_jobs
         SET state = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?,
@@ -1902,6 +1909,7 @@ export function applyWorkCapsulePatch(
       if (completed.changes !== 1) {
         throw new Error("capsule job lease changed during atomic completion");
       }
+      recordClearedJobFailure(db, { jobId: input.jobLease.jobId, cleared, now });
       db.prepare(`
         UPDATE checkpoints SET state = ? WHERE checkpoint_id = ?
       `).run(drained ? "processed" : "processing", input.throughCheckpointId);
@@ -1948,6 +1956,8 @@ export function completeEmptyCapsuleCheckpoint(
     const workstream = db.prepare("SELECT workstream_id FROM capsule_checkpoint_state WHERE checkpoint_id = ?")
       .get(input.checkpointId) as { workstream_id: string } | undefined;
     if (input.evidencePage && (!workstream || !capsulePageIsCurrent(db, workstream.workstream_id, input.evidencePage))) return false;
+    // Issue #157: the text this success clears moves to `retry_history`.
+    const cleared = readJobFailureToClear(db, input.jobId);
     const completed = db.prepare(`
       UPDATE memory_jobs
       SET state = 'completed', lease_owner = NULL, lease_until = NULL,
@@ -1964,6 +1974,7 @@ export function completeEmptyCapsuleCheckpoint(
       now,
     );
     if (completed.changes !== 1) return false;
+    recordClearedJobFailure(db, { jobId: input.jobId, cleared, now });
     if (input.evidencePage && !commitCapsulePage(db, workstream!.workstream_id, input.evidencePage)) {
       throw new Error("empty Capsule frontier changed during atomic completion");
     }
