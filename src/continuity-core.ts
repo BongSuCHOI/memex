@@ -1265,6 +1265,15 @@ export function advanceContextEpoch(
   return db.inTransaction ? apply() : db.transaction(apply).immediate();
 }
 
+/**
+ * How much longer than a marker file the applied-marker history is kept.
+ *
+ * A marker is replayable for `CAPTURE_GAP_MARKER_MAX_AGE_MS`; its history row
+ * lives for that plus this, so a marker that can still be replayed always still
+ * has the row that says it was applied.
+ */
+export const EPOCH_HISTORY_RETENTION_MARGIN_MS = 24 * 60 * 60 * 1_000;
+
 /** Applied-marker bookkeeping: remember this id, and keep the set bounded. */
 function rememberEpochMarker(
   db: Database.Database,
@@ -1277,10 +1286,14 @@ function rememberEpochMarker(
     INSERT OR IGNORE INTO session_epoch_markers (session_id, marker_id, applied_at)
     VALUES (?, ?, ?)
   `).run(sessionId, markerId, now);
-  // Same retention as the marker files themselves, and bounded per call: an
-  // epoch advance is rare, so this is the cheapest place to keep the set small.
+  // History must OUTLIVE every marker that is still replayable, or the two
+  // windows race: an old marker file whose history row had just been pruned was
+  // applied all over again (epoch 5 -> 6, residency reset). The margin is what
+  // makes "still replayable" strictly imply "still remembered" (#162 review 4);
+  // `applyPendingEpochAdvance` refuses anything past retention, so nothing in
+  // the gap between the two can ever be replayed either way.
   const cutoff = new Date(
-    Date.parse(now) - CAPTURE_GAP_MARKER_MAX_AGE_MS,
+    Date.parse(now) - CAPTURE_GAP_MARKER_MAX_AGE_MS - EPOCH_HISTORY_RETENTION_MARGIN_MS,
   ).toISOString();
   db.prepare(`
     DELETE FROM session_epoch_markers
@@ -2735,9 +2748,19 @@ export function applyPendingEpochAdvance(
   sessionId: string,
 ): number {
   let applied = 0;
+  const expiredBefore = Date.now() - CAPTURE_GAP_MARKER_MAX_AGE_MS;
   try {
     for (const { file, marker } of listEpochAdvanceMarkers(sessionId)) {
       try {
+        // Past the retention window this marker is no longer replayable: its
+        // history row is allowed to be gone by now, so "not in the set" no
+        // longer means "never applied". Retire it instead of guessing, which is
+        // what re-advanced a month-old epoch and reset residency (#162 rev 4).
+        const ts = Date.parse(marker.ts);
+        if (!Number.isFinite(ts) || ts < expiredBefore) {
+          deleteCaptureGapMarker(file);
+          continue;
+        }
         const state = db.prepare(
           "SELECT context_epoch FROM session_memory_state WHERE session_id = ?",
         ).get(sessionId) as { context_epoch: number } | undefined;

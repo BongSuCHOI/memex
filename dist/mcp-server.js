@@ -28973,6 +28973,7 @@ function advanceContextEpoch(db, input) {
   };
   return db.inTransaction ? apply() : db.transaction(apply).immediate();
 }
+var EPOCH_HISTORY_RETENTION_MARGIN_MS = 24 * 60 * 60 * 1e3;
 function rememberEpochMarker(db, sessionId, markerId, now) {
   if (!markerId) return;
   db.prepare(`
@@ -28980,7 +28981,7 @@ function rememberEpochMarker(db, sessionId, markerId, now) {
     VALUES (?, ?, ?)
   `).run(sessionId, markerId, now);
   const cutoff = new Date(
-    Date.parse(now) - CAPTURE_GAP_MARKER_MAX_AGE_MS
+    Date.parse(now) - CAPTURE_GAP_MARKER_MAX_AGE_MS - EPOCH_HISTORY_RETENTION_MARGIN_MS
   ).toISOString();
   db.prepare(`
     DELETE FROM session_epoch_markers
@@ -29124,9 +29125,15 @@ function readWorkCapsule(db, workstreamId) {
 }
 function applyPendingEpochAdvance(db, sessionId) {
   let applied = 0;
+  const expiredBefore = Date.now() - CAPTURE_GAP_MARKER_MAX_AGE_MS;
   try {
     for (const { file, marker } of listEpochAdvanceMarkers(sessionId)) {
       try {
+        const ts = Date.parse(marker.ts);
+        if (!Number.isFinite(ts) || ts < expiredBefore) {
+          deleteCaptureGapMarker(file);
+          continue;
+        }
         const state = db.prepare(
           "SELECT context_epoch FROM session_memory_state WHERE session_id = ?"
         ).get(sessionId);

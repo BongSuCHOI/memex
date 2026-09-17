@@ -289,6 +289,14 @@ export declare function advanceContextEpoch(db: Database.Database, input: {
      */
     markerId?: string | null;
 }): number;
+/**
+ * How much longer than a marker file the applied-marker history is kept.
+ *
+ * A marker is replayable for `CAPTURE_GAP_MARKER_MAX_AGE_MS`; its history row
+ * lives for that plus this, so a marker that can still be replayed always still
+ * has the row that says it was applied.
+ */
+export declare const EPOCH_HISTORY_RETENTION_MARGIN_MS: number;
 export declare function readResidentFactRevisions(db: Database.Database, sessionId: string): {
     contextEpoch: number;
     resident: ResidentFactRevision[];

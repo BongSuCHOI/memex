@@ -71,8 +71,13 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   and deletes the marker. That replay is idempotent through a durable SET of
   applied marker ids — the new `session_epoch_markers(session_id, marker_id,
   applied_at)` — written in the SAME transaction as the epoch row, so an advance
-  whose id is already there is a no-op. Rows older than 30 days are pruned, up
-  to 200 at a time, on the next advance. Neither cheaper record survives: the
+  whose id is already there is a no-op. That history outlives every marker that
+  can still be replayed — it is kept for the marker retention window plus a
+  one-day margin, pruned up to 200 rows at a time on the next advance — and the
+  replay refuses (and deletes) any marker past retention rather than treating
+  "not in the set" as "never applied". Either half alone leaves the same hole:
+  a month-old marker whose history row had just been pruned was applied again
+  (epoch 5 -> 6, residency reset to []). Neither cheaper record survives: the
   `compact` `epoch_token` is derived from `latest_checkpoint_id`, so any later
   Stop made an applied marker look unapplied (1 → 2), and remembering only the
   LAST marker id fails one step further on — A advances and its marker survives

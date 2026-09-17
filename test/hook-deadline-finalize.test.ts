@@ -432,6 +432,103 @@ describe("the epoch replay is idempotent against a moving checkpoint (#162 revie
     expect(contextEpoch()).toBe(before + 2);
   });
 
+  it("never re-applies a marker whose history row the prune has retired", () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+
+    // A advances and its marker survives a host kill.
+    handleContinuityHook(payload("SessionStart", { source: "compact", turn_id: "turn-A" }), { db });
+    const aFile = path.join(captureGapDir(), markerFiles()[0]);
+    // Age BOTH halves of A past the history prune's cutoff, keeping the file:
+    // that is the state a month-old killed hook leaves behind.
+    const aged = new Date(Date.now() - 40 * 24 * 60 * 60 * 1_000).toISOString();
+    const aMarker = JSON.parse(fs.readFileSync(aFile, "utf8")) as Record<string, unknown>;
+    fs.writeFileSync(aFile, JSON.stringify({ ...aMarker, ts: aged }) + "\n");
+    db.prepare("UPDATE session_epoch_markers SET applied_at = ? WHERE marker_id = ?")
+      .run(aged, String(aMarker.invocationId));
+
+    // B advances, and its prune is what retires A's history row.
+    handleContinuityHook(payload("SessionStart", { source: "clear", turn_id: "turn-B" }), { db });
+    const epochAfterB = contextEpoch();
+    db.prepare(
+      "UPDATE session_memory_state SET resident_fact_revisions_json = ? WHERE session_id = ?",
+    ).run(JSON.stringify([["fact-1", 1, 1]]), SESSION);
+
+    applyPendingEpochAdvance(db, SESSION);
+
+    expect(contextEpoch()).toBe(epochAfterB);
+    expect(
+      (db
+        .prepare("SELECT resident_fact_revisions_json AS j FROM session_memory_state WHERE session_id = ?")
+        .get(SESSION) as { j: string }).j,
+    ).toBe(JSON.stringify([["fact-1", 1, 1]]));
+    // The expired marker is retired rather than left to be re-read for ever.
+    expect(fs.existsSync(aFile)).toBe(false);
+    expect(markerFiles()).toHaveLength(0);
+  });
+
+  it("history still wins for a marker just inside the retention window", () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    handleContinuityHook(payload("SessionStart", { source: "compact", turn_id: "turn-A" }), { db });
+    const file = path.join(captureGapDir(), markerFiles()[0]);
+    const marker = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    // One hour short of retention, so the file is still replayable — while its
+    // history row reads two hours PAST retention. The two stamps come from
+    // different clocks (the marker from the hook's start, the row from the
+    // advance's `now`, which a caller may supply), so they can disagree, and
+    // only the prune's margin keeps the row that far out of the cutoff.
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        ...marker,
+        ts: new Date(Date.now() - (30 * 24 - 1) * 60 * 60 * 1_000).toISOString(),
+      }) + "\n",
+    );
+    db.prepare("UPDATE session_epoch_markers SET applied_at = ? WHERE marker_id = ?")
+      .run(
+        new Date(Date.now() - (30 * 24 + 2) * 60 * 60 * 1_000).toISOString(),
+        String(marker.invocationId),
+      );
+
+    // A later advance runs the prune. With no margin it would take A's row and
+    // leave A's still-replayable file with nothing to say it was applied.
+    handleContinuityHook(payload("SessionStart", { source: "clear", turn_id: "turn-B" }), { db });
+    const epochAfterB = contextEpoch();
+    expect(
+      db
+        .prepare("SELECT COUNT(*) AS n FROM session_epoch_markers WHERE marker_id = ?")
+        .get(String(marker.invocationId)) as { n: number },
+    ).toEqual({ n: 1 });
+
+    applyPendingEpochAdvance(db, SESSION);
+
+    expect(contextEpoch()).toBe(epochAfterB);
+    expect(markerFiles()).toHaveLength(0);
+  });
+
+  it("deletes an expired marker with no history instead of applying it", () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    const before = contextEpoch();
+    writeCaptureGapMarker({
+      invocationId: "inv-expired",
+      event: "SessionStart",
+      source: "compact",
+      sessionId: SESSION,
+      cwd: "/project",
+      transcriptPath: null,
+      transcriptBytes: null,
+      turnId: null,
+      ts: new Date(Date.now() - 40 * 24 * 60 * 60 * 1_000).toISOString(),
+    });
+
+    applyPendingEpochAdvance(db, SESSION);
+
+    expect(contextEpoch()).toBe(before);
+    expect(markerFiles()).toHaveLength(0);
+    expect(
+      db.prepare("SELECT COUNT(*) AS n FROM session_epoch_markers").get() as { n: number },
+    ).toEqual({ n: 0 });
+  });
+
   it("still repairs a marker whose advance never happened", () => {
     ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
     const before = contextEpoch();

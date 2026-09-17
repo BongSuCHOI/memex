@@ -237,7 +237,11 @@ residency가 같은 fact를 계속 억제합니다). 그래서 다음 주입이 
 대신 수행한 뒤 marker를 지웁니다 — daemon·cold fallback 모두 같은 진입점을 씁니다. 이 재적용은 `session_epoch_markers`
 테이블(`session_id`, `marker_id`, `applied_at`)로 **durable하게 한 번만** 일어납니다: 전진을 만든
 marker의 invocation id가 epoch UPDATE와 **같은 트랜잭션**에서 이 집합에 들어가고, 이미 집합에 있는
-id를 들고 온 재적용은 no-op입니다. 30일이 지난 행은 다음 epoch 전진 때 최대 200개씩 정리합니다.
+id를 들고 온 재적용은 no-op입니다. 이 기록은 **marker 파일보다 하루 더** 오래 삽니다(보존 30일 + 여유 1일), 그래서 아직 재적용될 수 있는
+marker에는 항상 "이미 적용됨" 행이 남아 있습니다. 반대쪽도 같이 막습니다 — 보존 기간이 지난 marker는
+재적용 대상이 아니므로(`applyPendingEpochAdvance`) 적용하지 않고 삭제합니다. 둘 중 하나만 있으면
+지워진 기록 때문에 한 달 묵은 marker가 다시 적용되어 epoch이 오르고 residency가 비워집니다. 정리는
+다음 epoch 전진 때 최대 200개씩 합니다.
 더 싼 기록으로는 안 됩니다 — `epoch_token`은 `compact`일 때 `latest_checkpoint_id`에서 나오므로 이후
 Stop이 그 값을 바꾸면 이미 적용된 marker가 미적용처럼 보이고(1→2), "마지막 marker id" 하나만 두면
 A 전진 뒤 B 전진이 오는 순간 A가 다시 미적용처럼 보입니다(1→2→3). 집합 소속만이 계속 참입니다.
