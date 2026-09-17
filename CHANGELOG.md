@@ -111,7 +111,11 @@ Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).
   fallback. On the inject side that total is every wait the call pays — the
   connection open and its migration pass, the epoch replay, the session-state
   write and the bundle commit — delivered on the success path AND the failure
-  path. `computeInjectContext` deliberately never throws (a failure must not
+  path. The epoch replay is best-effort and swallows SQLITE_BUSY, which used to
+  swallow the wait with it (1,163 ms blocked, reported 0, every later phase
+  fine, doctor ok), so it now hands its accumulated lock wait back to the caller
+  while keeping its own never-throw, keep-the-marker semantics.
+  `computeInjectContext` deliberately never throws (a failure must not
   disrupt the prompt), which is why it now also hands the caller the error:
   without it a cold run that spent 5.4 s blocked on the write lock and gave up
   was recorded as a healthy `outcome: "fallback"` with `db_wait_ms: 0`, and

@@ -295,3 +295,95 @@ it("does not charge a slow but UNCONTENDED inject phase to the database wait", a
   const check = hookLatencyCheck();
   expect(check.detail ?? "").not.toContain("waited on the database");
 }, 60_000);
+
+/**
+ * A holder that waits for the epoch REPLAY to start before taking the lock.
+ *
+ * The replay is the only phase this test wants contended, and it sits between
+ * the connection open and the session-state write with no externally visible
+ * boundary — except one: the repair deletes each marker file as it applies it.
+ * So the holder polls the marker directory and grabs the lock the moment the
+ * count drops, which is inside the replay by construction.
+ */
+function holdLockOnceReplayStarts(
+  markerDir: string,
+  initialCount: number,
+  holdMs: number,
+): { marker: string; done: Promise<void>; release: () => void } {
+  const script = path.join(root, "hold-on-replay.cjs");
+  const marker = path.join(root, "locked-replay");
+  fs.writeFileSync(
+    script,
+    `
+const fs = require("node:fs");
+const Database = require(${JSON.stringify(require_.resolve("better-sqlite3"))});
+const startedAt = Date.now();
+const count = () => { try { return fs.readdirSync(${JSON.stringify(markerDir)}).length; } catch { return ${initialCount}; } };
+const grab = () => {
+  const db = new Database(${JSON.stringify(dbPath)});
+  db.pragma("busy_timeout = 20000");
+  db.exec("BEGIN IMMEDIATE");
+  fs.writeFileSync(${JSON.stringify(marker)}, "1");
+  setTimeout(() => { db.exec("COMMIT"); db.close(); }, ${holdMs});
+};
+const poll = () => {
+  // The timeout only exists so a broken run fails an assertion instead of hanging.
+  if (count() < ${initialCount} || Date.now() - startedAt > 20000) return grab();
+  setTimeout(poll, 3);
+};
+poll();
+`,
+  );
+  const child = spawn(process.execPath, [script], { stdio: "inherit" });
+  return {
+    marker,
+    done: new Promise<void>((resolve) => child.on("exit", () => resolve())),
+    release: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } },
+  };
+}
+
+it("carries the epoch repair's lock wait into the inject done row", async () => {
+  const db = initDatabase();
+  ensureSessionMemoryState(db, { sessionId: "s-inject-repair", project: "/project" });
+  db.close();
+  // Enough padded markers that the replay is a wide enough window for the
+  // holder to land inside it, and enough left afterwards to actually block.
+  const padding = "p".repeat(16 * 1024);
+  const markers = 500;
+  for (let i = 0; i < markers; i++) {
+    writeCaptureGapMarker({
+      invocationId: `inv-repair-${i}`, event: "SessionStart", source: "compact",
+      sessionId: "s-inject-repair", cwd: padding, transcriptPath: null,
+      transcriptBytes: null, turnId: null, ts: new Date().toISOString(),
+    });
+  }
+  const markerDir = path.join(root, "continuity", "gaps");
+  expect(fs.readdirSync(markerDir)).toHaveLength(markers);
+
+  const lock = holdLockOnceReplayStarts(markerDir, markers, 1_400);
+  const child = spawn(process.execPath, [HOOK], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, MEMEX_HOME: root, MEMEX_DB_PATH: dbPath },
+  });
+  child.stdin.end(
+    JSON.stringify({ prompt: "왜 Redis?", cwd: "/project", session_id: "s-inject-repair" }),
+  );
+  const status = await new Promise<number>((resolve) =>
+    child.on("exit", (code) => resolve(code ?? -1)),
+  );
+  lock.release();
+  await lock.done;
+
+  // The lock was released long before the hook needed anything else, so the
+  // injection itself still succeeds — only the wait has to be visible.
+  expect(status).toBe(0);
+  const done = hookEventRows().find(
+    (row) => row.event === "UserPromptSubmit" && row.phase === "done",
+  );
+  expect(done).toBeTruthy();
+  expect(done!.outcome).toBe("fallback");
+  expect(Number(done!.db_wait_ms)).toBeGreaterThanOrEqual(1_000);
+  const check = hookLatencyCheck();
+  expect(check.status).toBe("warn");
+  expect(check.detail).toContain("waited on the database");
+}, 60_000);

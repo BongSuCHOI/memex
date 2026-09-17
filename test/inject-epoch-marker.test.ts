@@ -91,7 +91,13 @@ afterEach(() => {
 describe("inject replays a skipped clear/compact epoch advance", () => {
   it("applies the pending advance before it reads the session's epoch state", async () => {
     await computeInjectContext("무엇을 결정했지?", "/project", "daemon", "session-epoch-1");
-    expect(applyPendingEpochAdvance).toHaveBeenCalledWith(expect.anything(), "session-epoch-1");
+    // #162 review 8: the repair also reports the lock wait it paid, because it
+    // swallows SQLITE_BUSY and would otherwise swallow the wait with it.
+    expect(applyPendingEpochAdvance).toHaveBeenCalledWith(
+      expect.anything(),
+      "session-epoch-1",
+      expect.objectContaining({ onDbWaitMs: expect.any(Function) }),
+    );
     expect(order[0]).toBe("applyPendingEpochAdvance");
     expect(order.indexOf("applyPendingEpochAdvance")).toBeLessThan(
       order.indexOf("ensureSessionMemoryState"),

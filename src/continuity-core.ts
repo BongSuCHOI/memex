@@ -2754,15 +2754,33 @@ function transcriptSizeAt(transcriptPath: string | null): number | null {
  * token is derived from the turn id, so the marker's invocation id is used when
  * the payload carried no turn id. Best effort by design — an inject must never
  * fail because a marker could not be replayed.
+ *
+ * That "best effort" swallows SQLITE_BUSY, which also swallowed the WAIT it
+ * paid: 1,163 ms blocked here was invisible to `db_wait_ms`, the later phases
+ * succeeded, and doctor reported ok (#162 review 8). `onDbWaitMs` hands the
+ * accumulated lock wait back to the caller; the repair's own semantics — never
+ * throw, keep the marker on failure, continue with the next one — are unchanged.
  */
 export function applyPendingEpochAdvance(
   db: Database.Database,
   sessionId: string,
+  options: { onDbWaitMs?: (ms: number) => void } = {},
 ): number {
   let applied = 0;
+  let dbWaitMs = 0;
   const expiredBefore = Date.now() - CAPTURE_GAP_MARKER_MAX_AGE_MS;
   try {
     for (const { file, marker } of listEpochAdvanceMarkers(sessionId)) {
+      // One acquisition attempt per marker, under the same rule as every other
+      // wait: call -> transaction body start, or the whole span when the
+      // attempt ended blocked. A slow uncontended repair counts zero.
+      const calledAt = Date.now();
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        dbWaitMs += Date.now() - calledAt;
+      };
       try {
         // Past the retention window this marker is no longer replayable: its
         // history row is allowed to be gone by now, so "not in the set" no
@@ -2785,19 +2803,23 @@ export function applyPendingEpochAdvance(
             source: marker.source === "compact" ? "compact" : "clear",
             turnId: marker.turnId ?? marker.invocationId ?? null,
             // The marker's own id: an advance this marker already produced is
-            // refused durably, whatever `latest_checkpoint_id` has become.
+            // refused durably, whatever `latest_checkpoint_id` or any LATER
+            // advance has since done.
             markerId: marker.invocationId || null,
+            onTransactionStart: settle,
           });
           if (after !== before) applied++;
         }
         deleteCaptureGapMarker(file);
-      } catch {
+      } catch (error) {
         /* keep the marker: doctor still reports it, the next inject retries */
+        if (isSqliteBusyError(error)) settle();
       }
     }
   } catch {
     /* listing failures never break an injection */
   }
+  try { options.onDbWaitMs?.(dbWaitMs); } catch { /* observability only */ }
   return applied;
 }
 

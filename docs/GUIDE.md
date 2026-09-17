@@ -230,6 +230,9 @@ capture 실패는 `outcome: "error"`와 200자로 자른 `error` 문구를 `hook
 막힌 훅이 920만 보고했습니다.
 UserPromptSubmit(inject) done row도 daemon·cold 양쪽에서 같은 규칙의 값을 싣습니다 — 연결/마이그레이션,
 epoch 재적용, 세션 상태 기록, bundle commit의 대기를 모두 합산하고, **성공·실패 양쪽**에서 보고합니다.
+epoch 재적용은 best-effort라 SQLITE_BUSY를 삼키는데 그때 대기 시간까지 같이 삼켰습니다(1,163 ms를
+막혀 있었는데 0으로 보고되고, 뒤 국면은 성공해서 doctor는 ok). 지금은 삼키는 동작은 그대로 두고 잰
+대기만 호출자에게 돌려줍니다.
 주입 계산은 프롬프트를 방해하지 않으려고 절대 throw 하지 않으므로, 실패는 done row가 유일한 흔적입니다:
 잠금에 5.4초 막혀 포기한 cold 실행이 `outcome: "fallback"`·`db_wait_ms: 0`으로 남아 doctor가 ok라고
 말하던 자리가 이제 `outcome: "error"` + 실제 대기 시간입니다. 30일이 지난

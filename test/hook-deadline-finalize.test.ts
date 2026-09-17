@@ -693,6 +693,65 @@ describe("db_wait_ms is lock wait, not phase duration (#162 review 7)", () => {
   }, 30_000);
 });
 
+describe("the epoch repair's own lock wait is visible (#162 review 8)", () => {
+  it("reports the wait it paid even though it swallows the failure", async () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    writeCaptureGapMarker({
+      invocationId: "inv-repair-wait", event: "SessionStart", source: "compact",
+      sessionId: SESSION, cwd: "/project", transcriptPath: null,
+      transcriptBytes: null, turnId: null, ts: new Date().toISOString(),
+    });
+    const before = contextEpoch();
+    const lock = holdWriteLock(1_200);
+    await awaitLock(lock);
+
+    let reported = -1;
+    const startedAt = Date.now();
+    const applied = applyPendingEpochAdvance(db, SESSION, {
+      onDbWaitMs: (ms) => { reported = ms; },
+    });
+    const elapsed = Date.now() - startedAt;
+    await lock.done;
+
+    // The repair still happened; only its cost is newly visible.
+    expect(applied).toBe(1);
+    expect(contextEpoch()).toBe(before + 1);
+    expect(markerFiles()).toHaveLength(0);
+    expect(reported).toBeGreaterThanOrEqual(Math.round(elapsed * 0.9));
+  }, 30_000);
+
+  it("reports the wait of an attempt that never got the lock, and keeps the marker", async () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    writeCaptureGapMarker({
+      invocationId: "inv-repair-busy", event: "SessionStart", source: "compact",
+      sessionId: SESSION, cwd: "/project", transcriptPath: null,
+      transcriptBytes: null, turnId: null, ts: new Date().toISOString(),
+    });
+    const before = contextEpoch();
+    const lock = holdWriteLock(60_000);
+    await awaitLock(lock);
+    try {
+      db.pragma("busy_timeout = 400");
+      let reported = -1;
+      const startedAt = Date.now();
+      // Swallow-and-continue is the repair's contract: no throw, marker kept.
+      const applied = applyPendingEpochAdvance(db, SESSION, {
+        onDbWaitMs: (ms) => { reported = ms; },
+      });
+      const elapsed = Date.now() - startedAt;
+
+      expect(applied).toBe(0);
+      expect(contextEpoch()).toBe(before);
+      expect(markerFiles()).toHaveLength(1);
+      expect(reported).toBeGreaterThanOrEqual(Math.round(elapsed * 0.9));
+    } finally {
+      db.pragma("busy_timeout = 5000");
+      lock.release();
+      await lock.done;
+    }
+  }, 30_000);
+});
+
 describe("marker lookup never loses the target session (#162 review 2)", () => {
   it("finds every epoch marker of one session behind hundreds of foreign ones", () => {
     const ts = new Date().toISOString();

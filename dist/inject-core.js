@@ -345,7 +345,11 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         // then suppressed the very facts the clear/compact just dropped. This is
         // the single shared entry for both the daemon and the cold fallback, so
         // replaying the marker here covers every injection path.
-        measureAttempt(() => applyPendingEpochAdvance(db, sessionId));
+        // The repair swallows its own failures, so it reports its lock wait
+        // directly rather than through the throw-based rule above (#162 review 8).
+        measureAttempt(() => applyPendingEpochAdvance(db, sessionId, {
+            onDbWaitMs: (ms) => { dbWaitMs += ms; },
+        }));
         const sessionScope = measureAttempt(() => ensureSessionMemoryState(db, {
             sessionId,
             project,

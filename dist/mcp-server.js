@@ -28726,6 +28726,12 @@ if (process.argv[1] && path11.basename(process.argv[1]) === "observe-hook-event.
 
 // src/hook-budget.ts
 var CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
+function isSqliteBusyError(error2) {
+  const code = error2?.code;
+  if (typeof code === "string" && /^SQLITE_BUSY/.test(code)) return true;
+  const message = error2 instanceof Error ? error2.message : String(error2 ?? "");
+  return /SQLITE_BUSY|database is locked|database table is locked/i.test(message);
+}
 
 // src/capture-gap-markers.ts
 init_paths();
@@ -29124,11 +29130,19 @@ function readWorkCapsule(db, workstreamId) {
     originalChars: row.original_chars == null ? null : Number(row.original_chars)
   };
 }
-function applyPendingEpochAdvance(db, sessionId) {
+function applyPendingEpochAdvance(db, sessionId, options = {}) {
   let applied = 0;
+  let dbWaitMs = 0;
   const expiredBefore = Date.now() - CAPTURE_GAP_MARKER_MAX_AGE_MS;
   try {
     for (const { file, marker } of listEpochAdvanceMarkers(sessionId)) {
+      const calledAt = Date.now();
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        dbWaitMs += Date.now() - calledAt;
+      };
       try {
         const ts = Date.parse(marker.ts);
         if (!Number.isFinite(ts) || ts <= expiredBefore) {
@@ -29145,15 +29159,22 @@ function applyPendingEpochAdvance(db, sessionId) {
             source: marker.source === "compact" ? "compact" : "clear",
             turnId: marker.turnId ?? marker.invocationId ?? null,
             // The marker's own id: an advance this marker already produced is
-            // refused durably, whatever `latest_checkpoint_id` has become.
-            markerId: marker.invocationId || null
+            // refused durably, whatever `latest_checkpoint_id` or any LATER
+            // advance has since done.
+            markerId: marker.invocationId || null,
+            onTransactionStart: settle
           });
           if (after !== before) applied++;
         }
         deleteCaptureGapMarker(file);
-      } catch {
+      } catch (error2) {
+        if (isSqliteBusyError(error2)) settle();
       }
     }
+  } catch {
+  }
+  try {
+    options.onDbWaitMs?.(dbWaitMs);
   } catch {
   }
   return applied;
@@ -29468,7 +29489,11 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
   }
   try {
     const db = measureAttempt(() => getSearchDb());
-    measureAttempt(() => applyPendingEpochAdvance(db, sessionId));
+    measureAttempt(() => applyPendingEpochAdvance(db, sessionId, {
+      onDbWaitMs: (ms) => {
+        dbWaitMs += ms;
+      }
+    }));
     const sessionScope = measureAttempt(() => ensureSessionMemoryState(db, {
       sessionId,
       project,

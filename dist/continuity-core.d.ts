@@ -427,8 +427,16 @@ export declare function buildRehydrationContext(db: Database.Database, input: {
  * token is derived from the turn id, so the marker's invocation id is used when
  * the payload carried no turn id. Best effort by design — an inject must never
  * fail because a marker could not be replayed.
+ *
+ * That "best effort" swallows SQLITE_BUSY, which also swallowed the WAIT it
+ * paid: 1,163 ms blocked here was invisible to `db_wait_ms`, the later phases
+ * succeeded, and doctor reported ok (#162 review 8). `onDbWaitMs` hands the
+ * accumulated lock wait back to the caller; the repair's own semantics — never
+ * throw, keep the marker on failure, continue with the next one — are unchanged.
  */
-export declare function applyPendingEpochAdvance(db: Database.Database, sessionId: string): number;
+export declare function applyPendingEpochAdvance(db: Database.Database, sessionId: string, options?: {
+    onDbWaitMs?: (ms: number) => void;
+}): number;
 export declare function handleContinuityHook(payloadValue: unknown, options?: {
     db?: Database.Database;
     strictCapture?: boolean;
