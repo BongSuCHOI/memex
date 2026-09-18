@@ -8,6 +8,13 @@ export interface LifecycleCommandConfig {
     timeout?: number;
 }
 /** Relative-to-plugin-root commands registered for each event. */
+/**
+ * Issue #166 — `timeout` is the HOST timeout in seconds, and the hook budget in
+ * src/hook-budget.ts is derived from it (timeout - one exit margin). These
+ * numbers, hooks.json and HOOK_HOST_TIMEOUT_MS are pinned together by a test:
+ * a budget derived from a timeout the host does not grant is worse than none.
+ * SessionEnd stays at 3 s because Codex clamps it there and warns above it.
+ */
 export declare const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]>;
 /** Hook scripts that must be registered for cross-device sync to work at all. */
 export declare const SYNC_LIFECYCLE_SCRIPTS: {

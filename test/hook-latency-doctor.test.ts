@@ -318,6 +318,69 @@ describe("doctor hook-latency", () => {
   });
 
   /**
+   * Issue #166 — the work Mac skipped 3 of 3 captures (busy, deadline, oversize)
+   * and `hook-latency` said `ok: 4 hook run(s) completed, max 8755 ms`. Every
+   * skipped capture HAS a done row; reading only duration and lock waits made the
+   * one thing the user needed to know invisible.
+   */
+  it("warns when completed runs report skipped captures (#166)", () => {
+    writeRows([
+      { ts: "2026-09-18T01:57:00.000Z", event: "SessionStart", phase: "start", invocation_id: "inv-1", pid: 11 },
+      {
+        ts: "2026-09-18T01:57:01.000Z", event: "SessionStart", phase: "done", invocation_id: "inv-1",
+        pid: 11, outcome: "busy", duration_ms: 1_045, db_wait_ms: 930, startup_ms: 110,
+        error: "database is locked",
+      },
+      { ts: "2026-09-18T01:57:10.000Z", event: "Stop", phase: "start", invocation_id: "inv-2", pid: 12 },
+      {
+        ts: "2026-09-18T01:57:11.900Z", event: "Stop", phase: "done", invocation_id: "inv-2",
+        pid: 12, outcome: "deadline", duration_ms: 1_972, db_wait_ms: 0, startup_ms: 1_700,
+        error: "hook budget exhausted before the next phase (28 ms left)",
+      },
+      { ts: "2026-09-18T01:57:20.000Z", event: "SessionEnd", phase: "start", invocation_id: "inv-3", pid: 13 },
+      {
+        ts: "2026-09-18T01:57:21.700Z", event: "SessionEnd", phase: "done", invocation_id: "inv-3",
+        pid: 13, outcome: "oversize", duration_ms: 1_733, db_wait_ms: 0, startup_ms: 1_450,
+        error: "132399 pending bytes exceed the remaining 267 ms hook budget",
+      },
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-18T01:58:00.000Z"));
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("3 skipped (busy 1, deadline 1, oversize 1)");
+    // The last error text, so the reader does not have to open the log.
+    expect(check.detail).toContain("132399 pending bytes");
+  });
+
+  it("keeps ok for outcomes that are not skipped captures (#166)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      { ts: "2026-09-18T01:57:00.000Z", event: "UserPromptSubmit", phase: "start", invocation_id: "inv-d", pid: 21 },
+      {
+        ts: "2026-09-18T01:57:08.800Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-d",
+        pid: 21, outcome: "daemon", duration_ms: 8_755, db_wait_ms: 0, startup_ms: 240,
+      },
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-18T01:58:00.000Z"));
+    expect(check.status).toBe("ok");
+    expect(check.detail).not.toContain("skipped");
+    // Issue #166: the fixed cost before the first database call is reported, so
+    // "the budget was gone before the capture" is measurable per machine.
+    expect(check.detail).toMatch(/max startup \d+ ms/);
+  });
+
+  it("names the skipped captures beside a database wait it already warned about (#166)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      ...paired("inv-c", "PreCompact", { db_wait_ms: 5_200, outcome: "busy" }),
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z"));
+    expect(check.status).toBe("warn");
+    // The existing rule keeps its verdict; the skip is added, not substituted.
+    expect(check.detail).toContain("hooks waited on the database");
+    expect(check.detail).toContain("1 skipped (busy 1)");
+  });
+
+  /**
    * Post-release P2 (#165) — the worker-transactions row is written when the
    * transaction ENDS, so its `ts` is the end, and the held interval is
    * `[ts - held_ms, ts]`. Reading `ts` as the start made doctor wrong in both

@@ -28,7 +28,7 @@ import {
   HookOversizeCapture,
   isSqliteBusyError,
   markCaptureGapRecorded,
-  HOOK_INGEST_RESERVE_MS,
+  ingestFitsBudget,
   HOOK_PHASE_FLOOR_MS,
   HOOK_RETRY_FLOOR_MS,
 } from "./hook-budget.js";
@@ -98,14 +98,19 @@ export function capsuleMaxChars(): number {
 export {
   busyTimeoutForRemaining,
   hookBudgetMs,
+  hookHostTimeoutMs,
   hookIngestBytesPerMs,
+  ingestFitsBudget,
   HookCaptureFailed,
   HookDeadlineExceeded,
   HookOversizeCapture,
   isSqliteBusyError,
   HOOK_BUDGET_MS,
   HOOK_BUDGET_PRECOMPACT_MS,
+  HOOK_EXIT_MARGIN_MS,
+  HOOK_HOST_TIMEOUT_MS,
   HOOK_INGEST_BYTES_PER_MS,
+  HOOK_INGEST_RESERVE_MS,
   HOOK_PHASE_FLOOR_MS,
   HOOK_RETRY_FLOOR_MS,
 } from "./hook-budget.js";
@@ -774,10 +779,12 @@ export function captureTranscriptPrefix(
       sourceBytes = 0;
     }
     const bytesToIngest = Math.max(0, sourceBytes - Number(pending?.copied_byte_end ?? 0));
-    if (bytesToIngest / hookIngestBytesPerMs() > remaining - HOOK_INGEST_RESERVE_MS) {
-      throw new HookOversizeCapture(
-        `${bytesToIngest} pending bytes exceed the remaining ${remaining} ms hook budget`,
-      );
+    // #166: "too large" and "too late" are different diagnoses — see ingestFitsBudget.
+    const fit = ingestFitsBudget(bytesToIngest, remaining);
+    if (!fit.ok) {
+      throw fit.reason === "deadline"
+        ? new HookDeadlineExceeded(fit.detail)
+        : new HookOversizeCapture(fit.detail);
     }
   }
   const capture = db.transaction(() => captureTranscriptPrefixInTransaction(db, input));
@@ -2860,6 +2867,9 @@ export function handleContinuityHook(
   });
 
   let dbWaitMs = 0;
+  // #166: everything between process entry and the first database call — the
+  // fixed cost that ate the whole 0.7.24 budget on the reporting machine.
+  let startupMs: number | null = null;
   let finalized = false;
   const ownDb = !options.db;
   let db: Database.Database;
@@ -2873,6 +2883,7 @@ export function handleContinuityHook(
       outcome,
       durationMs: Date.now() - startedAt,
       dbWaitMs,
+      ...(startupMs === null ? {} : { startupMs }),
       ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
     });
   };
@@ -2895,6 +2906,7 @@ export function handleContinuityHook(
     pruneCaptureGapMarkers();
   };
   const openedAt = Date.now();
+  startupMs = Math.max(0, openedAt - startedAt);
   try {
     db = options.db ??
       initDatabase({ busyTimeoutMs: busyTimeoutForRemaining(deadlineAt - openedAt) });

@@ -18,6 +18,7 @@ import {
   exchangeContentHash,
 } from "./continuity-store.js";
 import { ensureModelBudgetSchema } from "./model-budget.js";
+import { CURRENT_SCHEMA_VERSION } from "./schema-version.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
 import { appendExchangeEvidence } from "./continuity-evidence.js";
 
@@ -184,6 +185,80 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
   // The bounded wait must be in force for the schema/migration pass below, not
   // only for the caller's own statements (issue #162 R3).
   const db = openWriteDb(dbPath, options.busyTimeoutMs);
+  // Issue #166 — the migration pass below runs only when the FILE is older than
+  // this code. It used to run on every open, and it is not free: on a 92 MB
+  // fixture one open cost 1,040 ms, almost all of it data backfill with nothing
+  // left to do, under the write lock. Five hooks opening that database at
+  // SessionStart is where a 930 ms lock wait and a skipped capture came from.
+  // `MEMEX_SCHEMA_ALWAYS_MIGRATE=1` forces the pass: a repair switch for a file
+  // whose recorded version no longer matches what it actually contains, and what
+  // the tests that fabricate an older-shape database on purpose set.
+  if (
+    process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE !== "1" &&
+    schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION
+  ) return db;
+  // ONE transaction for the whole list, with the version written inside it: the
+  // file is marked current only if every migration committed, so an interrupted
+  // upgrade re-runs the pass from the start instead of skipping the rest for
+  // ever. Nested `db.transaction()` calls inside the pass become savepoints.
+  db.transaction(() => {
+    runSchemaMigrations(db);
+    db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+  }).immediate();
+  return db;
+}
+
+/**
+ * Issue #166 — apply the migration pass ONCE, outside anyone's budget.
+ *
+ * `memex update` calls this (through the installed root's dist) right after the
+ * runtime dependencies are materialized, because the alternative is what was
+ * observed: the first session after an update opens the database with five hooks
+ * at once, the first connection runs the new-table migration under the write
+ * lock, and the continuity hook waits 930 ms and gives up `busy`.
+ *
+ * Returns whether anything had to be migrated, so the caller can say so.
+ */
+export function applySchemaMigrations(
+  options: { dbPath?: string } = {},
+): { migrated: boolean; version: number; dbPath: string } {
+  const dbPath = options.dbPath ?? getDbPath();
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  let before = 0;
+  try {
+    const probe = openWriteDb(dbPath);
+    try {
+      before = schemaVersionOf(probe);
+    } finally {
+      probe.close();
+    }
+  } catch {
+    // An unreadable file is the migration's problem, not the probe's.
+    before = 0;
+  }
+  const db = initDatabase({ dbPath: options.dbPath });
+  db.close();
+  return { migrated: before < CURRENT_SCHEMA_VERSION, version: CURRENT_SCHEMA_VERSION, dbPath };
+}
+
+/** The schema version the FILE carries; 0 for a database this code never wrote. */
+function schemaVersionOf(db: Database.Database): number {
+  try {
+    const value = Number(db.pragma("user_version", { simple: true }));
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Every schema migration, in order — additive and idempotent, so a partial pass
+ * costs nothing but a repeat. Called only when the file is behind
+ * CURRENT_SCHEMA_VERSION, which is why adding anything here REQUIRES bumping
+ * that constant (src/schema-version.ts); a test fingerprints this list and fails
+ * until both move together.
+ */
+function runSchemaMigrations(db: Database.Database): void {
 
   // Create exchanges table
   db.exec(`
@@ -971,7 +1046,6 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
   // Continuity creates memory_jobs because the budget migration adds only
   // nullable correlation columns to that queue.
   ensureModelBudgetSchema(db);
-  return db;
 }
 
 export function insertExchange(

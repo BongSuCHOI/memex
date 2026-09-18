@@ -4,7 +4,50 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## 0.7.25 - 2026-09-18
 
-Three doctor readings that were wrong about a healthy install (#165).
+Hook budgets that fit a slow machine, and three doctor readings that were wrong
+about a healthy install (#166, #165).
+
+### Hooks
+
+- The host timeouts in hooks.json are raised where Codex allows it — SessionStart,
+  Stop, Interrupt and PostCompact to 10 s, PreCompact to 15 s — and the hook
+  budget is now DERIVED from the event's timeout minus one fixed 150 ms exit
+  margin: 9,850 ms, 14,850 ms, and 2,850 ms for SessionEnd, which Codex clamps to
+  3 s and warns above. `MEMEX_HOOK_BUDGET_MS` still overrides. One lock wait may
+  now take 2,500 ms (was 800 ms) and still never eats the exit margin. The doctor's
+  expected-hooks table and HOOK_HOST_TIMEOUT_MS are pinned to hooks.json by a test.
+  0.7.24 spent 2,000 ms of a 3 s timeout and reserved a second for an exit that
+  costs tens of ms; on a machine whose fixed cost before the first database call is
+  1.45-1.9 s, that budget was gone before the capture phase and three of three
+  captures were skipped with `db_wait_ms: 0`.
+- The ingest pre-check no longer calls an exhausted budget an oversize delta. When
+  less than the 100 ms reserve (was 300 ms) remains, the outcome is `deadline`;
+  `oversize` is reserved for a delta that genuinely cannot be ingested. The
+  observed SessionEnd reported "132399 pending bytes exceed the remaining 267 ms
+  hook budget" for 6.6 ms of ingest, because 267 - 300 is negative.
+- The done row carries `startup_ms`: process entry to just before the first
+  database call. That fixed cost is what decides whether a budget is generous or
+  already spent, and it was invisible.
+
+### Database
+
+- `initDatabase()` runs the migration list only when the FILE is behind the code,
+  gated on `PRAGMA user_version` against `CURRENT_SCHEMA_VERSION`
+  (src/schema-version.ts), and records the version inside the same transaction as
+  the migrations. It used to run every migration on every open: measured on a
+  92 MB fixture with 15,000 exchanges, one open cost 1,040 ms cold / 415 ms warm —
+  the DDL under 1 ms, the rest data backfill with nothing left to do, under the
+  write lock (`UPDATE exchanges SET project_id …` 371 ms, a per-row metadata
+  UPDATE 197 ms over 15,000 calls, 173 ms of COMMIT, a 146 ms driving scan). The
+  same open on a current file now costs about 2 ms. Five hooks opening that
+  database at SessionStart is where the reported 930 ms lock wait came from.
+  Adding or changing a migration requires bumping CURRENT_SCHEMA_VERSION: a test
+  fingerprints the statements the pass executes and fails until it moves.
+- `memex update` applies the migration once, after materializing dependencies and
+  through the newly installed root's build, printing `Schema migrated for <version>`
+  or `Schema already current`. Also available as
+  `node scripts/migrate-schema.mjs [--root <plugin root>]`. It is best effort: the
+  migration is idempotent and every entry point still runs it.
 
 ### Doctor
 
@@ -23,6 +66,13 @@ Three doctor readings that were wrong about a healthy install (#165).
   write lock when the hook gave up sits past the hook's window and was skipped
   ("no worker transaction overlapped this hook"), while a transaction that had
   already finished before the hook began was named as the holder.
+- `hook-latency` warns when a COMPLETED run reports a skipped capture. Any done
+  row whose outcome is not one of ok/daemon/fallback/empty-prompt/skipped —
+  busy, deadline, oversize, error — is now counted and named
+  (`3 skipped (busy 1, deadline 1, oversize 1) last error: …`), beside the
+  existing kill and lock-wait verdicts rather than instead of them, and the ok
+  line reports `max startup N ms` from the new `startup_ms`. The machine that
+  skipped three of three captures was told `ok: 4 hook run(s) completed`.
 - `capture-gap` decides warn/ok from EVERY marker, not from the first 500 the
   scan returns. 500 old telemetry-only PostCompact markers ahead of one
   unprocessed Stop reported `501 skipped capture(s)` with `status: ok`: the

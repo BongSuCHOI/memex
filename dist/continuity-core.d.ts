@@ -21,7 +21,7 @@ export declare const CAPTURE_CHUNK_BYTES: number;
 export declare const DEFAULT_MAX_CAPSULE_CHARS = 12000;
 /** `MEMEX_CAPSULE_MAX_CHARS` override, parsed like the model-budget env caps. */
 export declare function capsuleMaxChars(): number;
-export { busyTimeoutForRemaining, hookBudgetMs, hookIngestBytesPerMs, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
+export { busyTimeoutForRemaining, hookBudgetMs, hookHostTimeoutMs, hookIngestBytesPerMs, ingestFitsBudget, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_EXIT_MARGIN_MS, HOOK_HOST_TIMEOUT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_INGEST_RESERVE_MS, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
 export type CaptureKind = "stop" | "interrupt" | "precompact" | "final";
 export type LifecycleSource = "startup" | "resume" | "clear" | "compact";
 export type ResidentFactRevision = [string, number, number];

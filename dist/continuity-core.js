@@ -9,7 +9,7 @@ import { initDatabase, recordRecallEvent } from "./db.js";
 import { fitsContextBudget, REHYDRATION_CONTEXT_LIMITS, wrapMemoryContext, } from "./context-envelope.js";
 import { getMemexHome, getSessionsRoot } from "./paths.js";
 import { recordHookDone, recordHookStart } from "./observe-hook-event.js";
-import { busyTimeoutForRemaining, captureGapAlreadyRecorded, hookBudgetMs, hookIngestBytesPerMs, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, markCaptureGapRecorded, HOOK_INGEST_RESERVE_MS, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
+import { busyTimeoutForRemaining, captureGapAlreadyRecorded, hookBudgetMs, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, markCaptureGapRecorded, ingestFitsBudget, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
 import { deleteCaptureGapMarker, listEpochAdvanceMarkers, pruneCaptureGapMarkers, writeCaptureGapMarker, CAPTURE_GAP_MARKER_MAX_AGE_MS, } from "./capture-gap-markers.js";
 import { isConversationExcludedSession } from "./conversation-policy.js";
 import { CAPSULE_POLICY_VERSION, capsulePageIsCurrent, commitCapsulePage } from "./continuity-evidence.js";
@@ -60,7 +60,7 @@ export function capsuleMaxChars() {
 // predicate live in a leaf module so `memex doctor` can quote the same numbers
 // without importing better-sqlite3. Re-exported here because the hook scripts
 // load exactly one module from dist.
-export { busyTimeoutForRemaining, hookBudgetMs, hookIngestBytesPerMs, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
+export { busyTimeoutForRemaining, hookBudgetMs, hookHostTimeoutMs, hookIngestBytesPerMs, ingestFitsBudget, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_EXIT_MARGIN_MS, HOOK_HOST_TIMEOUT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_INGEST_RESERVE_MS, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
 const capsuleStringListSchema = { type: "array", items: { type: "string" } };
 const capsuleEvidenceListSchema = {
     type: "array",
@@ -496,8 +496,12 @@ export function captureTranscriptPrefix(db, input) {
             sourceBytes = 0;
         }
         const bytesToIngest = Math.max(0, sourceBytes - Number(pending?.copied_byte_end ?? 0));
-        if (bytesToIngest / hookIngestBytesPerMs() > remaining - HOOK_INGEST_RESERVE_MS) {
-            throw new HookOversizeCapture(`${bytesToIngest} pending bytes exceed the remaining ${remaining} ms hook budget`);
+        // #166: "too large" and "too late" are different diagnoses — see ingestFitsBudget.
+        const fit = ingestFitsBudget(bytesToIngest, remaining);
+        if (!fit.ok) {
+            throw fit.reason === "deadline"
+                ? new HookDeadlineExceeded(fit.detail)
+                : new HookOversizeCapture(fit.detail);
         }
     }
     const capture = db.transaction(() => captureTranscriptPrefixInTransaction(db, input));
@@ -2210,6 +2214,9 @@ export function handleContinuityHook(payloadValue, options = {}) {
         ts: new Date(startedAt).toISOString(),
     });
     let dbWaitMs = 0;
+    // #166: everything between process entry and the first database call — the
+    // fixed cost that ate the whole 0.7.24 budget on the reporting machine.
+    let startupMs = null;
     let finalized = false;
     const ownDb = !options.db;
     let db;
@@ -2224,6 +2231,7 @@ export function handleContinuityHook(payloadValue, options = {}) {
             outcome,
             durationMs: Date.now() - startedAt,
             dbWaitMs,
+            ...(startupMs === null ? {} : { startupMs }),
             ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
         });
     };
@@ -2247,6 +2255,7 @@ export function handleContinuityHook(payloadValue, options = {}) {
         pruneCaptureGapMarkers();
     };
     const openedAt = Date.now();
+    startupMs = Math.max(0, openedAt - startedAt);
     try {
         db = options.db ??
             initDatabase({ busyTimeoutMs: busyTimeoutForRemaining(deadlineAt - openedAt) });

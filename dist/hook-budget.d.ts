@@ -1,5 +1,24 @@
-export declare const HOOK_BUDGET_MS = 2000;
-export declare const HOOK_BUDGET_PRECOMPACT_MS = 3800;
+/**
+ * The host timeout each event's continuity entry is registered with, in ms.
+ *
+ * Must equal hooks.json and the doctor's LIFECYCLE_COMMANDS table — a test pins
+ * all three together (#166), because a budget derived from a timeout the host
+ * does not actually grant is worse than no budget at all.
+ */
+export declare const HOOK_HOST_TIMEOUT_MS: Record<string, number>;
+/** Events with no entry above (and UserPromptSubmit, which has no host timer). */
+export declare const HOOK_HOST_TIMEOUT_DEFAULT_MS = 10000;
+/**
+ * The only slack between the budget and the host's timer: process exit, not work.
+ *
+ * It is also the margin every lock wait leaves behind, so a wait can never end
+ * after the deadline it was derived from.
+ */
+export declare const HOOK_EXIT_MARGIN_MS = 150;
+/** The host timeout for an event, in ms. */
+export declare function hookHostTimeoutMs(hookEventName: string): number;
+export declare const HOOK_BUDGET_MS: number;
+export declare const HOOK_BUDGET_PRECOMPACT_MS: number;
 /** A second bounded attempt (the capture-gap row) needs at least this much. */
 export declare const HOOK_RETRY_FLOOR_MS = 150;
 /**
@@ -16,13 +35,35 @@ export declare const HOOK_PHASE_FLOOR_MS = 150;
 /** Assumed ingest throughput for the oversize pre-check, bytes per millisecond. */
 export declare const HOOK_INGEST_BYTES_PER_MS = 20000;
 /** Headroom subtracted from the remaining budget by the oversize pre-check. */
-export declare const HOOK_INGEST_RESERVE_MS = 300;
+export declare const HOOK_INGEST_RESERVE_MS = 100;
 /** Total budget for one hook invocation, `MEMEX_HOOK_BUDGET_MS`-overridable. */
 export declare function hookBudgetMs(hookEventName: string): number;
 /** `MEMEX_HOOK_INGEST_BYTES_PER_MS` override for the oversize pre-check. */
 export declare function hookIngestBytesPerMs(): number;
 /** The busy_timeout one DB wait may use, derived from what is left. */
 export declare function busyTimeoutForRemaining(remainingMs: number): number;
+/** Why a pending delta may not be ingested now. */
+export type IngestFit = {
+    ok: true;
+} | {
+    ok: false;
+    reason: "deadline" | "oversize";
+    detail: string;
+};
+/**
+ * Issue #166 — can this delta be ingested inside what is LEFT of the budget?
+ *
+ * The two answers are different diagnoses and must not be confused. `oversize`
+ * says the transcript is too large for a healthy budget; `deadline` says there
+ * is no budget left, whatever the size. The 0.7.24 pre-check subtracted the
+ * reserve from the remaining time and compared the result to the ingest
+ * estimate, so a budget that was already gone came back as `oversize`: the work
+ * Mac's SessionEnd reported "132399 pending bytes exceed the remaining 267 ms
+ * hook budget" for 6.6 ms of ingest, because 267 - 300 is negative. The reserve
+ * is headroom, not a size limit — when less than the reserve remains, the
+ * outcome is the deadline.
+ */
+export declare function ingestFitsBudget(bytesToIngest: number, remainingMs: number, bytesPerMs?: number): IngestFit;
 /** The hook ran out of its own budget; the caller must not commit anything. */
 export declare class HookDeadlineExceeded extends Error {
     readonly code = "MEMEX_HOOK_DEADLINE";

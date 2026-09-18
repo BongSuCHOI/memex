@@ -2,10 +2,16 @@
 
 schema의 최종 소유자는 `src/db.ts`와 `src/continuity-store.ts`입니다. 이 문서는 모든 SQL 세부를 복제하기보다 **외부 동작에 영향을 주는 persisted state와 transaction invariant**를 설명합니다.
 
-Continuity DB schema version은 `PRAGMA user_version = 7`와
-`continuity_schema_meta.schema_version = 7`에 함께 기록됩니다. Migration은 기존 table/rowid를
-rewrite하지 않는 additive DDL + deterministic backfill이며, version은 전체 migration transaction의
-마지막에만 기록됩니다.
+Continuity DB schema version은 `continuity_schema_meta.schema_version = 7`에 기록됩니다.
+`PRAGMA user_version`은 0.7.25부터 **전체 스키마 pass**의 버전(`CURRENT_SCHEMA_VERSION = 8`,
+`src/schema-version.ts`)을 담습니다 — `initDatabase()`는 파일의 값이 그보다 낮을 때에만 migration
+목록을 실행하고, 목록과 같은 transaction 안에서 그 값을 기록합니다(#166). 그래서 이미 최신인 파일은
+열 때 DDL도 backfill도 실행하지 않습니다(92 MB·15,000 exchange 기준 약 415 ms → 약 2 ms).
+`ensureContinuitySchema`를 단독으로 호출하면 여전히 자신의 단계 표식으로 `7`을 쓰므로, 전체 pass의
+버전은 의도적으로 그보다 큽니다. Migration은 기존 table/rowid를 rewrite하지 않는 additive DDL +
+deterministic backfill이며, version은 전체 migration transaction의 마지막에만 기록됩니다.
+migration을 추가·변경하면 `CURRENT_SCHEMA_VERSION`과 `MIGRATION_LIST_FINGERPRINT`를 같은 커밋에서
+올려야 합니다(`test/schema-fast-path.test.ts`).
 
 기본 DB:
 

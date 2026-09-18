@@ -70,9 +70,16 @@ export interface LifecycleCommandConfig {
 }
 
 /** Relative-to-plugin-root commands registered for each event. */
+/**
+ * Issue #166 — `timeout` is the HOST timeout in seconds, and the hook budget in
+ * src/hook-budget.ts is derived from it (timeout - one exit margin). These
+ * numbers, hooks.json and HOOK_HOST_TIMEOUT_MS are pinned together by a test:
+ * a budget derived from a timeout the host does not grant is worse than none.
+ * SessionEnd stays at 3 s because Codex clamps it there and warns above it.
+ */
 export const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]> = {
   SessionStart: [
-    { script: "scripts/continuity-hook.js", matcher: "startup|resume|clear|compact", timeout: 3 },
+    { script: "scripts/continuity-hook.js", matcher: "startup|resume|clear|compact", timeout: 10 },
     { script: "scripts/version-drift-check.js", async: true, matcher: "startup|resume" },
     { script: "cli/memex.js", args: ["sync", "--background"], async: true, matcher: "startup|resume" },
     { script: "scripts/sync-import-hook.js", async: true, matcher: "startup|resume" },
@@ -82,10 +89,10 @@ export const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]> = {
     { script: "scripts/inject-context-hook.sh" },
     { script: "scripts/session-start-maintenance.js", args: ["--prompt"], async: true },
   ],
-  Stop: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
-  Interrupt: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
-  PreCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 5 }],
-  PostCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 3 }],
+  Stop: [{ script: "scripts/continuity-hook.js", timeout: 10 }],
+  Interrupt: [{ script: "scripts/continuity-hook.js", timeout: 10 }],
+  PreCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 15 }],
+  PostCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 10 }],
   // Issue #35: SessionEnd is still a bounded final capture fence — the export
   // is a SEPARATE async entry that Codex does not wait for. It is a no-op
   // unless cross-device sync is enabled AND durable state changed since the
@@ -1027,6 +1034,44 @@ const HOOK_KILL_GRACE_MS = 10_000;
 const HOOK_DB_WAIT_WARN_MS = 1_000;
 /** UserPromptSubmit has no host timeout in hooks.json — never claim one. */
 const UNTIMED_HOOK_EVENTS = new Set(["UserPromptSubmit"]);
+/**
+ * Issue #166 — done-row outcomes that did NOT skip anything.
+ *
+ * Every other outcome (busy, deadline, oversize, error) is a hook that ran to
+ * completion and captured nothing. The work Mac skipped 3 of 3 captures and
+ * `hook-latency` reported `ok: 4 hook run(s) completed, max 8755 ms`, because
+ * the check read durations and lock waits but never the outcome it had itself
+ * written. `daemon`/`fallback`/`empty-prompt`/`skipped` are the inject hook's
+ * normal paths, not skipped captures.
+ */
+const HEALTHY_HOOK_OUTCOMES = new Set([
+  "ok", "daemon", "fallback", "empty-prompt", "skipped",
+]);
+/** Fixed order so the counts read the same way every time. */
+const SKIPPED_OUTCOME_ORDER = ["busy", "deadline", "oversize", "error"];
+
+/** `3 skipped (busy 1, deadline 1, oversize 1) last error: …`, or "". */
+function skippedCaptureLine(rows: HookEventRow[]): string {
+  const skipped = rows.filter((row) =>
+    row.phase === "done" && !HEALTHY_HOOK_OUTCOMES.has(String(row.outcome ?? "")));
+  if (skipped.length === 0) return "";
+  const counts = new Map<string, number>();
+  for (const row of skipped) {
+    const outcome = String(row.outcome ?? "unknown");
+    counts.set(outcome, (counts.get(outcome) ?? 0) + 1);
+  }
+  const ordered = [...counts.keys()].sort((a, b) => {
+    const ai = SKIPPED_OUTCOME_ORDER.indexOf(a);
+    const bi = SKIPPED_OUTCOME_ORDER.indexOf(b);
+    if (ai !== bi) return (ai < 0 ? SKIPPED_OUTCOME_ORDER.length : ai) -
+      (bi < 0 ? SKIPPED_OUTCOME_ORDER.length : bi);
+    return a < b ? -1 : 1;
+  });
+  const lastError = [...skipped].reverse().find((row) => String(row.error ?? "").trim());
+  return ` — ${skipped.length} skipped (${
+    ordered.map((outcome) => `${outcome} ${counts.get(outcome)}`).join(", ")})` +
+    (lastError ? ` last error: ${String(lastError.error).slice(0, 120)}` : "");
+}
 
 interface WorkerTransactionRow {
   ts?: string;
@@ -1094,11 +1139,15 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
   const killed: HookEventRow[] = [];
   const waited: HookEventRow[] = [];
   let maxDuration = 0;
+  let maxStartup: number | null = null;
   let paired = 0;
   rows.forEach((row, index) => {
     if (row.phase === "done") {
       paired++;
       maxDuration = Math.max(maxDuration, Number(row.duration_ms ?? 0));
+      if (typeof row.startup_ms === "number" && Number.isFinite(row.startup_ms)) {
+        maxStartup = Math.max(maxStartup ?? 0, row.startup_ms);
+      }
       if (Number(row.db_wait_ms ?? 0) > HOOK_DB_WAIT_WARN_MS) waited.push(row);
       return;
     }
@@ -1119,6 +1168,9 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
   if (rows.length === 0) {
     return { name, status: "ok", detail: "no hook runs observed yet" };
   }
+  // #166: a skipped capture has a done row, so it is never a reason to stop
+  // reporting a kill or a lock wait — it is added to whichever verdict applies.
+  const skipped = skippedCaptureLine(rows);
   if (killed.length > 0) {
     const markers = (() => {
       try {
@@ -1140,7 +1192,7 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
       status: "warn",
       detail:
         `${killed.length} hook run(s) started and never finished — killed by host ` +
-        `(latest ${worst.event} ${worst.ts}); ${markers} capture gap marker(s)` + holder,
+        `(latest ${worst.event} ${worst.ts}); ${markers} capture gap marker(s)` + holder + skipped,
     };
   }
   if (waited.length > 0) {
@@ -1158,15 +1210,19 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
       detail:
         `hooks waited on the database — ${waited.length}/${paired} runs over ` +
         `${HOOK_DB_WAIT_WARN_MS} ms (worst ${worst.event} ${
-          Math.round(Number(worst.db_wait_ms))} ms, ${worst.ts})` + holder,
+          Math.round(Number(worst.db_wait_ms))} ms, ${worst.ts})` + holder + skipped,
     };
   }
   // Nothing went wrong, so there is no hook to correlate a holder with: naming
   // one here was the inaccuracy, not the omission.
   return {
     name,
-    status: "ok",
-    detail: `${paired} hook run(s) completed, max ${maxDuration} ms`,
+    // A completed run that captured nothing is not ok, however fast it was (#166).
+    status: skipped ? "warn" : "ok",
+    detail: `${paired} hook run(s) completed, max ${maxDuration} ms` +
+      // #166: the fixed cost before the first database call, per machine. This
+      // is the number that decides whether a budget is generous or already gone.
+      (maxStartup === null ? "" : `, max startup ${maxStartup} ms`) + skipped,
   };
 }
 

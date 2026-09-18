@@ -76,6 +76,13 @@ export function recordHookEvent(
     outcome?: unknown;
     durationMs?: unknown;
     dbWaitMs?: unknown;
+    /**
+     * Issue #166 — process entry to just before the FIRST database call: node
+     * start, dist import, the connection open with its migration pass. On the
+     * machine that reported this it was 1.45-1.9 s, which is why a 2,000 ms
+     * budget ran out with `db_wait_ms: 0`. A budget is unreadable without it.
+     */
+    startupMs?: unknown;
     error?: unknown;
   },
 ): boolean {
@@ -101,6 +108,7 @@ export function recordHookEvent(
         ...(typeof info.outcome === "string" && info.outcome ? { outcome: info.outcome } : {}),
         ...(num(info.durationMs) !== undefined ? { duration_ms: num(info.durationMs) } : {}),
         ...(num(info.dbWaitMs) !== undefined ? { db_wait_ms: num(info.dbWaitMs) } : {}),
+        ...(num(info.startupMs) !== undefined ? { startup_ms: num(info.startupMs) } : {}),
         ...(errorText ? { error: errorText } : {}),
       }) + "\n";
     const file = observationLogPath();
@@ -140,6 +148,7 @@ export function recordHookDone(
     outcome: HookOutcome;
     durationMs?: number;
     dbWaitMs?: number;
+    startupMs?: number;
     error?: unknown;
     detail?: unknown;
   },
@@ -158,6 +167,8 @@ export interface HookEventRow {
   outcome?: string;
   duration_ms?: number;
   db_wait_ms?: number;
+  /** #166: entry -> first database call, the hook's fixed cost on this machine. */
+  startup_ms?: number;
   error?: string;
 }
 

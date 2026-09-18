@@ -37,6 +37,24 @@ export declare function initDatabase(options?: {
     busyTimeoutMs?: number;
     dbPath?: string;
 }): Database.Database;
+/**
+ * Issue #166 — apply the migration pass ONCE, outside anyone's budget.
+ *
+ * `memex update` calls this (through the installed root's dist) right after the
+ * runtime dependencies are materialized, because the alternative is what was
+ * observed: the first session after an update opens the database with five hooks
+ * at once, the first connection runs the new-table migration under the write
+ * lock, and the continuity hook waits 930 ms and gives up `busy`.
+ *
+ * Returns whether anything had to be migrated, so the caller can say so.
+ */
+export declare function applySchemaMigrations(options?: {
+    dbPath?: string;
+}): {
+    migrated: boolean;
+    version: number;
+    dbPath: string;
+};
 export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): boolean;
 export declare function isMemexRecallToolName(toolName: string): boolean;
 /**

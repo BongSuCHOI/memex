@@ -100,6 +100,24 @@ try {
       console.error(`Runtime dependencies are not materialized. Run: ${suggestion}`);
     }
   }
+
+  // Issue #166: apply the schema migration HERE, with the new build and nothing
+  // waiting on the write lock. Otherwise the first session after an update opens
+  // the database with five hooks at once and the continuity hook waits on
+  // whichever connection won and is running the new-table migration — 930 ms,
+  // then `busy`, then a skipped capture. Best effort: the migration is idempotent
+  // and every entry point still runs it, so a failure here only loses the timing.
+  const migrateRoot = installedRoot && fs.existsSync(path.join(installedRoot, 'dist', 'db.js'))
+    ? installedRoot
+    : path.join(HERE, '..');
+  const migrate = spawnSync(
+    process.execPath,
+    [path.join(HERE, 'migrate-schema.mjs'), '--root', migrateRoot],
+    { stdio: 'inherit' },
+  );
+  if (migrate.error || migrate.status !== 0) {
+    console.error('Schema will be migrated by the first session instead (run: memex doctor to confirm).');
+  }
   console.log('Memex data was preserved. Restart Codex to load updated MCP, skills, and hooks.');
 } catch (error) {
   console.error(`memex update failed: ${error.message}`);

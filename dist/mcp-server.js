@@ -12790,6 +12790,15 @@ var init_model_budget = __esm({
   }
 });
 
+// src/schema-version.ts
+var CURRENT_SCHEMA_VERSION;
+var init_schema_version = __esm({
+  "src/schema-version.ts"() {
+    "use strict";
+    CURRENT_SCHEMA_VERSION = 8;
+  }
+});
+
 // src/db.ts
 import Database2 from "better-sqlite3";
 import { createHash as createHash5, randomUUID as randomUUID4 } from "node:crypto";
@@ -12853,6 +12862,22 @@ function initDatabase(options = {}) {
   if (options.dbPath) fs6.mkdirSync(path9.dirname(dbPath), { recursive: true });
   else ensureDbDir();
   const db = openWriteDb(dbPath, options.busyTimeoutMs);
+  if (process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE !== "1" && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION) return db;
+  db.transaction(() => {
+    runSchemaMigrations(db);
+    db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+  }).immediate();
+  return db;
+}
+function schemaVersionOf(db) {
+  try {
+    const value = Number(db.pragma("user_version", { simple: true }));
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+function runSchemaMigrations(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS exchanges (
       id TEXT PRIMARY KEY,
@@ -13427,7 +13452,6 @@ function initDatabase(options = {}) {
   `);
   ensureContinuitySchema(db);
   ensureModelBudgetSchema(db);
-  return db;
 }
 function hashRecallPrompt(prompt) {
   return createHash5("sha256").update(prompt, "utf8").digest("hex");
@@ -13466,6 +13490,7 @@ var init_db = __esm({
     init_embeddings();
     init_continuity_store();
     init_model_budget();
+    init_schema_version();
     init_continuity_identity();
     init_continuity_evidence();
     VEC_INT8_SCALE = 127;
@@ -28704,6 +28729,7 @@ function recordHookEvent(event, info) {
       ...typeof info.outcome === "string" && info.outcome ? { outcome: info.outcome } : {},
       ...num(info.durationMs) !== void 0 ? { duration_ms: num(info.durationMs) } : {},
       ...num(info.dbWaitMs) !== void 0 ? { db_wait_ms: num(info.dbWaitMs) } : {},
+      ...num(info.startupMs) !== void 0 ? { startup_ms: num(info.startupMs) } : {},
       ...errorText ? { error: errorText } : {}
     }) + "\n";
     const file = observationLogPath();
@@ -28725,6 +28751,20 @@ if (process.argv[1] && path11.basename(process.argv[1]) === "observe-hook-event.
 }
 
 // src/hook-budget.ts
+var HOOK_HOST_TIMEOUT_MS = {
+  SessionStart: 1e4,
+  Stop: 1e4,
+  Interrupt: 1e4,
+  PostCompact: 1e4,
+  PreCompact: 15e3,
+  // Codex clamps SessionEnd to 3 s and warns above it (#110/#112), so this one
+  // event keeps the small budget however generous the others become.
+  SessionEnd: 3e3
+};
+var HOOK_HOST_TIMEOUT_DEFAULT_MS = 1e4;
+var HOOK_EXIT_MARGIN_MS = 150;
+var HOOK_BUDGET_MS = HOOK_HOST_TIMEOUT_DEFAULT_MS - HOOK_EXIT_MARGIN_MS;
+var HOOK_BUDGET_PRECOMPACT_MS = HOOK_HOST_TIMEOUT_MS.PreCompact - HOOK_EXIT_MARGIN_MS;
 var CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
 function isSqliteBusyError(error2) {
   const code = error2?.code;

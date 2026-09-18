@@ -7,6 +7,13 @@ import { pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import { initDatabase } from "../src/db.js";
 
+// Issue #166 — `initDatabase()` skips the migration pass when the file already
+// records the current schema version. This file fabricates older-shape databases
+// and rows (a legacy trigger, a pre-migration column, a row a current writer
+// would never write) and then expects the next open to repair them, so it opts
+// into the full pass explicitly instead of depending on the old every-open cost.
+process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE = "1";
+
 let root: string;
 let dbPath: string;
 
