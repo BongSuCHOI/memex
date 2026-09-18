@@ -9,13 +9,17 @@ about a healthy install (#166, #165).
 
 ### Hooks
 
-- The host timeouts in hooks.json are raised where Codex allows it — SessionStart,
-  Stop, Interrupt and PostCompact to 10 s, PreCompact to 15 s — and the hook
-  budget is now DERIVED from the event's timeout minus one fixed 150 ms exit
-  margin: 9,850 ms, 14,850 ms, and 2,850 ms for SessionEnd, which Codex clamps to
-  3 s and warns above. `MEMEX_HOOK_BUDGET_MS` still overrides. One lock wait may
-  now take 2,500 ms (was 800 ms) and still never eats the exit margin. The doctor's
-  expected-hooks table and HOOK_HOST_TIMEOUT_MS are pinned to hooks.json by a test.
+- The host timeouts in hooks.json are raised where the host allows it —
+  SessionStart, Stop and PostCompact to 10 s, PreCompact to 15 s — and the hook
+  budget is now DERIVED from the event's timeout minus one fixed 300 ms exit
+  margin: 9,700 ms, 14,700 ms, and 2,700 ms for SessionEnd and Interrupt, the only
+  two events the host caps at 3 s (learn.chatgpt.com/docs/hooks: every other hook
+  defaults to and accepts up to 600 s). `MEMEX_HOOK_BUDGET_MS` still overrides.
+  One lock wait may now take 2,500 ms (was 800 ms) and still never eats the exit
+  margin, which is 300 ms rather than 150 because the done row lands at the
+  deadline by design and node's teardown after it measured ~200 ms: a 3 s hook was
+  observed exiting 2,916 ms in, 84 ms from a kill. The doctor's expected-hooks
+  table and HOOK_HOST_TIMEOUT_MS are pinned to hooks.json by a per-event test.
   0.7.24 spent 2,000 ms of a 3 s timeout and reserved a second for an exit that
   costs tens of ms; on a machine whose fixed cost before the first database call is
   1.45-1.9 s, that budget was gone before the capture phase and three of three
@@ -42,7 +46,11 @@ about a healthy install (#166, #165).
   same open on a current file now costs about 2 ms. Five hooks opening that
   database at SessionStart is where the reported 930 ms lock wait came from.
   Adding or changing a migration requires bumping CURRENT_SCHEMA_VERSION: a test
-  fingerprints the statements the pass executes and fails until it moves.
+  fingerprints the statements the pass executes and fails until it moves. A
+  migration that swallows its own failure by design (the taxonomy uniqueness
+  index, which must not brick startup on a database that refuses the constraint)
+  keeps the version from being recorded at all, so the next open retries the
+  repair instead of taking the fast path over an unrepaired file for ever.
 - `memex update` applies the migration once, after materializing dependencies and
   through the newly installed root's build, printing `Schema migrated for <version>`
   or `Schema already current`. Also available as

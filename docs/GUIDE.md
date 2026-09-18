@@ -185,7 +185,7 @@ node scripts/translate-facts.mjs
 | SessionStart(clear/compact) | 새 `context_epoch`; compact는 Capsule/tail baton/current revisions 즉시 복원 | 새 retrieval/model 대기 없음 |
 | UserPromptSubmit | scoped retrieval, relevance/dedup/budget, recall receipt, `additionalContext` | no-match는 무주입 |
 | Stop | incremental journal append + closed fence | 10초 timeout(0.7.25, #166), model/embedding 0 |
-| Interrupt | incremental journal append + interrupted/open fence | 10초 timeout(0.7.25, #166), 완료 처리 금지 |
+| Interrupt | incremental journal append + interrupted/open fence | 3초 timeout(호스트 상한), 완료 처리 금지 |
 | PreCompact(manual/auto) | fsync + immutable prefix checkpoint + carry freeze | 15초 timeout(0.7.25, #166) |
 | PostCompact(manual/auto) | telemetry/diagnostics only | correctness 비의존, 10초 timeout(0.7.25, #166) |
 | SessionEnd | final delta + final fence, 그리고 **별도 항목**으로 크로스디바이스 export | fence는 3초 timeout(Codex가 3초로 고정하므로 0.7.25에서도 유일하게 그대로입니다)·foreground extraction 없음. export 항목은 3초 timeout의 동기 훅입니다 — Codex는 SessionEnd에서 async 훅을 어차피 동기로 실행하고(0.6.7까지는 그 경고가 세션 종료마다 떴습니다) SessionEnd timeout을 3초로 고정합니다(더 크면 경고). 동기화가 꺼져 있거나(기본) 마지막 export 이후 durable 변경이 없으면 0.2초 안에 no-op으로 끝나고, 3초 안에 끝나지 않은 export는 다음 유지보수 wake가 다시 시도합니다 |
@@ -193,9 +193,15 @@ node scripts/translate-facts.mjs
 ### Hook 예산과 capture gap marker (0.7.24, #162 / 0.7.25, #166)
 
 훅에는 **프로세스 진입 시점부터 세는 예산 하나**가 있습니다. 예산은 **그 이벤트의 host timeout에서
-고정 exit margin 150 ms를 뺀 값**입니다(0.7.25, #166) — SessionStart·Stop·Interrupt·PostCompact는
-10초 timeout에 9,850 ms, PreCompact는 15초에 14,850 ms, SessionEnd는 Codex가 3초로 고정하므로
-2,850 ms입니다(`MEMEX_HOOK_BUDGET_MS`로 변경). stdin 읽기·`dist` import·DB 연결·migration·capture
+고정 exit margin 300 ms를 뺀 값**입니다(0.7.25, #166) — SessionStart·Stop·PostCompact는 10초
+timeout에 9,700 ms, PreCompact는 15초에 14,700 ms, **SessionEnd와 Interrupt는 3초에 2,700 ms**입니다
+(`MEMEX_HOOK_BUDGET_MS`로 변경). host timeout 상한은 이벤트마다 다릅니다
+([learn.chatgpt.com/docs/hooks](https://learn.chatgpt.com/docs/hooks)): SessionStart·Stop·PreCompact·
+PostCompact·UserPromptSubmit과 tool hook은 기본값·상한이 모두 600초이고, **SessionEnd와 Interrupt만
+기본 1초·상한 3초**입니다 — 그래서 이 두 이벤트만 예산이 작습니다. 호스트가 주지 않는 timeout에서
+예산을 파생하면 capture 도중에 죽으므로 상한을 넘겨 적지 않습니다. exit margin이 150 ms였을 때
+SessionEnd 훅이 2,916 ms에 종료해 kill까지 84 ms만 남은 것이 관측되어(done row 이후 node 종료에만
+약 200 ms) 300 ms로 잡았습니다 — margin은 예산 **이후**의 시간을 덮는 값입니다. stdin 읽기·`dist` import·DB 연결·migration·capture
 트랜잭션이 모두 그 안에서 끝나야 합니다.
 
 0.7.24까지는 3초 timeout에 2,000 ms를 쓰고 1초를 남겼는데, 종료에 실제로 필요한 것은 수십 ms인
@@ -799,7 +805,7 @@ rm -rf "$(memex home)"
 
 ### 업그레이드
 
-기존 설치(0.4.0 이하 DB)를 최신 plugin으로 올리면 Continuity schema `7`으로 additive migration이 한 번 실행됩니다(`continuity_schema_meta`의 `schema_version`으로 확인). 0.7.25부터는 `memex update`가 이 migration을 미리 적용하고, 그 뒤의 hook/MCP/CLI 실행은 파일의 `PRAGMA user_version`이 현재 전체 스키마 버전(`8`)이면 migration 목록 자체를 건너뜁니다(#166) — 열 때마다 backfill을 다시 돌리던 비용(92 MB·15,000 exchange 기준 약 415 ms, 쓰기 잠금 보유)이 약 2 ms로 줄어듭니다. migration이 하나라도 바뀌면 `CURRENT_SCHEMA_VERSION`을 올려야 하며, 그러지 않으면 테스트가 실패합니다. 중단되면 다음 실행에서 이어서 재실행되며 released row와 rowid는 보존됩니다. 절차는 §12와 같고, 완료 후 Codex를 재시작하십시오. v7은 현재 남은 evidence를 한 번 replay하며 기존 Capsule은 첫 새 projection commit까지 유지합니다. 구버전 진행 중 Capsule job의 lease는 폐기됩니다. Migration·cursor 계약은 [SCHEMA.md](SCHEMA.md#sequence-cursors-schema-v7)에 있습니다.
+기존 설치(0.4.0 이하 DB)를 최신 plugin으로 올리면 Continuity schema `7`으로 additive migration이 한 번 실행됩니다(`continuity_schema_meta`의 `schema_version`으로 확인). 0.7.25부터는 `memex update`가 이 migration을 미리 적용하고, 그 뒤의 hook/MCP/CLI 실행은 파일의 `PRAGMA user_version`이 현재 전체 스키마 버전(`8`)이면 migration 목록 자체를 건너뜁니다(#166) — 열 때마다 backfill을 다시 돌리던 비용(92 MB·15,000 exchange 기준 약 415 ms, 쓰기 잠금 보유)이 약 2 ms로 줄어듭니다. migration이 하나라도 바뀌면 `CURRENT_SCHEMA_VERSION`을 올려야 하며, 그러지 않으면 테스트가 실패합니다. 실패를 일부러 삼키는 migration(taxonomy 유일성 인덱스)이 건너뛰어지면 버전을 **기록하지 않아** 다음 열기에서 다시 시도합니다(#166 리뷰). 중단되면 다음 실행에서 이어서 재실행되며 released row와 rowid는 보존됩니다. 절차는 §12와 같고, 완료 후 Codex를 재시작하십시오. v7은 현재 남은 evidence를 한 번 replay하며 기존 Capsule은 첫 새 projection commit까지 유지합니다. 구버전 진행 중 Capsule job의 lease는 폐기됩니다. Migration·cursor 계약은 [SCHEMA.md](SCHEMA.md#sequence-cursors-schema-v7)에 있습니다.
 
 ```bash
 memex update
@@ -1168,7 +1174,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | --- | --- | --- |
 | `MEMEX_STRICT_CAPTURE` | unset | `1`이면 capture 실패가 `capture_gaps` 대신 hook 실패가 됩니다 |
 | `MEMEX_SCHEMA_ALWAYS_MIGRATE` (0.7.25, #166) | 없음 | `1`이면 `initDatabase()`가 파일의 `PRAGMA user_version`을 무시하고 migration 목록을 항상 실행합니다. 기록된 버전이 실제 내용과 맞지 않게 된 파일의 **복구 스위치**이며, 일부러 구버전 모양을 만들어 재수리를 확인하는 테스트가 이 값을 씁니다 |
-| `MEMEX_HOOK_BUDGET_MS` (0.7.24, #162) | host timeout − 150 ms: `9850` (PreCompact `14850`, SessionEnd `2850`) | continuity hook 하나의 **총** 예산(프로세스 진입부터). 모든 DB 대기가 여기서 파생되며 한 번의 잠금 대기는 최대 2,500 ms입니다. 기본값은 hooks.json의 host timeout에서 파생되므로(0.7.25, #166) 직접 지정할 때에도 그 timeout보다 반드시 작게 두십시오 |
+| `MEMEX_HOOK_BUDGET_MS` (0.7.24, #162) | host timeout − 300 ms: `9700` (PreCompact `14700`, SessionEnd·Interrupt `2700`) | continuity hook 하나의 **총** 예산(프로세스 진입부터). 모든 DB 대기가 여기서 파생되며 한 번의 잠금 대기는 최대 2,500 ms입니다. 기본값은 hooks.json의 host timeout에서 파생되므로(0.7.25, #166) 직접 지정할 때에도 그 timeout보다 반드시 작게 두십시오 |
 | `MEMEX_HOOK_INGEST_BYTES_PER_MS` (0.7.24, #162) | `20000` | capture 전 oversize 사전 점검이 쓰는 가정 처리량(B/ms). 남은 예산 안에 들어오지 않는 delta는 쓰기 잠금을 아예 잡지 않고 marker 경로(`outcome: oversize`)로 갑니다 |
 | `MEMEX_CONTINUITY_NO_WAKE` | unset | detached worker wake 비활성 (테스트/진단) |
 | `MEMEX_CAPSULE_MAX_CHARS` | `12000` (하한 `2000`) | Work Capsule 한 세대의 bounded storage size. 초과 patch는 버리지 않고 우선순위대로 절단해 저장하고 `work_capsules.truncated`에 기록 |

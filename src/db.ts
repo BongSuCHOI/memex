@@ -202,7 +202,19 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
   // upgrade re-runs the pass from the start instead of skipping the rest for
   // ever. Nested `db.transaction()` calls inside the pass become savepoints.
   db.transaction(() => {
-    runSchemaMigrations(db);
+    const skipped = runSchemaMigrations(db);
+    if (skipped.length > 0) {
+      // A migration that swallows its own failure (see the taxonomy uniqueness
+      // pass below) must not let the version claim it ran: recording 8 over a
+      // skipped repair puts every later open on the fast path, so the repair
+      // could never be retried. The version stays behind and the next open tries
+      // again — the pass is idempotent, so a retry costs only the pass (#166 review).
+      console.error(
+        `[memex] schema version ${CURRENT_SCHEMA_VERSION} not recorded: ${
+          skipped.join(", ")} did not complete; the next open will retry`,
+      );
+      return;
+    }
     db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
   }).immediate();
   return db;
@@ -257,8 +269,13 @@ function schemaVersionOf(db: Database.Database): number {
  * CURRENT_SCHEMA_VERSION, which is why adding anything here REQUIRES bumping
  * that constant (src/schema-version.ts); a test fingerprints this list and fails
  * until both move together.
+ *
+ * Returns the migrations that DID NOT complete. A migration that deliberately
+ * swallows its own failure belongs in that list: the caller then leaves the
+ * recorded version behind so the next open retries it (#166 review).
  */
-function runSchemaMigrations(db: Database.Database): void {
+function runSchemaMigrations(db: Database.Database): string[] {
+  const skipped: string[] = [];
 
   // Create exchanges table
   db.exec(`
@@ -953,8 +970,10 @@ function runSchemaMigrations(db: Database.Database): void {
   } catch (error) {
     // A database that still refuses the constraint must not brick startup:
     // createDomain/createCategory keep their oldest-row re-select, which is
-    // correct (only slower to converge) without the index.
+    // correct (only slower to converge) without the index. But the pass is then
+    // INCOMPLETE, and the caller must not record the schema version over it.
     console.error("ontology taxonomy uniqueness migration skipped:", error);
+    skipped.push("ontology-taxonomy-uniqueness");
   }
 
   db.exec(`
@@ -1046,6 +1065,7 @@ function runSchemaMigrations(db: Database.Database): void {
   // Continuity creates memory_jobs because the budget migration adds only
   // nullable correlation columns to that queue.
   ensureModelBudgetSchema(db);
+  return skipped;
 }
 
 export function insertExchange(

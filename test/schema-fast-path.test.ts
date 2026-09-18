@@ -164,6 +164,55 @@ describe("schema migration fast path (issue #166)", () => {
     expect(fastMs).toBeLessThan(migrateMs);
   }, 60_000);
 
+  /**
+   * #166 review — the taxonomy uniqueness migration swallows its own failure on
+   * purpose ("a database that still refuses the constraint must not brick
+   * startup"), but the version write was unconditional: a database left without
+   * the unique index recorded version 8 anyway, and the fast path then never
+   * retried the repair. A swallowed failure may cost the repair, never the retry.
+   */
+  it("does not record the schema version when a migration was skipped", () => {
+    const indexExists = (name: string): boolean => {
+      const db = new Database(dbPath, { readonly: true });
+      try {
+        return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(name);
+      } finally {
+        db.close();
+      }
+    };
+
+    initDatabase().close();
+    const seed = new Database(dbPath);
+    // A file from before the domain index existed, carrying two case-duplicate
+    // domains whose categories collide when the merge reassigns them: the merge
+    // transaction rolls back on the category index that IS already there.
+    seed.exec(`
+      DROP INDEX IF EXISTS idx_ontology_domains_name;
+      INSERT INTO ontology_domains (id, name, created_at)
+        VALUES ('d-keep', 'Infra', '2026-01-01T00:00:00.000Z'),
+               ('d-dup', 'infra', '2026-01-02T00:00:00.000Z');
+      INSERT INTO ontology_categories (id, domain_id, name, created_at)
+        VALUES ('c-keep', 'd-keep', 'Cache', '2026-01-01T00:00:00.000Z'),
+               ('c-dup', 'd-dup', 'Cache', '2026-01-02T00:00:00.000Z');
+      PRAGMA user_version = 0;
+    `);
+    seed.close();
+
+    initDatabase().close();
+    // The repair did not happen, so the version must not claim it did.
+    expect(indexExists("idx_ontology_domains_name")).toBe(false);
+    expect(userVersion()).toBeLessThan(CURRENT_SCHEMA_VERSION);
+
+    // Remove the conflict: the next open completes the pass and records it.
+    const repaired = new Database(dbPath);
+    repaired.exec("DELETE FROM ontology_categories WHERE id = 'c-dup'; DELETE FROM ontology_domains WHERE id = 'd-dup';");
+    repaired.close();
+
+    initDatabase().close();
+    expect(indexExists("idx_ontology_domains_name")).toBe(true);
+    expect(userVersion()).toBe(CURRENT_SCHEMA_VERSION);
+  });
+
   it("pins the migration list to CURRENT_SCHEMA_VERSION", () => {
     // A future migration that forgets the version bump would open every existing
     // database on the fast path and never run — so the list is fingerprinted.

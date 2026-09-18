@@ -83,10 +83,13 @@ describe('Continuity lifecycle hooks contract', () => {
    * and the budget is derived from it — the numbers may not drift apart again.
    */
   it('host timeouts are the raised limits, and the doctor table and budget agree (#166)', () => {
+    // learn.chatgpt.com/docs/hooks: the default and the maximum are 600 s for
+    // SessionStart, Stop, PreCompact, PostCompact, UserPromptSubmit and the tool
+    // hooks. ONLY SessionEnd and Interrupt default to 1 s and accept at most 3 s,
+    // so those two are the hooks that may not be widened (#166 review).
     const expected: Record<string, number> = {
-      SessionStart: 10, Stop: 10, Interrupt: 10, PostCompact: 10, PreCompact: 15,
-      // Codex clamps SessionEnd to 3 s and warns above it (#110/#112).
-      SessionEnd: 3,
+      SessionStart: 10, Stop: 10, PostCompact: 10, PreCompact: 15,
+      Interrupt: 3, SessionEnd: 3,
     };
     for (const [event, seconds] of Object.entries(expected)) {
       const manifest = hooksFile()[event][0].hooks[0];

@@ -13,7 +13,10 @@ export interface LifecycleCommandConfig {
  * src/hook-budget.ts is derived from it (timeout - one exit margin). These
  * numbers, hooks.json and HOOK_HOST_TIMEOUT_MS are pinned together by a test:
  * a budget derived from a timeout the host does not grant is worse than none.
- * SessionEnd stays at 3 s because Codex clamps it there and warns above it.
+ * Per learn.chatgpt.com/docs/hooks the cap is 600 s for SessionStart, Stop,
+ * PreCompact, PostCompact and UserPromptSubmit; SessionEnd and Interrupt are the
+ * only two events that default to 1 s and accept at most 3 s, so those two stay
+ * at 3 (#166 review).
  */
 export declare const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]>;
 /** Hook scripts that must be registered for cross-device sync to work at all. */

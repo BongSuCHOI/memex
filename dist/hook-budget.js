@@ -30,11 +30,15 @@
 export const HOOK_HOST_TIMEOUT_MS = {
     SessionStart: 10_000,
     Stop: 10_000,
-    Interrupt: 10_000,
     PostCompact: 10_000,
     PreCompact: 15_000,
-    // Codex clamps SessionEnd to 3 s and warns above it (#110/#112), so this one
-    // event keeps the small budget however generous the others become.
+    // learn.chatgpt.com/docs/hooks: SessionStart, Stop, PreCompact, PostCompact,
+    // UserPromptSubmit and the tool hooks default to 600 s and accept up to 600 s.
+    // ONLY SessionEnd and Interrupt default to 1 s and accept at most 3 s, so
+    // these two keep the small budget however generous the others become — asking
+    // for more would be a budget the host never granted, and a hook killed
+    // mid-capture is the failure the budget exists to prevent (#166 review).
+    Interrupt: 3_000,
     SessionEnd: 3_000,
 };
 /** Events with no entry above (and UserPromptSubmit, which has no host timer). */
@@ -44,8 +48,13 @@ export const HOOK_HOST_TIMEOUT_DEFAULT_MS = 10_000;
  *
  * It is also the margin every lock wait leaves behind, so a wait can never end
  * after the deadline it was derived from.
+ *
+ * 300 ms, not 150: the done row lands AT the deadline by design, and node's own
+ * teardown after it measured ~200 ms, so a SessionEnd or Interrupt hook against a
+ * 3 s host cap was observed exiting at 2,916 ms — 84 ms from a kill. The margin
+ * covers what happens after the budget, so it has to cover that.
  */
-export const HOOK_EXIT_MARGIN_MS = 150;
+export const HOOK_EXIT_MARGIN_MS = 300;
 /** The host timeout for an event, in ms. */
 export function hookHostTimeoutMs(hookEventName) {
     return HOOK_HOST_TIMEOUT_MS[hookEventName] ?? HOOK_HOST_TIMEOUT_DEFAULT_MS;

@@ -182,7 +182,7 @@ describe("continuity hook budget (issue #162)", () => {
 
     expect(run.status).toBe(0);
     expect(run.stdout).toBe("");
-    // 10 s host timeout, 9,850 ms budget (#166): the process must exit inside the
+    // 10 s host timeout, 9,700 ms budget (#166): the process must exit inside the
     // budget with room for the host's timer, however long the lock is held.
     expect(elapsed).toBeLessThan(9_900);
 
@@ -229,23 +229,25 @@ describe("continuity hook budget (issue #162)", () => {
     expect(markerFiles()).toHaveLength(1);
   });
 
-  it("SessionEnd keeps Codex's 3 s clamp and exits inside it under a held lock (#166)", () => {
+  it.each(["SessionEnd", "Interrupt"])("%s keeps the host's 3 s cap and exits inside it under a held lock (#166)", (event) => {
     holdWriteLock();
     const startedAt = Date.now();
     const run = spawnSync(process.execPath, [HOOK], {
-      input: payload("SessionEnd"),
+      input: payload(event),
       encoding: "utf8",
       env: childEnv(),
     });
     const elapsed = Date.now() - startedAt;
     expect(run.status).toBe(0);
     expect(run.stdout).toBe("");
-    // 3 s host timeout, 2,850 ms budget: the one hook Codex will not let grow.
+    // 3 s host cap, 2,700 ms budget: the two hooks the host will not let grow.
+    // The budget bounds the hook's OWN clock (the done row); the exit margin is
+    // what has to cover node's teardown after it, so both are asserted.
+    const done = hookEventRows().find((row) => row.phase === "done")!;
+    expect(done.outcome).toBe("busy");
+    expect(Number(done.duration_ms)).toBeLessThanOrEqual(hookBudgetMs(event));
     expect(elapsed).toBeLessThan(2_900);
     expect(markerFiles()).toHaveLength(1);
-    expect(
-      hookEventRows().some((row) => row.phase === "done" && row.outcome === "busy"),
-    ).toBe(true);
   });
 
   it("SessionStart(resume) on a busy database exits 0 with empty stdout and a marker", () => {
@@ -476,21 +478,27 @@ describe("continuity hook budget (issue #162)", () => {
  */
 describe("hook budget derivation (issue #166)", () => {
   it("derives the budget from the event's host timeout minus one exit margin", () => {
-    expect(HOOK_EXIT_MARGIN_MS).toBe(150);
+    // The margin covers what happens AFTER the budget — node's teardown measured
+    // ~200 ms, and 150 ms left a 3 s hook exiting 84 ms before its kill.
+    expect(HOOK_EXIT_MARGIN_MS).toBe(300);
     expect(hookHostTimeoutMs("Stop")).toBe(10_000);
-    expect(hookBudgetMs("Stop")).toBe(9_850);
-    expect(hookBudgetMs("SessionStart")).toBe(9_850);
-    expect(hookBudgetMs("PostCompact")).toBe(9_850);
-    expect(hookBudgetMs("PreCompact")).toBe(14_850);
-    // SessionEnd keeps the 3 s clamp Codex enforces, so it keeps the small one.
-    expect(hookBudgetMs("SessionEnd")).toBe(2_850);
+    expect(hookBudgetMs("Stop")).toBe(9_700);
+    expect(hookBudgetMs("SessionStart")).toBe(9_700);
+    expect(hookBudgetMs("PostCompact")).toBe(9_700);
+    expect(hookBudgetMs("PreCompact")).toBe(14_700);
+    // SessionEnd and Interrupt are the two hooks the host caps at 3 s, so they
+    // keep the small budget however generous the others become (#166 review).
+    expect(hookHostTimeoutMs("SessionEnd")).toBe(3_000);
+    expect(hookBudgetMs("SessionEnd")).toBe(2_700);
+    expect(hookHostTimeoutMs("Interrupt")).toBe(3_000);
+    expect(hookBudgetMs("Interrupt")).toBe(2_700);
     // The measured fixed cost must still leave a phase floor behind it.
     expect(hookBudgetMs("Stop") - 1_900).toBeGreaterThanOrEqual(HOOK_PHASE_FLOOR_MS);
     expect(hookBudgetMs("SessionEnd") - 1_900).toBeGreaterThanOrEqual(HOOK_PHASE_FLOOR_MS);
     // One lock wait may be generous now, but never eats the exit margin.
-    expect(busyTimeoutForRemaining(9_850)).toBe(2_500);
-    expect(busyTimeoutForRemaining(1_000)).toBe(850);
-    expect(busyTimeoutForRemaining(100)).toBe(0);
+    expect(busyTimeoutForRemaining(9_700)).toBe(2_500);
+    expect(busyTimeoutForRemaining(1_000)).toBe(700);
+    expect(busyTimeoutForRemaining(250)).toBe(0);
     process.env.MEMEX_HOOK_BUDGET_MS = "1234";
     expect(hookBudgetMs("Stop")).toBe(1_234);
     delete process.env.MEMEX_HOOK_BUDGET_MS;

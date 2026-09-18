@@ -12865,7 +12865,13 @@ function initDatabase(options = {}) {
   const db = openWriteDb(dbPath, options.busyTimeoutMs);
   if (process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE !== "1" && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION) return db;
   db.transaction(() => {
-    runSchemaMigrations(db);
+    const skipped = runSchemaMigrations(db);
+    if (skipped.length > 0) {
+      console.error(
+        `[memex] schema version ${CURRENT_SCHEMA_VERSION} not recorded: ${skipped.join(", ")} did not complete; the next open will retry`
+      );
+      return;
+    }
     db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
   }).immediate();
   return db;
@@ -12879,6 +12885,7 @@ function schemaVersionOf(db) {
   }
 }
 function runSchemaMigrations(db) {
+  const skipped = [];
   db.exec(`
     CREATE TABLE IF NOT EXISTS exchanges (
       id TEXT PRIMARY KEY,
@@ -13381,6 +13388,7 @@ function runSchemaMigrations(db) {
     );
   } catch (error2) {
     console.error("ontology taxonomy uniqueness migration skipped:", error2);
+    skipped.push("ontology-taxonomy-uniqueness");
   }
   db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_relations (
@@ -13453,6 +13461,7 @@ function runSchemaMigrations(db) {
   `);
   ensureContinuitySchema(db);
   ensureModelBudgetSchema(db);
+  return skipped;
 }
 function hashRecallPrompt(prompt) {
   return createHash5("sha256").update(prompt, "utf8").digest("hex");
@@ -28755,15 +28764,19 @@ if (process.argv[1] && path11.basename(process.argv[1]) === "observe-hook-event.
 var HOOK_HOST_TIMEOUT_MS = {
   SessionStart: 1e4,
   Stop: 1e4,
-  Interrupt: 1e4,
   PostCompact: 1e4,
   PreCompact: 15e3,
-  // Codex clamps SessionEnd to 3 s and warns above it (#110/#112), so this one
-  // event keeps the small budget however generous the others become.
+  // learn.chatgpt.com/docs/hooks: SessionStart, Stop, PreCompact, PostCompact,
+  // UserPromptSubmit and the tool hooks default to 600 s and accept up to 600 s.
+  // ONLY SessionEnd and Interrupt default to 1 s and accept at most 3 s, so
+  // these two keep the small budget however generous the others become — asking
+  // for more would be a budget the host never granted, and a hook killed
+  // mid-capture is the failure the budget exists to prevent (#166 review).
+  Interrupt: 3e3,
   SessionEnd: 3e3
 };
 var HOOK_HOST_TIMEOUT_DEFAULT_MS = 1e4;
-var HOOK_EXIT_MARGIN_MS = 150;
+var HOOK_EXIT_MARGIN_MS = 300;
 var HOOK_BUDGET_MS = HOOK_HOST_TIMEOUT_DEFAULT_MS - HOOK_EXIT_MARGIN_MS;
 var HOOK_BUDGET_PRECOMPACT_MS = HOOK_HOST_TIMEOUT_MS.PreCompact - HOOK_EXIT_MARGIN_MS;
 var CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");

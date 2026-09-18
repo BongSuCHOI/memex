@@ -11,7 +11,10 @@ Continuity DB schema version은 `continuity_schema_meta.schema_version = 7`에 �
 버전은 의도적으로 그보다 큽니다. Migration은 기존 table/rowid를 rewrite하지 않는 additive DDL +
 deterministic backfill이며, version은 전체 migration transaction의 마지막에만 기록됩니다.
 migration을 추가·변경하면 `CURRENT_SCHEMA_VERSION`과 `MIGRATION_LIST_FINGERPRINT`를 같은 커밋에서
-올려야 합니다(`test/schema-fast-path.test.ts`).
+올려야 합니다(`test/schema-fast-path.test.ts`). 실패를 **일부러 삼키는** migration(taxonomy 유일성
+인덱스는 제약을 거부하는 DB에서도 시작을 막지 않습니다)이 하나라도 건너뛰어지면 `user_version`을
+기록하지 않고 한 줄을 남깁니다 — 수리되지 않은 파일에 버전을 기록하면 fast path가 재시도를 영구히
+막기 때문입니다(#166 리뷰).
 
 기본 DB:
 

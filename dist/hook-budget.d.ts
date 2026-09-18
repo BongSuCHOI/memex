@@ -13,8 +13,13 @@ export declare const HOOK_HOST_TIMEOUT_DEFAULT_MS = 10000;
  *
  * It is also the margin every lock wait leaves behind, so a wait can never end
  * after the deadline it was derived from.
+ *
+ * 300 ms, not 150: the done row lands AT the deadline by design, and node's own
+ * teardown after it measured ~200 ms, so a SessionEnd or Interrupt hook against a
+ * 3 s host cap was observed exiting at 2,916 ms — 84 ms from a kill. The margin
+ * covers what happens after the budget, so it has to cover that.
  */
-export declare const HOOK_EXIT_MARGIN_MS = 150;
+export declare const HOOK_EXIT_MARGIN_MS = 300;
 /** The host timeout for an event, in ms. */
 export declare function hookHostTimeoutMs(hookEventName: string): number;
 export declare const HOOK_BUDGET_MS: number;
