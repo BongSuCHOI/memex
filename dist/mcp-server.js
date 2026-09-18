@@ -12863,10 +12863,15 @@ function initDatabase(options = {}) {
   if (options.dbPath) fs6.mkdirSync(path9.dirname(dbPath), { recursive: true });
   else ensureDbDir();
   const db = openWriteDb(dbPath, options.busyTimeoutMs);
-  if (process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE !== "1" && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION) return db;
+  const force = process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE === "1";
+  if (!force && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION) return db;
   db.transaction(() => {
+    if (!force && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION) {
+      options.onSchemaMigration?.({ ran: false, skipped: [] });
+      return;
+    }
     const skipped = runSchemaMigrations(db);
-    if (skipped.length > 0) options.onSkippedMigrations?.(skipped);
+    options.onSchemaMigration?.({ ran: true, skipped });
     if (skipped.length > 0) {
       console.error(
         `[memex] schema version ${CURRENT_SCHEMA_VERSION} not recorded: ${skipped.join(", ")} did not complete; the next open will retry`

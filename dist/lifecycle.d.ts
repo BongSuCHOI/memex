@@ -123,6 +123,15 @@ export interface Check {
  */
 export declare const CAPTURE_GAP_LOSS_STATEMENT = "continuity/extraction of the tail is pending #163";
 export declare function captureGapCheck(): Check;
+/**
+ * Issue #166 (third review) — `memex update` can exit 3 with "the migration did
+ * not complete", and doctor had nothing to say about it.
+ *
+ * Read-only and migration-free by construction: it opens the file with the same
+ * lightweight connection `countRows` uses and reads one pragma. A doctor run must
+ * never be the thing that migrates a database.
+ */
+export declare function schemaVersionCheck(): Check;
 export declare function hookLatencyCheck(now?: number): Check;
 export declare function llmModelCheck(): Check;
 export declare function doctor(): Promise<DoctorReport>;

@@ -37,11 +37,15 @@ export declare function initDatabase(options?: {
     busyTimeoutMs?: number;
     dbPath?: string;
     /**
-     * #166 review — the names of migrations the pass swallowed a failure for.
-     * Callers that REPORT the outcome (`applySchemaMigrations`, `memex update`)
-     * need them; the hooks that just want a connection ignore them.
+     * #166 review — what the pass did: whether it RAN at all (a concurrent opener
+     * may have migrated first) and which migrations swallowed a failure. Callers
+     * that REPORT the outcome (`applySchemaMigrations`, `memex update`) need it;
+     * the hooks that just want a connection ignore it.
      */
-    onSkippedMigrations?: (skipped: string[]) => void;
+    onSchemaMigration?: (outcome: {
+        ran: boolean;
+        skipped: string[];
+    }) => void;
 }): Database.Database;
 /**
  * Issue #166 — apply the migration pass ONCE, outside anyone's budget.

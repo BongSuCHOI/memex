@@ -28,8 +28,9 @@ import {
   type CaptureGapMarker,
   type LoadedCaptureGapMarker,
 } from "./capture-gap-markers.js";
-import { hookBudgetMs } from "./hook-budget.js";
+import { hookBudgetMs, hookHostTimeoutMs } from "./hook-budget.js";
 import { getDbPath, getMemexHome } from "./paths.js";
+import { CURRENT_SCHEMA_VERSION } from "./schema-version.js";
 import { resolveLlmSelection } from "./model-settings.js";
 import { readExportStatus } from "./sync-export.js";
 import { readSyncConfig, resolveSyncDir } from "./sync-paths.js";
@@ -1029,10 +1030,54 @@ export function captureGapCheck(): Check {
   };
 }
 
+/**
+ * Issue #166 (third review) — `memex update` can exit 3 with "the migration did
+ * not complete", and doctor had nothing to say about it.
+ *
+ * Read-only and migration-free by construction: it opens the file with the same
+ * lightweight connection `countRows` uses and reads one pragma. A doctor run must
+ * never be the thing that migrates a database.
+ */
+export function schemaVersionCheck(): Check {
+  const name = "schema-version";
+  const dbPath = getDbPath();
+  if (!fs.existsSync(dbPath)) {
+    return { name, status: "ok", detail: `unknown (no database yet at ${dbPath})` };
+  }
+  let recorded: number | null = null;
+  try {
+    const Database = runtimeRequire("better-sqlite3");
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      const value = Number(db.pragma("user_version", { simple: true }));
+      recorded = Number.isFinite(value) ? value : null;
+    } finally {
+      db.close();
+    }
+  } catch {
+    recorded = null;
+  }
+  if (recorded === null) {
+    return { name, status: "warn", detail: `unknown (cannot read ${dbPath})` };
+  }
+  if (recorded >= CURRENT_SCHEMA_VERSION) {
+    return { name, status: "ok", detail: `current (v${CURRENT_SCHEMA_VERSION})` };
+  }
+  return {
+    name,
+    status: "warn",
+    detail:
+      `pending migrations: v${recorded} < v${CURRENT_SCHEMA_VERSION} — will retry on ` +
+      "next open or run memex update",
+  };
+}
+
 /** A hook killed by the host is only visible as a start row with no done row. */
 const HOOK_LATENCY_WINDOW_ROWS = 200;
 /** Grace beyond the budget before an unpaired start counts as a host kill. */
 const HOOK_KILL_GRACE_MS = 10_000;
+/** Skew allowance on the END of a killed hook's own window (#166 third review). */
+const HOOK_KILL_WINDOW_MARGIN_MS = 500;
 /** A done row above this much lock wait is worth naming. */
 const HOOK_DB_WAIT_WARN_MS = 1_000;
 /** UserPromptSubmit has no host timeout in hooks.json — never claim one. */
@@ -1052,27 +1097,47 @@ const HEALTHY_HOOK_OUTCOMES = new Set([
 ]);
 /** Fixed order so the counts read the same way every time. */
 const SKIPPED_OUTCOME_ORDER = ["busy", "deadline", "oversize", "error"];
+/**
+ * #166 third review — the inject lane's `error` is not a skipped capture.
+ *
+ * UserPromptSubmit reports `error` when the context was DELIVERED and its
+ * durable recall receipt could not be marked emitted (#44's documented
+ * fallback: the receipt stays `prepared`). It is worth a warning — the
+ * provenance of that emission is broken — but calling it a skipped capture told
+ * the reader a turn had been lost, which it had not.
+ */
+const RECEIPT_FAILURE_EVENTS = new Set(["UserPromptSubmit"]);
 
 /** `3 skipped (busy 1, deadline 1, oversize 1) last error: …`, or "". */
 function skippedCaptureLine(rows: HookEventRow[]): string {
-  const skipped = rows.filter((row) =>
+  const failing = rows.filter((row) =>
     row.phase === "done" && !HEALTHY_HOOK_OUTCOMES.has(String(row.outcome ?? "")));
-  if (skipped.length === 0) return "";
-  const counts = new Map<string, number>();
-  for (const row of skipped) {
-    const outcome = String(row.outcome ?? "unknown");
-    counts.set(outcome, (counts.get(outcome) ?? 0) + 1);
+  const receiptFailures = failing.filter((row) => RECEIPT_FAILURE_EVENTS.has(row.event));
+  const skipped = failing.filter((row) => !RECEIPT_FAILURE_EVENTS.has(row.event));
+  if (failing.length === 0) return "";
+  const parts: string[] = [];
+  if (skipped.length > 0) {
+    const counts = new Map<string, number>();
+    for (const row of skipped) {
+      const outcome = String(row.outcome ?? "unknown");
+      counts.set(outcome, (counts.get(outcome) ?? 0) + 1);
+    }
+    const ordered = [...counts.keys()].sort((a, b) => {
+      const ai = SKIPPED_OUTCOME_ORDER.indexOf(a);
+      const bi = SKIPPED_OUTCOME_ORDER.indexOf(b);
+      if (ai !== bi) return (ai < 0 ? SKIPPED_OUTCOME_ORDER.length : ai) -
+        (bi < 0 ? SKIPPED_OUTCOME_ORDER.length : bi);
+      return a < b ? -1 : 1;
+    });
+    parts.push(`${skipped.length} skipped (${
+      ordered.map((outcome) => `${outcome} ${counts.get(outcome)}`).join(", ")})`);
   }
-  const ordered = [...counts.keys()].sort((a, b) => {
-    const ai = SKIPPED_OUTCOME_ORDER.indexOf(a);
-    const bi = SKIPPED_OUTCOME_ORDER.indexOf(b);
-    if (ai !== bi) return (ai < 0 ? SKIPPED_OUTCOME_ORDER.length : ai) -
-      (bi < 0 ? SKIPPED_OUTCOME_ORDER.length : bi);
-    return a < b ? -1 : 1;
-  });
-  const lastError = [...skipped].reverse().find((row) => String(row.error ?? "").trim());
-  return ` — ${skipped.length} skipped (${
-    ordered.map((outcome) => `${outcome} ${counts.get(outcome)}`).join(", ")})` +
+  if (receiptFailures.length > 0) {
+    parts.push(`${receiptFailures.length} receipt failure${
+      receiptFailures.length === 1 ? "" : "s"} (context delivered)`);
+  }
+  const lastError = [...failing].reverse().find((row) => String(row.error ?? "").trim());
+  return ` — ${parts.join(", ")}` +
     (lastError ? ` last error: ${String(lastError.error).slice(0, 120)}` : "");
 }
 
@@ -1183,12 +1248,14 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
       }
     })();
     const worst = killed[killed.length - 1];
-    // A killed hook has no done row, so its window is its start plus the budget
-    // the host allowed it before the kill.
+    // A killed hook has no done row, so its window is its start plus the time the
+    // HOST allowed it — its timeout, plus a small skew margin. The 10 s grace
+    // above decides "no done row means killed"; using it here made a transaction
+    // that started seconds after the kill a candidate holder (#166 third review).
     const startedAt = Date.parse(worst.ts);
     const holder = workerLockHolderLine({
       fromMs: startedAt,
-      toMs: startedAt + hookBudgetMs(worst.event) + HOOK_KILL_GRACE_MS,
+      toMs: startedAt + hookHostTimeoutMs(worst.event) + HOOK_KILL_WINDOW_MARGIN_MS,
     });
     return {
       name,
@@ -1624,6 +1691,7 @@ export async function doctor(): Promise<DoctorReport> {
   // Issue #162: a hook the host killed, and the captures it skipped.
   checks.push(captureGapCheck());
   checks.push(hookLatencyCheck());
+  checks.push(schemaVersionCheck());
   checks.push(recallProvenanceCheck(recent));
   checks.push(injectionYieldCheck(recent));
   checks.push(llmModelCheck());

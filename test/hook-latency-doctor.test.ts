@@ -351,6 +351,28 @@ describe("doctor hook-latency", () => {
     expect(check.detail).toContain("132399 pending bytes");
   });
 
+  /**
+   * #166 third review — a UserPromptSubmit `error` row is the documented recall
+   * receipt fallback: the context WAS delivered and the receipt stayed `prepared`.
+   * Counting it as a skipped capture told the reader a capture was lost.
+   */
+  it("calls an inject receipt failure what it is, not a skipped capture (#166)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      { ts: "2026-09-18T02:00:00.000Z", event: "UserPromptSubmit", phase: "start", invocation_id: "inv-r", pid: 31 },
+      {
+        ts: "2026-09-18T02:00:01.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-r",
+        pid: 31, outcome: "error", duration_ms: 900, db_wait_ms: 0, startup_ms: 200,
+        error: "prepared receipt not found",
+      },
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-18T02:01:00.000Z"));
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("1 receipt failure (context delivered)");
+    expect(check.detail).not.toContain("skipped");
+    expect(check.detail).toContain("prepared receipt not found");
+  });
+
   it("keeps ok for outcomes that are not skipped captures (#166)", () => {
     writeRows([
       ...paired("inv-a", "Stop"),
@@ -430,6 +452,35 @@ describe("doctor hook-latency", () => {
     expect(detail).toContain("hooks waited on the database");
     expect(detail).not.toContain("applyWorkCapsulePatch");
     expect(detail).toContain("no worker transaction overlapped this hook");
+  });
+
+  /**
+   * #166 third review — the killed-hook correlation window ran to
+   * `budget + 10 s grace`. The grace exists to decide "no done row means killed",
+   * not to widen who could have been holding the lock: a transaction that started
+   * seconds AFTER the host had already killed the hook was named as its holder.
+   */
+  it("correlates a killed hook only inside the host's own timeout (#166 third review)", () => {
+    writeRows([
+      { ts: "2026-09-17T08:00:00.000Z", event: "Stop", phase: "start", invocation_id: "inv-k", pid: 777 },
+      ...paired("inv-a", "Stop"),
+    ]);
+    writeWorkerTransactions([
+      // Held [08:00:12.000, 08:00:14.000]: the host killed this hook at 08:00:10,
+      // so this transaction cannot be what it waited on.
+      { ts: "2026-09-17T08:00:14.000Z", pid: 45, label: "scheduleCapsuleBacklog#2", wait_ms: 5, held_ms: 2_000 },
+    ]);
+    const after = hookLatencyCheck(Date.parse("2026-09-17T08:00:30.000Z")).detail;
+    expect(after).toContain("killed by host");
+    expect(after).not.toContain("scheduleCapsuleBacklog#2");
+    expect(after).toContain("no worker transaction overlapped this hook");
+
+    // A transaction inside the host window is still named.
+    writeWorkerTransactions([
+      { ts: "2026-09-17T08:00:09.000Z", pid: 46, label: "appendSessionEvidence", wait_ms: 5, held_ms: 3_000 },
+    ]);
+    const inside = hookLatencyCheck(Date.parse("2026-09-17T08:00:30.000Z")).detail;
+    expect(inside).toContain("appendSessionEvidence held the write lock for 3000 ms");
   });
 
   it("keeps the ±250 ms skew margin around the hook's window (#165 post-release)", () => {

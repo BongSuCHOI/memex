@@ -30,8 +30,10 @@
  */
 export const CURRENT_SCHEMA_VERSION = 8;
 /**
- * sha256(first 16 hex) of every SQL statement one migration pass executes on a
- * brand-new database, in order. Update it in the SAME commit as
- * CURRENT_SCHEMA_VERSION; see the test named above for how it is computed.
+ * sha256(first 16 hex) of every MIGRATION statement one pass executes on a
+ * brand-new database, in order. The transaction envelope (BEGIN/COMMIT/SAVEPOINT)
+ * and the `PRAGMA user_version` gate are excluded: how the pass is DECIDED is not
+ * a schema change. Update this in the SAME commit as CURRENT_SCHEMA_VERSION; see
+ * the test named above for how it is computed.
  */
-export const MIGRATION_LIST_FINGERPRINT = "2cb2261bac8c3348";
+export const MIGRATION_LIST_FINGERPRINT = "c1b31a2afda9737a";

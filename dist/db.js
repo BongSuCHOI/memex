@@ -144,17 +144,27 @@ export function initDatabase(options = {}) {
     // `MEMEX_SCHEMA_ALWAYS_MIGRATE=1` forces the pass: a repair switch for a file
     // whose recorded version no longer matches what it actually contains, and what
     // the tests that fabricate an older-shape database on purpose set.
-    if (process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE !== "1" &&
-        schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION)
+    const force = process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE === "1";
+    // The cheap check first, outside any lock: the common case (a current file)
+    // must not take the write lock at all — that is the whole point of the gate.
+    if (!force && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION)
         return db;
     // ONE transaction for the whole list, with the version written inside it: the
     // file is marked current only if every migration committed, so an interrupted
     // upgrade re-runs the pass from the start instead of skipping the rest for
     // ever. Nested `db.transaction()` calls inside the pass become savepoints.
     db.transaction(() => {
+        // The AUTHORITATIVE read is here, inside BEGIN IMMEDIATE (#166 third review).
+        // Five hooks and the sync-import open the data root at SessionStart: deciding
+        // outside the lock, every one of them read a version below this build's and
+        // then ran the whole heavy pass in turn — the very contention this gate
+        // exists to remove. The losers now wait out one short lock and find 8.
+        if (!force && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION) {
+            options.onSchemaMigration?.({ ran: false, skipped: [] });
+            return;
+        }
         const skipped = runSchemaMigrations(db);
-        if (skipped.length > 0)
-            options.onSkippedMigrations?.(skipped);
+        options.onSchemaMigration?.({ ran: true, skipped });
         if (skipped.length > 0) {
             // A migration that swallows its own failure (see the taxonomy uniqueness
             // pass below) must not let the version claim it ran: recording 8 over a
@@ -182,24 +192,10 @@ export function initDatabase(options = {}) {
 export function applySchemaMigrations(options = {}) {
     const dbPath = options.dbPath ?? getDbPath();
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    let before = 0;
-    try {
-        const probe = openWriteDb(dbPath);
-        try {
-            before = schemaVersionOf(probe);
-        }
-        finally {
-            probe.close();
-        }
-    }
-    catch {
-        // An unreadable file is the migration's problem, not the probe's.
-        before = 0;
-    }
-    let skipped = [];
+    let outcome = { ran: false, skipped: [] };
     const db = initDatabase({
         dbPath: options.dbPath,
-        onSkippedMigrations: (names) => { skipped = names; },
+        onSchemaMigration: (result) => { outcome = result; },
     });
     // The version this reports is the one the FILE now carries, read back, never
     // the constant this build hoped to reach: with a skipped migration the two
@@ -208,9 +204,11 @@ export function applySchemaMigrations(options = {}) {
     const version = schemaVersionOf(db);
     db.close();
     return {
-        migrated: skipped.length === 0 && before < CURRENT_SCHEMA_VERSION,
+        // What THIS call did, not what it would have had to do: a concurrent opener
+        // may have migrated the file while this one waited on the lock.
+        migrated: outcome.ran && outcome.skipped.length === 0,
         version,
-        skipped,
+        skipped: outcome.skipped,
         dbPath,
     };
 }

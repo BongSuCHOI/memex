@@ -38,7 +38,13 @@ about a healthy install (#166, #165).
 - `initDatabase()` runs the migration list only when the FILE is behind the code,
   gated on `PRAGMA user_version` against `CURRENT_SCHEMA_VERSION`
   (src/schema-version.ts), and records the version inside the same transaction as
-  the migrations. It used to run every migration on every open: measured on a
+  the migrations. That decision is made INSIDE the `BEGIN IMMEDIATE` that runs the
+  pass — a cheap unlocked check still keeps the common case lock-free. Deciding it
+  outside the lock meant the five hooks and the sync-import that open the data root
+  at SessionStart all read a stale version and then ran the whole pass in turn, the
+  contention this gate exists to remove; the losers now wait out one short lock and
+  find nothing to do. `applySchemaMigrations()` reports whether THIS call migrated,
+  not whether a migration was due. It used to run every migration on every open: measured on a
   92 MB fixture with 15,000 exchanges, one open cost 1,040 ms cold / 415 ms warm —
   the DDL under 1 ms, the rest data backfill with nothing left to do, under the
   write lock (`UPDATE exchanges SET project_id …` 371 ms, a per-row metadata
@@ -64,6 +70,20 @@ about a healthy install (#166, #165).
   than aborting — the install itself succeeded, and the migration is idempotent.
 
 ### Doctor
+
+- New check `schema-version`: the file's `PRAGMA user_version` against
+  CURRENT_SCHEMA_VERSION, read through a read-only connection that can never
+  migrate — `current (v8)`, or a warn with
+  `pending migrations: v7 < v8 — will retry on next open or run memex update`.
+  `memex update`'s exit 3 pointed at doctor, which until now had nothing to say.
+- `hook-latency` no longer calls a UserPromptSubmit `error` row a skipped capture.
+  That outcome is #44's documented fallback — the context WAS delivered and only
+  its recall receipt stayed `prepared` — so it is counted and worded as
+  `1 receipt failure (context delivered)`, still a warn.
+- `hook-latency` correlates a killed hook's lock holder inside the host's own
+  timeout (+500 ms of skew), not the budget plus the 10 s kill grace. The grace
+  decides "no done row means killed"; using it as the correlation window let a
+  transaction that started after the kill be named as the holder.
 
 - `inject-output` accepts `context-only`. A last injection that delivered
   Capsule/continuity context with zero facts was reported
