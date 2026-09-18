@@ -8942,14 +8942,7 @@ function parseStoredJson(value) {
     return value;
   }
 }
-function contentHashOfStoredRow(row) {
-  const tools = [...row.tools].sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0).map((tool) => ({
-    id: tool.id,
-    name: tool.toolName,
-    input: parseStoredJson(tool.toolInput),
-    result: tool.toolResult,
-    error: tool.isError
-  }));
+function hashExchangeShape(row, tools) {
   return sha256(
     JSON.stringify({
       user: row.userMessage,
@@ -8958,6 +8951,54 @@ function contentHashOfStoredRow(row) {
       tools
     })
   );
+}
+function byIdBinary(left, right) {
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+function contentHashOfStoredRow(row) {
+  return hashExchangeShape(
+    row,
+    [...row.tools].sort(byIdBinary).map((tool) => ({
+      id: tool.id,
+      name: tool.toolName,
+      input: parseStoredJson(tool.toolInput),
+      result: tool.toolResult,
+      error: tool.isError
+    }))
+  );
+}
+function legacyContentHashes(row) {
+  const hashes = /* @__PURE__ */ new Set();
+  if (row.tools.length === 0) return hashes;
+  const slots = [];
+  row.tools.forEach((tool, index) => {
+    if (tool.toolInput === null) slots.push({ tool: index, field: "toolInput" });
+    if (tool.toolResult === null) slots.push({ tool: index, field: "toolResult" });
+  });
+  const masks = [];
+  if (slots.length === 0) masks.push(0);
+  else if (slots.length <= LEGACY_NULL_COMBINATION_LIMIT) {
+    for (let mask = 0; mask < 1 << slots.length; mask++) masks.push(mask);
+  } else {
+    masks.push(0, (1 << slots.length) - 1 >>> 0);
+  }
+  const orders = [byIdBinary, (l3, r) => l3.id.localeCompare(r.id)];
+  for (const mask of masks) {
+    const rendered = row.tools.map((tool) => ({
+      id: tool.id,
+      name: tool.toolName,
+      input: parseStoredJson(tool.toolInput),
+      result: tool.toolResult,
+      error: tool.isError
+    }));
+    slots.forEach((slot, index) => {
+      if (!(mask & 1 << index)) return;
+      if (slot.field === "toolInput") rendered[slot.tool].input = "";
+      else rendered[slot.tool].result = "";
+    });
+    for (const order of orders) hashes.add(hashExchangeShape(row, [...rendered].sort(order)));
+  }
+  return hashes;
 }
 function columnNames(db, table) {
   return new Set(
@@ -10018,26 +10059,27 @@ function ensureChronicleSchema(db, options) {
   `);
   options.afterMigrationStage?.("chronicle-indexes");
 }
-function storedExchangeHasher(db) {
+function storedExchangeReader(db) {
   const selectTools = db.prepare(`
     SELECT id, tool_name, tool_input, tool_result, is_error
     FROM tool_calls WHERE exchange_id = ?
   `);
-  return (row) => {
-    const tools = selectTools.all(row.id);
-    return contentHashOfStoredRow({
-      userMessage: row.user_message,
-      assistantMessage: row.assistant_message,
-      lineEnd: row.line_end,
-      tools: tools.map((tool) => ({
-        id: tool.id,
-        toolName: tool.tool_name,
-        toolInput: tool.tool_input,
-        toolResult: tool.tool_result,
-        isError: !!tool.is_error
-      }))
-    });
-  };
+  return (row) => ({
+    userMessage: row.user_message,
+    assistantMessage: row.assistant_message,
+    lineEnd: row.line_end,
+    tools: selectTools.all(row.id).map((tool) => ({
+      id: tool.id,
+      toolName: tool.tool_name,
+      toolInput: tool.tool_input,
+      toolResult: tool.tool_result,
+      isError: !!tool.is_error
+    }))
+  });
+}
+function storedExchangeHasher(db) {
+  const read = storedExchangeReader(db);
+  return (row) => contentHashOfStoredRow(read(row));
 }
 function countStaleExchangeContentHashes(db) {
   const rows = db.prepare(
@@ -10062,13 +10104,19 @@ function refreshExchangeMetadata(db, sessionId) {
     SET exchange_seq = ?, content_hash = ?, content_generation = ?
     WHERE id = ?
   `);
-  const hashOf = storedExchangeHasher(db);
+  const read = storedExchangeReader(db);
+  let migratedFormat = 0;
   for (const row of rows) {
     const key = row.session_id ?? `__row__${row.rowid}`;
     const next = (nextBySession.get(key) ?? 0) + 1;
     nextBySession.set(key, Math.max(next, row.exchange_seq));
-    const hash2 = hashOf(row);
-    const changed = !!row.content_hash && row.content_hash !== hash2;
+    const stored = read(row);
+    const hash2 = contentHashOfStoredRow(stored);
+    let changed = !!row.content_hash && row.content_hash !== hash2;
+    if (changed && legacyContentHashes(stored).has(row.content_hash)) {
+      changed = false;
+      migratedFormat++;
+    }
     update.run(
       row.exchange_seq > 0 ? row.exchange_seq : next,
       hash2,
@@ -10076,8 +10124,14 @@ function refreshExchangeMetadata(db, sessionId) {
       row.id
     );
   }
+  if (migratedFormat > 0) {
+    process.stderr.write(
+      `[memex] migrated ${migratedFormat} pre-0.7.26 content hash(es) in place; content generations, evidence and extraction state are unchanged (#169)
+`
+    );
+  }
 }
-var CONTINUITY_SCHEMA_VERSION, CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL, CHRONICLE_EVENT_KINDS, CHRONICLE_COLUMNS;
+var CONTINUITY_SCHEMA_VERSION, CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL, LEGACY_NULL_COMBINATION_LIMIT, CHRONICLE_EVENT_KINDS, CHRONICLE_COLUMNS;
 var init_continuity_store = __esm({
   "src/continuity-store.ts"() {
     "use strict";
@@ -10087,6 +10141,7 @@ var init_continuity_store = __esm({
     init_hook_budget();
     CONTINUITY_SCHEMA_VERSION = 7;
     CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL = `UPDATE capture_gaps SET state = 'recovered', recovered_at = COALESCE(recovered_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), reason = reason || ' \u2014 no transcript, nothing to capture' WHERE state = 'open' AND reason LIKE '%${NO_TRANSCRIPT_CAPTURE_REASON}%'`;
+    LEGACY_NULL_COMBINATION_LIMIT = 6;
     CHRONICLE_EVENT_KINDS = [
       "ASSERTED",
       "CHANGED",

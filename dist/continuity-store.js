@@ -74,6 +74,19 @@ export function storedToolResult(value) {
         return null;
     return String(value);
 }
+/** The one JSON shape every content hash — canonical or legacy — is taken over. */
+function hashExchangeShape(row, tools) {
+    return sha256(JSON.stringify({
+        user: row.userMessage,
+        assistant: row.assistantMessage,
+        lineEnd: row.lineEnd,
+        tools,
+    }));
+}
+/** Code-unit order, which is what SQLite's BINARY collation gives for these ids. */
+function byIdBinary(left, right) {
+    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
 /**
  * The hash over the stored shape of one exchange. Both callers reduce to this,
  * which is what makes "insert then refresh changes nothing" true by construction.
@@ -83,21 +96,93 @@ export function storedToolResult(value) {
  * second way the same two hashes could differ for identical rows.
  */
 function contentHashOfStoredRow(row) {
-    const tools = [...row.tools]
-        .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
-        .map((tool) => ({
+    return hashExchangeShape(row, [...row.tools].sort(byIdBinary).map((tool) => ({
         id: tool.id,
         name: tool.toolName,
         input: parseStoredJson(tool.toolInput),
         result: tool.toolResult,
         error: tool.isError,
-    }));
-    return sha256(JSON.stringify({
-        user: row.userMessage,
-        assistant: row.assistantMessage,
-        lineEnd: row.lineEnd,
-        tools,
-    }));
+    })));
+}
+/** Above this many stored NULLs, only the two uniform renderings are tried. */
+const LEGACY_NULL_COMBINATION_LIMIT = 6;
+/**
+ * Issue #169 (post-fix review) — the hashes a PRE-0.7.26 writer could have left in
+ * `content_hash` for this exact stored row.
+ *
+ * Changing how the hash is computed makes every 0.7.25 row disagree with its own
+ * recompute, and `refreshExchangeMetadata` reads a disagreement as a content
+ * change: upgrading would bump `content_generation` on untouched history and
+ * re-run evidence and extraction for all of it. A hash-FORMAT change is not a
+ * content change, so the refresh checks this set first and, on a match, rewrites
+ * the hash and leaves the generation alone.
+ *
+ * Only the old `insertExchange` could disagree. The old `refreshExchangeMetadata`
+ * already hashed the STORED columns in SQL `ORDER BY id`, which is exactly the
+ * canonical value — so a row last written by the old refresh needs nothing.
+ *
+ * The old insert differed in two ways, and both are reconstructed here:
+ *
+ *  - It hashed the IN-MEMORY value where the row now holds NULL. `""` (and `0` /
+ *    `false` for an input) were hashed raw and stored as NULL, and NULL is not
+ *    invertible — so every stored NULL is tried both ways. That is 2^k for k NULL
+ *    columns, which is why it is capped: above the cap only the two uniform
+ *    renderings are tried, and a row past it falls through to the real-change path
+ *    rather than costing unbounded work.
+ *  - It ordered tools with `localeCompare`. Both orders are tried, because
+ *    `localeCompare` depends on the ICU build that wrote the row and this process
+ *    may collate differently than the one that did.
+ *
+ * `0` / `false` inputs are deliberately NOT reconstructed: no transcript parser
+ * produces them, and including them would multiply the combinations. Such a row
+ * is treated as a real content change — the pre-fix behaviour, once.
+ */
+function legacyContentHashes(row) {
+    const hashes = new Set();
+    // With no tool calls nothing could have differed: same text, same lineEnd, and
+    // an empty tool list orders and renders identically under either algorithm.
+    if (row.tools.length === 0)
+        return hashes;
+    // Every stored NULL the old writer may have hashed as `""` instead.
+    const slots = [];
+    row.tools.forEach((tool, index) => {
+        if (tool.toolInput === null)
+            slots.push({ tool: index, field: "toolInput" });
+        if (tool.toolResult === null)
+            slots.push({ tool: index, field: "toolResult" });
+    });
+    const masks = [];
+    if (slots.length === 0)
+        masks.push(0);
+    else if (slots.length <= LEGACY_NULL_COMBINATION_LIMIT) {
+        for (let mask = 0; mask < 1 << slots.length; mask++)
+            masks.push(mask);
+    }
+    else {
+        // All-NULL and all-empty only: the bound on work a pathological row may cost.
+        masks.push(0, (1 << slots.length) - 1 >>> 0);
+    }
+    const orders = [byIdBinary, (l, r) => l.id.localeCompare(r.id)];
+    for (const mask of masks) {
+        const rendered = row.tools.map((tool) => ({
+            id: tool.id,
+            name: tool.toolName,
+            input: parseStoredJson(tool.toolInput),
+            result: tool.toolResult,
+            error: tool.isError,
+        }));
+        slots.forEach((slot, index) => {
+            if (!(mask & (1 << index)))
+                return;
+            if (slot.field === "toolInput")
+                rendered[slot.tool].input = "";
+            else
+                rendered[slot.tool].result = "";
+        });
+        for (const order of orders)
+            hashes.add(hashExchangeShape(row, [...rendered].sort(order)));
+    }
+    return hashes;
 }
 export function exchangeContentHash(exchange) {
     return contentHashOfStoredRow({
@@ -1270,32 +1355,35 @@ function ensureChronicleSchema(db, options) {
     options.afterMigrationStage?.("chronicle-indexes");
 }
 /**
- * The hash of an exchange AS STORED, prepared once for a whole pass.
+ * One exchange AS STORED, with its `tool_calls` statement prepared once for a
+ * whole pass.
  *
- * #169: `refreshExchangeMetadata` and the invariant that checks it must read the
- * same columns and reduce them the same way, or the check would pass while the
- * pass still rewrote the row. One factory, both callers.
+ * #169: `refreshExchangeMetadata`, the invariant that checks it and the legacy
+ * reconstruction must read the same columns and reduce them the same way, or the
+ * check would pass while the pass still rewrote the row. One reader, all callers.
  */
-function storedExchangeHasher(db) {
+function storedExchangeReader(db) {
     const selectTools = db.prepare(`
     SELECT id, tool_name, tool_input, tool_result, is_error
     FROM tool_calls WHERE exchange_id = ?
   `);
-    return (row) => {
-        const tools = selectTools.all(row.id);
-        return contentHashOfStoredRow({
-            userMessage: row.user_message,
-            assistantMessage: row.assistant_message,
-            lineEnd: row.line_end,
-            tools: tools.map((tool) => ({
-                id: tool.id,
-                toolName: tool.tool_name,
-                toolInput: tool.tool_input,
-                toolResult: tool.tool_result,
-                isError: !!tool.is_error,
-            })),
-        });
-    };
+    return (row) => ({
+        userMessage: row.user_message,
+        assistantMessage: row.assistant_message,
+        lineEnd: row.line_end,
+        tools: selectTools.all(row.id).map((tool) => ({
+            id: tool.id,
+            toolName: tool.tool_name,
+            toolInput: tool.tool_input,
+            toolResult: tool.tool_result,
+            isError: !!tool.is_error,
+        })),
+    });
+}
+/** The canonical hash of one stored exchange. See `storedExchangeReader`. */
+function storedExchangeHasher(db) {
+    const read = storedExchangeReader(db);
+    return (row) => contentHashOfStoredRow(read(row));
 }
 /**
  * #169 — exchanges whose stored `content_hash` is NOT the hash of their stored
@@ -1338,16 +1426,33 @@ export function refreshExchangeMetadata(db, sessionId) {
     // #169: the SAME reduction the writer used. Recomputing the hash from its own
     // copy of the shape is how a stored NULL and a hashed "" drifted apart and
     // bumped the generation of an exchange nothing had touched.
-    const hashOf = storedExchangeHasher(db);
+    const read = storedExchangeReader(db);
+    // #169 (post-fix review): rows whose hash only changed FORMAT, migrated in place.
+    let migratedFormat = 0;
     for (const row of rows) {
         const key = row.session_id ?? `__row__${row.rowid}`;
         const next = (nextBySession.get(key) ?? 0) + 1;
         nextBySession.set(key, Math.max(next, row.exchange_seq));
-        const hash = hashOf(row);
-        const changed = !!row.content_hash && row.content_hash !== hash;
+        const stored = read(row);
+        const hash = contentHashOfStoredRow(stored);
+        let changed = !!row.content_hash && row.content_hash !== hash;
+        if (changed && legacyContentHashes(stored).has(row.content_hash)) {
+            // A hash the PRE-0.7.26 writer produced for this very row: the format
+            // changed, the content did not. Rewrite the hash and leave the generation —
+            // bumping it would re-open evidence and extraction for untouched history on
+            // the first upgrade (and again on every `ensureExtractionTarget`, which
+            // calls this function too).
+            changed = false;
+            migratedFormat++;
+        }
         update.run(row.exchange_seq > 0 ? row.exchange_seq : next, hash, changed
             ? Math.max(1, row.content_generation) + 1
             : row.content_generation > 0 ? row.content_generation : 1, row.id);
+    }
+    if (migratedFormat > 0) {
+        // Once per pass, not per row: on a large root this is thousands of rows.
+        process.stderr.write(`[memex] migrated ${migratedFormat} pre-0.7.26 content hash(es) in place; ` +
+            "content generations, evidence and extraction state are unchanged (#169)\n");
     }
 }
 export function createCheckpointWithJob(db, input) {

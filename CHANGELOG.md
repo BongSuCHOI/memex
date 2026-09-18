@@ -30,6 +30,21 @@ Two post-release readings that were wrong about unchanged data (#169, #168).
     bump landed on the first database open after the insert; since 0.7.24's
     `PRAGMA user_version` fast path it lands on the session's next extraction,
     because `ensureExtractionTarget` calls the refresh directly and is not gated.
+  - Upgrading does NOT re-process untouched history. Changing how the hash is
+    computed makes every 0.7.25 row disagree with its own recompute, and the
+    refresh reads a disagreement as a content change — so the v10 pass would have
+    bumped `content_generation` across existing history and re-run evidence and
+    extraction for all of it. `refreshExchangeMetadata` now reconstructs the hashes
+    the pre-0.7.26 `insertExchange` could have produced for that exact stored row
+    (each stored NULL rendered both as `null` and as `""`, in both tool orders,
+    capped so a pathological row cannot cost unbounded work) and, on a match,
+    rewrites `content_hash` in place while leaving the generation, evidence and
+    extraction state untouched, logging one count per pass. Only a hash matching
+    neither the canonical value nor a legacy variant is a real content change. The
+    check lives in the refresh function, not in the v10 pass, because
+    `ensureExtractionTarget` calls it too. A row whose old hash covered a `0` or
+    `false` tool input (which no transcript parser produces) is still treated as a
+    real change — the pre-fix behaviour, once.
   - `ROW_NORMALIZATION_INVARIANTS` gains "insert then refresh changes nothing"
     (`countStaleExchangeContentHashes`). The 0.7.25 list only asserted that the
     column was non-empty, which a hash disagreeing with its own row passed.
