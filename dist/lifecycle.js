@@ -24,7 +24,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { lastObserved, readHookEventTail } from "./observe-hook-event.js";
 import { scanCaptureGapMarkers, } from "./capture-gap-markers.js";
-import { hookBudgetMs, hookHostTimeoutMs } from "./hook-budget.js";
+import { hookBudgetMs, hookHostTimeoutMs, NO_TRANSCRIPT_CAPTURE_REASON, } from "./hook-budget.js";
 import { getDbPath, getMemexHome } from "./paths.js";
 import { CURRENT_SCHEMA_VERSION } from "./schema-version.js";
 import { resolveLlmSelection } from "./model-settings.js";
@@ -858,12 +858,17 @@ export function captureGapCheck() {
         .slice(0, CAPTURE_GAP_DETAIL_LIMIT)
         .map(({ marker }) => captureGapMarkerLine(marker));
     const more = scan.total - lines.length;
+    const atStake = atStakeClasses.length > 0;
     return {
         name,
         // Markers whose hook had nothing durable at stake are recorded, not alarmed
         // about: they expire on their own and no repair is pending.
-        status: atStakeClasses.length > 0 ? "warn" : "ok",
-        detail: `${scan.total} skipped capture(s)${scan.truncated ? "+" : ""}, oldest ${scan.markers[0].marker.ts} — ` +
+        status: atStake ? "warn" : "ok",
+        detail: 
+        // #171: an ok verdict counts MARKERS. Calling them "skipped capture(s)" —
+        // which is what an ok line said for eleven ephemeral `codex exec` runs — puts
+        // the alarming noun on the line that just decided nothing was wrong.
+        `${scan.total} ${atStake ? "skipped capture(s)" : "marker(s)"}${scan.truncated ? "+" : ""}${atStake ? "" : ", nothing at stake"}, oldest ${scan.markers[0].marker.ts} — ` +
             lines.join(" | ") + (more > 0 ? ` | +${more} more` : ""),
     };
 }
@@ -952,9 +957,33 @@ const SKIPPED_OUTCOME_ORDER = ["busy", "deadline", "oversize", "error"];
  * had. A row written before 0.7.25 carries no stage and is not claimed either way.
  */
 const INJECT_LANE_EVENTS = new Set(["UserPromptSubmit"]);
+/**
+ * Issue #171 — a done row 0.7.24/0.7.25 wrote for a capture event that never had a
+ * transcript.
+ *
+ * Those versions had no `no-transcript` outcome, so they recorded `error` with this
+ * exact message. 0.7.26 writes the new outcome on NEW rows only, which left a root
+ * with eleven ephemeral runs reporting `11 skipped (error 11) last error: capture
+ * hook requires transcript_path` until the old rows fell out of the 200-row window.
+ * Nothing was skipped: there was nothing to capture.
+ *
+ * The ABSENCE of a stage is what dates the row. 0.7.26 STRICT mode writes the same
+ * outcome and message WITH `stage: "no-transcript"`, and #168's post-fix review
+ * made it do that precisely so this check keeps reporting it — a loud opt-in
+ * failure is not an old silent row. (A non-strict 0.7.26 run records
+ * `outcome: "no-transcript"` and never reaches here.) So #171's suggestion to
+ * exclude that stage as well is deliberately NOT followed: it would undo #168.
+ */
+function isLegacyNoTranscriptRow(row) {
+    return (String(row.outcome ?? "") === "error" &&
+        String(row.error ?? "").trim() === NO_TRANSCRIPT_CAPTURE_REASON &&
+        !row.stage);
+}
 /** `3 skipped (busy 1, deadline 1, oversize 1) last error: …`, or "". */
 function skippedCaptureLine(rows) {
-    const failing = rows.filter((row) => row.phase === "done" && !HEALTHY_HOOK_OUTCOMES.has(String(row.outcome ?? "")));
+    const failing = rows.filter((row) => row.phase === "done" &&
+        !HEALTHY_HOOK_OUTCOMES.has(String(row.outcome ?? "")) &&
+        !isLegacyNoTranscriptRow(row));
     const injectFailures = failing.filter((row) => INJECT_LANE_EVENTS.has(row.event));
     const skipped = failing.filter((row) => !INJECT_LANE_EVENTS.has(row.event));
     const receiptFailures = injectFailures.filter((row) => row.stage === "receipt");

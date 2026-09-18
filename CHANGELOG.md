@@ -21,6 +21,22 @@ Two post-release readings of 0.7.26 (#169, #171).
   `LEGACY_RENDERING_LIMIT` only the uniform renderings are tried, so a pathological
   row cannot cost unbounded work.
 
+### Doctor
+
+- `hook-latency` no longer counts the rows 0.7.24/0.7.25 wrote for a capture event
+  with no transcript as skipped captures (#171). Those versions had no
+  `no-transcript` outcome, so they recorded `error` with that message, and 0.7.26
+  writes the new outcome on NEW rows only — a root with eleven ephemeral `codex
+  exec` runs kept reporting `11 skipped (error 11) last error: capture hook
+  requires transcript_path` until the old rows fell out of the 200-row window. A
+  pre-0.7.26 row is recognised by that message plus the ABSENCE of a stage.
+  0.7.26 STRICT mode writes the same outcome and message WITH
+  `stage: "no-transcript"` and is still reported, because #168 made it keep its
+  evidence for exactly that purpose.
+- `capture-gap`'s OK line counts markers instead of calling them skipped captures:
+  `N marker(s), nothing at stake, oldest …`. The warn wording is unchanged, so a
+  real skipped capture still reads `N skipped capture(s)`.
+
 ## 0.7.26 - 2026-09-18
 
 Two post-release readings that were wrong about unchanged data (#169, #168).

@@ -141,14 +141,17 @@ describe("doctor capture-gap", () => {
       });
     }
 
+    // #171: these Stop markers carry no transcript and no bytes, so the line is
+    // an ok line and may not call them skipped captures.
     const before = captureGapCheck();
-    expect(before.detail).toContain("600 skipped capture(s)");
+    expect(before.detail).toContain("600 marker(s), nothing at stake");
+    expect(before.detail).not.toContain("skipped");
     expect(before.detail).toContain(`oldest ${old}`);
 
     expect(pruneCaptureGapMarkers()).toBe(40);
 
     const after = captureGapCheck();
-    expect(after.detail).toContain("560 skipped capture(s)");
+    expect(after.detail).toContain("560 marker(s), nothing at stake");
     expect(after.detail).toContain(`oldest ${fresh}`);
   }, 30_000);
 
@@ -173,6 +176,7 @@ describe("doctor capture-gap", () => {
     });
 
     const check = captureGapCheck();
+    // Something IS at stake here, so the skipped-capture wording stays (#171).
     expect(check.detail).toContain("501 skipped capture(s)");
     expect(check.status).toBe("warn");
     // The at-stake marker is named even though it is off the returned page.
@@ -191,7 +195,10 @@ describe("doctor capture-gap", () => {
       });
     }
     const check = captureGapCheck();
-    expect(check.detail).toContain("501 skipped capture(s)");
+    // #171: an ok verdict says how many markers there are, not how many captures
+    // were skipped — none were.
+    expect(check.detail).toContain("501 marker(s), nothing at stake");
+    expect(check.detail).not.toContain("skipped");
     expect(check.status).toBe("ok");
     expect(check.detail).toContain("no capture at stake");
     expect(check.detail).not.toMatch(/pending #163/);
@@ -292,6 +299,67 @@ describe("doctor hook-latency", () => {
     expect(check.status).toBe("ok");
     expect(check.detail).not.toContain("skipped");
     expect(check.detail).not.toContain("requires transcript_path");
+  });
+
+  /**
+   * Issue #171 — the rows 0.7.24/0.7.25 already wrote for this situation.
+   *
+   * 0.7.26 records `no-transcript` on NEW rows only, so a root that had eleven
+   * ephemeral runs kept `WARN hook-latency: 11 skipped (error 11) last error:
+   * capture hook requires transcript_path` until the old rows fell out of the
+   * 200-row window. A pre-0.7.26 row is recognised by its error text plus the
+   * ABSENCE of a stage: nothing but that path ever wrote that message, and the
+   * inject lane's stages are the only ones 0.7.25 could write.
+   */
+  it("does not count a pre-0.7.26 no-transcript error row as skipped (#171)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      ...paired("inv-legacy-1", "Stop", {
+        outcome: "error", error: "capture hook requires transcript_path",
+      }),
+      ...paired("inv-legacy-2", "SessionEnd", {
+        outcome: "error", error: "capture hook requires transcript_path",
+      }),
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z"));
+    expect(check.status).toBe("ok");
+    expect(check.detail).not.toContain("skipped");
+    expect(check.detail).not.toContain("requires transcript_path");
+  });
+
+  /**
+   * The boundary, and a deliberate departure from #171's wording. The issue
+   * suggested excluding `stage: "no-transcript"` too, but that stage is written by
+   * exactly ONE path: 0.7.26 STRICT mode, which #168's post-fix review made keep
+   * its evidence precisely so `hook-latency` reports it. A non-strict 0.7.26 run
+   * records `outcome: "no-transcript"`, never `error`. So the stage is what tells a
+   * loud opt-in failure from an old silent row, and excluding it would undo #168.
+   */
+  it("still counts a 0.7.26 STRICT no-transcript failure as skipped (#168/#171)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      ...paired("inv-strict", "Stop", {
+        outcome: "error",
+        stage: "no-transcript",
+        error: "capture hook requires transcript_path",
+      }),
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z"));
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("1 skipped (error 1)");
+    expect(check.detail).toContain("requires transcript_path");
+  });
+
+  it("still counts an unrelated capture error as skipped (#171 boundary)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      ...paired("inv-real", "Stop", {
+        outcome: "error", error: "transcript prefix does not match the journal",
+      }),
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z"));
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("1 skipped (error 1)");
   });
 
   it("warns when a hook waited on the database", () => {
