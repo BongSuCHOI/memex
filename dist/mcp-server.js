@@ -8894,6 +8894,40 @@ var init_continuity_identity = __esm({
   }
 });
 
+// src/hook-budget.ts
+function isSqliteBusyError(error2) {
+  const code = error2?.code;
+  if (typeof code === "string" && /^SQLITE_BUSY/.test(code)) return true;
+  const message = error2 instanceof Error ? error2.message : String(error2 ?? "");
+  return /SQLITE_BUSY|database is locked|database table is locked/i.test(message);
+}
+var HOOK_HOST_TIMEOUT_MS, HOOK_HOST_TIMEOUT_DEFAULT_MS, HOOK_EXIT_MARGIN_MS, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, NO_TRANSCRIPT_CAPTURE_REASON, CAPTURE_GAP_RECORDED;
+var init_hook_budget = __esm({
+  "src/hook-budget.ts"() {
+    "use strict";
+    HOOK_HOST_TIMEOUT_MS = {
+      SessionStart: 1e4,
+      Stop: 1e4,
+      PostCompact: 1e4,
+      PreCompact: 15e3,
+      // learn.chatgpt.com/docs/hooks: SessionStart, Stop, PreCompact, PostCompact,
+      // UserPromptSubmit and the tool hooks default to 600 s and accept up to 600 s.
+      // ONLY SessionEnd and Interrupt default to 1 s and accept at most 3 s, so
+      // these two keep the small budget however generous the others become — asking
+      // for more would be a budget the host never granted, and a hook killed
+      // mid-capture is the failure the budget exists to prevent (#166 review).
+      Interrupt: 3e3,
+      SessionEnd: 3e3
+    };
+    HOOK_HOST_TIMEOUT_DEFAULT_MS = 1e4;
+    HOOK_EXIT_MARGIN_MS = 300;
+    HOOK_BUDGET_MS = HOOK_HOST_TIMEOUT_DEFAULT_MS - HOOK_EXIT_MARGIN_MS;
+    HOOK_BUDGET_PRECOMPACT_MS = HOOK_HOST_TIMEOUT_MS.PreCompact - HOOK_EXIT_MARGIN_MS;
+    NO_TRANSCRIPT_CAPTURE_REASON = "capture hook requires transcript_path";
+    CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
+  }
+});
+
 // src/continuity-store.ts
 import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
 import path7 from "node:path";
@@ -10043,14 +10077,16 @@ function refreshExchangeMetadata(db, sessionId) {
     );
   }
 }
-var CONTINUITY_SCHEMA_VERSION, CHRONICLE_EVENT_KINDS, CHRONICLE_COLUMNS;
+var CONTINUITY_SCHEMA_VERSION, CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL, CHRONICLE_EVENT_KINDS, CHRONICLE_COLUMNS;
 var init_continuity_store = __esm({
   "src/continuity-store.ts"() {
     "use strict";
     init_project_identity();
     init_continuity_identity();
     init_continuity_evidence();
+    init_hook_budget();
     CONTINUITY_SCHEMA_VERSION = 7;
+    CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL = `UPDATE capture_gaps SET state = 'recovered', recovered_at = COALESCE(recovered_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), reason = reason || ' \u2014 no transcript, nothing to capture' WHERE state = 'open' AND reason LIKE '%${NO_TRANSCRIPT_CAPTURE_REASON}%'`;
     CHRONICLE_EVENT_KINDS = [
       "ASSERTED",
       "CHANGED",
@@ -12828,7 +12864,7 @@ var CURRENT_SCHEMA_VERSION;
 var init_schema_version = __esm({
   "src/schema-version.ts"() {
     "use strict";
-    CURRENT_SCHEMA_VERSION = 9;
+    CURRENT_SCHEMA_VERSION = 10;
   }
 });
 
@@ -13571,6 +13607,14 @@ var init_db = __esm({
         // disagreed with its own row passed that and still made the next refresh bump
         // content_generation, re-processing unchanged content as a new generation.
         pendingRows: countStaleExchangeContentHashes
+      },
+      {
+        name: "capture_gaps.no-transcript rows (#168)",
+        // The gap rows 0.7.24/0.7.25 opened for sessions that never had a transcript.
+        // No later capture can recover them, so `open` would stand for ever and keep
+        // inflating pipeline-status `captureGapsOpen`. A no-op for current writers:
+        // the no-transcript path no longer opens a gap row at all.
+        repairSql: CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL
       },
       {
         name: "exchanges.identity (continuity updateIdentity)",
@@ -28848,32 +28892,8 @@ if (process.argv[1] && path11.basename(process.argv[1]) === "observe-hook-event.
   }
 }
 
-// src/hook-budget.ts
-var HOOK_HOST_TIMEOUT_MS = {
-  SessionStart: 1e4,
-  Stop: 1e4,
-  PostCompact: 1e4,
-  PreCompact: 15e3,
-  // learn.chatgpt.com/docs/hooks: SessionStart, Stop, PreCompact, PostCompact,
-  // UserPromptSubmit and the tool hooks default to 600 s and accept up to 600 s.
-  // ONLY SessionEnd and Interrupt default to 1 s and accept at most 3 s, so
-  // these two keep the small budget however generous the others become — asking
-  // for more would be a budget the host never granted, and a hook killed
-  // mid-capture is the failure the budget exists to prevent (#166 review).
-  Interrupt: 3e3,
-  SessionEnd: 3e3
-};
-var HOOK_HOST_TIMEOUT_DEFAULT_MS = 1e4;
-var HOOK_EXIT_MARGIN_MS = 300;
-var HOOK_BUDGET_MS = HOOK_HOST_TIMEOUT_DEFAULT_MS - HOOK_EXIT_MARGIN_MS;
-var HOOK_BUDGET_PRECOMPACT_MS = HOOK_HOST_TIMEOUT_MS.PreCompact - HOOK_EXIT_MARGIN_MS;
-var CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
-function isSqliteBusyError(error2) {
-  const code = error2?.code;
-  if (typeof code === "string" && /^SQLITE_BUSY/.test(code)) return true;
-  const message = error2 instanceof Error ? error2.message : String(error2 ?? "");
-  return /SQLITE_BUSY|database is locked|database table is locked/i.test(message);
-}
+// src/continuity-core.ts
+init_hook_budget();
 
 // src/capture-gap-markers.ts
 init_paths();
@@ -28993,6 +29013,7 @@ init_paths();
 init_continuity_evidence();
 init_continuity_identity();
 init_continuity_evidence();
+init_hook_budget();
 var CAPTURE_CHUNK_BYTES = 4 * 1024 * 1024;
 var SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
 var capsuleStringListSchema = { type: "array", items: { type: "string" } };

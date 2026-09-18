@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL,
   readJobFailureToClear,
   recordClearedJobFailure,
   settleStaleOpenExchanges,
@@ -3000,6 +3001,22 @@ export function handleContinuityHook(
     // because a host that promised a transcript and sent none is a real defect.
     if (error instanceof HookCaptureNoTranscript) {
       deleteCaptureGapMarker(markerFile);
+      // One bounded, best-effort repair of the rows the PREVIOUS versions opened
+      // for this same situation. They can never be recovered by a later capture,
+      // so without this they stay `open` until the v10 pass runs — and a root that
+      // is never updated would carry them for ever. Same budget rule as the gap
+      // row below: only with enough left to finish, and a failure costs nothing.
+      const repairLeft = deadlineAt - Date.now();
+      if (repairLeft > HOOK_RETRY_FLOOR_MS) {
+        const repairStartedAt = Date.now();
+        try {
+          db.pragma(`busy_timeout = ${busyTimeoutForRemaining(repairLeft)}`);
+          db.prepare(CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL).run();
+        } catch (repairError) {
+          /* the v10 schema pass closes them on the next update */
+          if (isSqliteBusyError(repairError)) dbWaitMs += Date.now() - repairStartedAt;
+        }
+      }
       finish("no-transcript", undefined, error.message);
       if (strictCapture) throw error;
       return { stdout: "", warning: error.message };

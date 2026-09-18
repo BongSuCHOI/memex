@@ -193,6 +193,16 @@ export class HookCaptureFailed extends Error {
 }
 
 /**
+ * The one message this situation is recorded under, everywhere.
+ *
+ * It is the error's text, the `capture_gaps.reason` the pre-0.7.26 versions wrote,
+ * and therefore the predicate the #168 repair matches on — three places that must
+ * never drift apart, since a repair keyed on a message it no longer matches is a
+ * repair that silently does nothing.
+ */
+export const NO_TRANSCRIPT_CAPTURE_REASON = "capture hook requires transcript_path";
+
+/**
  * Issue #168 — a capture event whose payload carries no `transcript_path`.
  *
  * `codex exec --ephemeral` sessions have no transcript file, so their
@@ -207,7 +217,7 @@ export class HookCaptureFailed extends Error {
  */
 export class HookCaptureNoTranscript extends Error {
   readonly code = "MEMEX_HOOK_NO_TRANSCRIPT";
-  constructor(message = "capture hook requires transcript_path") {
+  constructor(message = NO_TRANSCRIPT_CAPTURE_REASON) {
     super(message);
     this.name = "HookCaptureNoTranscript";
   }

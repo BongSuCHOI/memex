@@ -93,6 +93,15 @@ export declare class HookCaptureFailed extends Error {
     constructor(cause: unknown);
 }
 /**
+ * The one message this situation is recorded under, everywhere.
+ *
+ * It is the error's text, the `capture_gaps.reason` the pre-0.7.26 versions wrote,
+ * and therefore the predicate the #168 repair matches on — three places that must
+ * never drift apart, since a repair keyed on a message it no longer matches is a
+ * repair that silently does nothing.
+ */
+export declare const NO_TRANSCRIPT_CAPTURE_REASON = "capture hook requires transcript_path";
+/**
  * Issue #168 — a capture event whose payload carries no `transcript_path`.
  *
  * `codex exec --ephemeral` sessions have no transcript file, so their

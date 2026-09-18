@@ -56,6 +56,17 @@ Two post-release readings that were wrong about unchanged data (#169, #168).
 - `hook-latency` counts `no-transcript` among the healthy outcomes, so it no
   longer reports `11 skipped (error 11) last error: capture hook requires
   transcript_path` for a healthy install.
+- The `capture_gaps` rows 0.7.24/0.7.25 already opened for those sessions are
+  closed: `state = 'recovered'` with the original reason kept and ` — no
+  transcript, nothing to capture` appended. No later capture could ever recover
+  them, so they would have stood as `open` for ever in pipeline-status
+  `captureGapsOpen` under the advice "the next successful capture on that session
+  closes them" — about a session with no transcript to capture. The repair runs
+  from the migration list (so `CURRENT_SCHEMA_VERSION` goes to **10** and every
+  existing file runs the pass once on update) and on the hook's own no-transcript
+  path, so a root that is never updated heals too. It matches ONLY rows still open
+  whose reason is that one message, and `state = 'open'` makes it idempotent — a
+  genuine skipped capture keeps its state, its wording and its empty timestamp.
 
 ## 0.7.25 - 2026-09-18
 

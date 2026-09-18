@@ -14,6 +14,7 @@ import { sessionsRoot } from "./codex-rollout.js";
 import os from "node:os";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import {
+  CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL,
   countStaleExchangeContentHashes,
   ensureContinuitySchema,
   exchangeContentHash,
@@ -343,6 +344,14 @@ export const ROW_NORMALIZATION_INVARIANTS: RowNormalizationInvariant[] = [
     // disagreed with its own row passed that and still made the next refresh bump
     // content_generation, re-processing unchanged content as a new generation.
     pendingRows: countStaleExchangeContentHashes,
+  },
+  {
+    name: "capture_gaps.no-transcript rows (#168)",
+    // The gap rows 0.7.24/0.7.25 opened for sessions that never had a transcript.
+    // No later capture can recover them, so `open` would stand for ever and keep
+    // inflating pipeline-status `captureGapsOpen`. A no-op for current writers:
+    // the no-transcript path no longer opens a gap row at all.
+    repairSql: CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL,
   },
   {
     name: "exchanges.identity (continuity updateIdentity)",

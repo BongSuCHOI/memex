@@ -3,8 +3,31 @@ import path from "node:path";
 import { canonicalizeProjectPath, isUntrustedProjectPath } from "./project-identity.js";
 import { inspectWorkspaceLocation } from "./continuity-identity.js";
 import { CAPSULE_POLICY_VERSION, appendExchangeEvidence } from "./continuity-evidence.js";
+import { NO_TRANSCRIPT_CAPTURE_REASON } from "./hook-budget.js";
 export const CONTINUITY_SCHEMA_VERSION = 7;
 export const FACT_EXTRACTION_POLICY_VERSION = "continuity-fact-v1";
+/**
+ * Issue #168 — close the `capture_gaps` rows 0.7.24/0.7.25 opened for sessions
+ * that never had a transcript.
+ *
+ * Those two versions recorded a durable gap row for every capture failure,
+ * including the `codex exec --ephemeral` Stop/SessionEnd whose payload carried no
+ * `transcript_path`. Nothing was ever uncaptured there, so no later capture can
+ * "recover" the row and `state = 'open'` would stand for ever, inflating
+ * pipeline-status `captureGapsOpen` and its "the next successful capture on that
+ * session closes them" advice about a session that has no transcript to capture.
+ *
+ * Deliberately narrow: ONLY rows still open whose reason is that one message, and
+ * `state = 'open'` makes it idempotent — a second run matches nothing. `recovered`
+ * is the existing terminal state (the CHECK allows open/recovered/purged), and the
+ * appended note says which repair closed it rather than erasing the original
+ * reason. The `gap_id` is untouched, so a stale writer's `INSERT OR IGNORE` with
+ * the original reason still hashes to this row and cannot re-open it.
+ */
+export const CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL = "UPDATE capture_gaps SET state = 'recovered', " +
+    "recovered_at = COALESCE(recovered_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), " +
+    `reason = reason || ' — no transcript, nothing to capture' ` +
+    `WHERE state = 'open' AND reason LIKE '%${NO_TRANSCRIPT_CAPTURE_REASON}%'`;
 class ContinuityCasRejected extends Error {
 }
 function sha256(value) {

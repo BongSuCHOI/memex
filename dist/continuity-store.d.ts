@@ -1,6 +1,25 @@
 import type Database from "better-sqlite3";
 export declare const CONTINUITY_SCHEMA_VERSION = 7;
 export declare const FACT_EXTRACTION_POLICY_VERSION = "continuity-fact-v1";
+/**
+ * Issue #168 — close the `capture_gaps` rows 0.7.24/0.7.25 opened for sessions
+ * that never had a transcript.
+ *
+ * Those two versions recorded a durable gap row for every capture failure,
+ * including the `codex exec --ephemeral` Stop/SessionEnd whose payload carried no
+ * `transcript_path`. Nothing was ever uncaptured there, so no later capture can
+ * "recover" the row and `state = 'open'` would stand for ever, inflating
+ * pipeline-status `captureGapsOpen` and its "the next successful capture on that
+ * session closes them" advice about a session that has no transcript to capture.
+ *
+ * Deliberately narrow: ONLY rows still open whose reason is that one message, and
+ * `state = 'open'` makes it idempotent — a second run matches nothing. `recovered`
+ * is the existing terminal state (the CHECK allows open/recovered/purged), and the
+ * appended note says which repair closed it rather than erasing the original
+ * reason. The `gap_id` is untouched, so a stale writer's `INSERT OR IGNORE` with
+ * the original reason still hashes to this row and cannot re-open it.
+ */
+export declare const CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL: string;
 export type ClosureState = "open" | "interrupted" | "closed" | "final";
 export type MemoryJobState = "pending" | "running" | "retry" | "completed" | "superseded" | "dead";
 export type ContinuityMigrationStage = "exchange-seq-column" | "session-epoch-markers" | "content-hash-column" | "content-generation-column" | "closure-state-column" | "parser-version-column" | "continuity-tables" | "continuity-core-tables" | "journal-source-mtime-column" | "journal-source-guard-columns" | "identity-tables" | "identity-columns" | "quarantine-untrusted-projects" | "identity-backfill" | "identity-triggers" | "continuity-indexes" | "continuity-core-indexes" | "chronicle-table" | "chronicle-backfill" | "incident-tables" | "telemetry-table" | "chronicle-indexes" | "recall-gate-columns" | "evidence-sequence" | "capsule-terminal-state-repair" | "fts-rebuild" | "exchange-metadata" | "schema-meta" | "user-version";
