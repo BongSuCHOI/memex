@@ -44,6 +44,12 @@ Two post-release readings of 0.7.26 (#169, #171).
   0.7.26 STRICT mode writes the same outcome and message WITH
   `stage: "no-transcript"` and is still reported, because #168 made it keep its
   evidence for exactly that purpose.
+- Those legacy rows are REPORTED, not hidden: `N legacy no-transcript row(s)
+  (pre-0.7.26; strict-mode failures indistinguishable)`. 0.7.24/0.7.25 strict mode
+  wrote a real failure the same way — same outcome, same message, no stage — so a
+  legacy row cannot be proven benign, and dropping it would bury that failure with
+  the harmless ephemeral runs. The bucket is neutral: not a warn on its own, not
+  called a skipped capture, and it never supplies the line's `last error`.
 - `capture-gap`'s OK line counts markers instead of calling them skipped captures:
   `N marker(s), nothing at stake, oldest …`. The warn wording is unchanged, so a
   real skipped capture still reads `N skipped capture(s)`.

@@ -325,6 +325,40 @@ describe("doctor hook-latency", () => {
     expect(check.status).toBe("ok");
     expect(check.detail).not.toContain("skipped");
     expect(check.detail).not.toContain("requires transcript_path");
+    // #171 (second review): REPORTED, not hidden — 0.7.24/0.7.25 wrote a
+    // strict-mode failure with the same outcome, message and missing stage, so
+    // these rows cannot be proven benign and must stay visible.
+    expect(check.detail).toContain(
+      "2 legacy no-transcript row(s) (pre-0.7.26; strict-mode failures indistinguishable)",
+    );
+  });
+
+  it("the legacy bucket alone is not a warn, and does not borrow another verdict", () => {
+    writeRows([
+      ...paired("inv-legacy", "Stop", {
+        outcome: "error", error: "capture hook requires transcript_path",
+      }),
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z"));
+    expect(check.status).toBe("ok");
+    expect(check.detail).toContain("1 legacy no-transcript row(s)");
+    expect(check.detail).not.toContain("skipped");
+    // The bucket may not supply a "last error" either: that line names a failure
+    // this check is asserting, and it is asserting none.
+    expect(check.detail).not.toContain("last error");
+  });
+
+  it("the legacy bucket sits beside a real skip without merging into it", () => {
+    writeRows([
+      ...paired("inv-legacy", "Stop", {
+        outcome: "error", error: "capture hook requires transcript_path",
+      }),
+      ...paired("inv-busy", "Stop", { outcome: "busy" }),
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z"));
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("1 skipped (busy 1)");
+    expect(check.detail).toContain("1 legacy no-transcript row(s)");
   });
 
   /**
