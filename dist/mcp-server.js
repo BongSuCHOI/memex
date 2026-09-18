@@ -8847,7 +8847,8 @@ function commitHotEvidenceCursor(db, input) {
     workstreamId: input.workstreamId,
     excludeSessionId: input.sessionId,
     afterSeq: input.fromSeq,
-    limit: input.emittedSeqs.length
+    limit: input.emittedSeqs.length,
+    now: input.now
   });
   if (current.length !== input.emittedSeqs.length || current.some((row, i) => Number(row.seq) !== input.emittedSeqs[i])) {
     throw new Error("Hot Evidence prefix changed before residency commit");
@@ -12790,6 +12791,15 @@ var init_model_budget = __esm({
   }
 });
 
+// src/schema-version.ts
+var CURRENT_SCHEMA_VERSION;
+var init_schema_version = __esm({
+  "src/schema-version.ts"() {
+    "use strict";
+    CURRENT_SCHEMA_VERSION = 9;
+  }
+});
+
 // src/db.ts
 import Database2 from "better-sqlite3";
 import { createHash as createHash5, randomUUID as randomUUID4 } from "node:crypto";
@@ -12853,6 +12863,35 @@ function initDatabase(options = {}) {
   if (options.dbPath) fs6.mkdirSync(path9.dirname(dbPath), { recursive: true });
   else ensureDbDir();
   const db = openWriteDb(dbPath, options.busyTimeoutMs);
+  const force = process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE === "1";
+  if (!force && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION) return db;
+  db.transaction(() => {
+    if (!force && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION) {
+      options.onSchemaMigration?.({ ran: false, skipped: [] });
+      return;
+    }
+    const skipped = runSchemaMigrations(db);
+    options.onSchemaMigration?.({ ran: true, skipped });
+    if (skipped.length > 0) {
+      console.error(
+        `[memex] schema version ${CURRENT_SCHEMA_VERSION} not recorded: ${skipped.join(", ")} did not complete; the next open will retry`
+      );
+      return;
+    }
+    db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+  }).immediate();
+  return db;
+}
+function schemaVersionOf(db) {
+  try {
+    const value = Number(db.pragma("user_version", { simple: true }));
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+function runSchemaMigrations(db) {
+  const skipped = [];
   db.exec(`
     CREATE TABLE IF NOT EXISTS exchanges (
       id TEXT PRIMARY KEY,
@@ -12898,9 +12937,6 @@ function initDatabase(options = {}) {
       "ALTER TABLE exchanges ADD COLUMN has_memex_recall BOOLEAN NOT NULL DEFAULT 0"
     );
   }
-  db.prepare(
-    "UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0"
-  ).run();
   db.exec(`
     CREATE TABLE IF NOT EXISTS recall_events (
       id TEXT PRIMARY KEY,
@@ -13089,9 +13125,6 @@ function initDatabase(options = {}) {
       "ALTER TABLE facts ADD COLUMN semantic_updated_at TEXT NOT NULL DEFAULT ''"
     );
   }
-  db.prepare(
-    "UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''"
-  ).run();
   if (!factColumns.has("lifecycle_generation")) {
     db.exec(
       "ALTER TABLE facts ADD COLUMN lifecycle_generation INTEGER NOT NULL DEFAULT 1"
@@ -13102,9 +13135,6 @@ function initDatabase(options = {}) {
       "ALTER TABLE facts ADD COLUMN lifecycle_updated_at TEXT NOT NULL DEFAULT ''"
     );
   }
-  db.prepare(
-    "UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''"
-  ).run();
   if (!factColumns.has("ontology_state")) {
     db.exec("ALTER TABLE facts ADD COLUMN ontology_state TEXT");
   }
@@ -13355,6 +13385,7 @@ function initDatabase(options = {}) {
     );
   } catch (error2) {
     console.error("ontology taxonomy uniqueness migration skipped:", error2);
+    skipped.push("ontology-taxonomy-uniqueness");
   }
   db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_relations (
@@ -13427,7 +13458,10 @@ function initDatabase(options = {}) {
   `);
   ensureContinuitySchema(db);
   ensureModelBudgetSchema(db);
-  return db;
+  for (const invariant of ROW_NORMALIZATION_INVARIANTS) {
+    if (invariant.repairSql) db.prepare(invariant.repairSql).run();
+  }
+  return skipped;
 }
 function hashRecallPrompt(prompt) {
   return createHash5("sha256").update(prompt, "utf8").digest("hex");
@@ -13457,7 +13491,7 @@ function recordRecallEvent(db, event) {
   );
   return id;
 }
-var VEC_INT8_SCALE, VEC_TABLES, DEFAULT_BUSY_TIMEOUT_MS;
+var VEC_INT8_SCALE, VEC_TABLES, DEFAULT_BUSY_TIMEOUT_MS, ROW_NORMALIZATION_INVARIANTS;
 var init_db = __esm({
   "src/db.ts"() {
     "use strict";
@@ -13466,6 +13500,7 @@ var init_db = __esm({
     init_embeddings();
     init_continuity_store();
     init_model_budget();
+    init_schema_version();
     init_continuity_identity();
     init_continuity_evidence();
     VEC_INT8_SCALE = 127;
@@ -13476,6 +13511,53 @@ var init_db = __esm({
       "vec_categories"
     ]);
     DEFAULT_BUSY_TIMEOUT_MS = 5e3;
+    ROW_NORMALIZATION_INVARIANTS = [
+      {
+        name: "facts.semantic_updated_at",
+        repairSql: "UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''"
+      },
+      {
+        name: "facts.lifecycle_updated_at",
+        repairSql: "UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''"
+      },
+      {
+        name: "exchanges.assistant_learnable",
+        repairSql: "UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0"
+      },
+      {
+        name: "facts.generations",
+        pendingSql: "SELECT COUNT(*) AS n FROM facts WHERE semantic_generation < 1 OR lifecycle_generation < 1",
+        note: "the column defaults are 1; a writer that sets 0 would break every CAS"
+      },
+      {
+        name: "exchanges.metadata (continuity refreshExchangeMetadata)",
+        pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE exchange_seq <= 0 OR content_hash IS NULL OR content_hash = '' OR content_generation <= 0"
+      },
+      {
+        name: "exchanges.identity (continuity updateIdentity)",
+        pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE project_id IS NULL AND project <> '' AND project <> 'unknown'"
+      },
+      {
+        name: "facts.needs_consolidation",
+        note: "runs only when the column is ADDED, so it cannot be load-bearing for new rows"
+      },
+      {
+        name: "fact_context_dependencies_p2 rebuild",
+        note: "guarded by the legacy table shape; new rows are written to the current table"
+      },
+      {
+        name: "exchanges_fts rebuild",
+        note: "guarded by the trigger shape / readiness flag; new rows are maintained by triggers"
+      },
+      {
+        name: "ontology case-duplicate merge",
+        note: "a duplicate REPAIR, not row normalization; the unique indexes keep new rows clean"
+      },
+      {
+        name: "continuity evidence replay / memory_jobs reset",
+        note: "guarded by continuity_schema_meta < 7"
+      }
+    ];
   }
 });
 
@@ -28704,6 +28786,9 @@ function recordHookEvent(event, info) {
       ...typeof info.outcome === "string" && info.outcome ? { outcome: info.outcome } : {},
       ...num(info.durationMs) !== void 0 ? { duration_ms: num(info.durationMs) } : {},
       ...num(info.dbWaitMs) !== void 0 ? { db_wait_ms: num(info.dbWaitMs) } : {},
+      ...num(info.startupMs) !== void 0 ? { startup_ms: num(info.startupMs) } : {},
+      ...typeof info.stage === "string" && info.stage ? { stage: info.stage } : {},
+      ...typeof info.contextDelivered === "boolean" ? { context_delivered: info.contextDelivered } : {},
       ...errorText ? { error: errorText } : {}
     }) + "\n";
     const file = observationLogPath();
@@ -28725,6 +28810,24 @@ if (process.argv[1] && path11.basename(process.argv[1]) === "observe-hook-event.
 }
 
 // src/hook-budget.ts
+var HOOK_HOST_TIMEOUT_MS = {
+  SessionStart: 1e4,
+  Stop: 1e4,
+  PostCompact: 1e4,
+  PreCompact: 15e3,
+  // learn.chatgpt.com/docs/hooks: SessionStart, Stop, PreCompact, PostCompact,
+  // UserPromptSubmit and the tool hooks default to 600 s and accept up to 600 s.
+  // ONLY SessionEnd and Interrupt default to 1 s and accept at most 3 s, so
+  // these two keep the small budget however generous the others become — asking
+  // for more would be a budget the host never granted, and a hook killed
+  // mid-capture is the failure the budget exists to prevent (#166 review).
+  Interrupt: 3e3,
+  SessionEnd: 3e3
+};
+var HOOK_HOST_TIMEOUT_DEFAULT_MS = 1e4;
+var HOOK_EXIT_MARGIN_MS = 300;
+var HOOK_BUDGET_MS = HOOK_HOST_TIMEOUT_DEFAULT_MS - HOOK_EXIT_MARGIN_MS;
+var HOOK_BUDGET_PRECOMPACT_MS = HOOK_HOST_TIMEOUT_MS.PreCompact - HOOK_EXIT_MARGIN_MS;
 var CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
 function isSqliteBusyError(error2) {
   const code = error2?.code;
@@ -28782,7 +28885,7 @@ function scanCaptureGapMarkers(options = {}) {
   try {
     entries = fs11.readdirSync(dir);
   } catch {
-    return { markers: [], total: 0, truncated: false };
+    return { markers: [], total: 0, truncated: false, classes: {} };
   }
   const limit = options.limit ?? MARKER_SCAN_LIMIT;
   const wantedSession = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
@@ -28807,7 +28910,16 @@ function scanCaptureGapMarkers(options = {}) {
     matched.push({ file, marker });
   }
   matched.sort((a, b2) => a.marker.ts < b2.marker.ts ? -1 : a.marker.ts > b2.marker.ts ? 1 : 0);
-  return { markers: matched.slice(0, limit), total: matched.length, truncated };
+  const classes = {};
+  if (options.classify) {
+    for (const entry of matched) {
+      const key = options.classify(entry.marker);
+      const stat = classes[key];
+      if (stat) stat.count++;
+      else classes[key] = { count: 1, oldest: entry };
+    }
+  }
+  return { markers: matched.slice(0, limit), total: matched.length, truncated, classes };
 }
 function listCaptureGapMarkers(options = {}) {
   return scanCaptureGapMarkers(options).markers;
@@ -29513,9 +29625,13 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     const hot = readHotEvidence(db, {
       projectId: sessionScope.projectId,
       workstreamId: sessionScope.workstreamId,
+      // `now` decides every other time-dependent choice in this function, and
+      // Hot Evidence has a 14-day TTL: reading it against the wall clock instead
+      // made the lane disappear for any caller whose `now` is older than the TTL.
       excludeSessionId: sessionId,
       afterSeq: hotCursor,
-      limit: 2
+      limit: 2,
+      now
     });
     const capsule = readWorkCapsule(db, sessionScope.workstreamId);
     const currentCapsuleGeneration = capsule?.generation ?? 0;
@@ -29955,7 +30071,10 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
           workstreamId: sessionScope.workstreamId,
           contextEpoch: residency.contextEpoch,
           fromSeq: hotCursor,
-          emittedSeqs: hot.slice(0, emitted).map((item) => Number(item.seq))
+          emittedSeqs: hot.slice(0, emitted).map((item) => Number(item.seq)),
+          // The prefix check must re-read on the SAME clock as the read above,
+          // or an injected past `now` fails the commit it just satisfied.
+          now
         });
       }
       commitGateState(db, {
@@ -33514,7 +33633,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.24"
+    version: "0.7.25"
   },
   {
     capabilities: {

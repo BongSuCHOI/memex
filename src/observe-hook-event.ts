@@ -76,6 +76,24 @@ export function recordHookEvent(
     outcome?: unknown;
     durationMs?: unknown;
     dbWaitMs?: unknown;
+    /**
+     * Issue #166 — process entry to just before the FIRST database call: node
+     * start, dist import, the connection open with its migration pass. On the
+     * machine that reported this it was 1.45-1.9 s, which is why a 2,000 ms
+     * budget ran out with `db_wait_ms: 0`. A budget is unreadable without it.
+     */
+    startupMs?: unknown;
+    /**
+     * Issue #166 (final review) — WHERE an inject failure happened, because
+     * `outcome: "error"` on a UserPromptSubmit row means three different things:
+     * `receipt` (the context was delivered and only its recall receipt stayed
+     * `prepared` — #44's documented fallback), `compute` (retrieval failed, so
+     * nothing reached the user) and `startup` (the imports failed before any of
+     * it). Doctor may not call the last two a delivered injection.
+     */
+    stage?: unknown;
+    /** Whether this invocation actually wrote context to stdout. */
+    contextDelivered?: unknown;
     error?: unknown;
   },
 ): boolean {
@@ -101,6 +119,11 @@ export function recordHookEvent(
         ...(typeof info.outcome === "string" && info.outcome ? { outcome: info.outcome } : {}),
         ...(num(info.durationMs) !== undefined ? { duration_ms: num(info.durationMs) } : {}),
         ...(num(info.dbWaitMs) !== undefined ? { db_wait_ms: num(info.dbWaitMs) } : {}),
+        ...(num(info.startupMs) !== undefined ? { startup_ms: num(info.startupMs) } : {}),
+        ...(typeof info.stage === "string" && info.stage ? { stage: info.stage } : {}),
+        ...(typeof info.contextDelivered === "boolean"
+          ? { context_delivered: info.contextDelivered }
+          : {}),
         ...(errorText ? { error: errorText } : {}),
       }) + "\n";
     const file = observationLogPath();
@@ -140,6 +163,9 @@ export function recordHookDone(
     outcome: HookOutcome;
     durationMs?: number;
     dbWaitMs?: number;
+    startupMs?: number;
+    stage?: string;
+    contextDelivered?: boolean;
     error?: unknown;
     detail?: unknown;
   },
@@ -158,6 +184,12 @@ export interface HookEventRow {
   outcome?: string;
   duration_ms?: number;
   db_wait_ms?: number;
+  /** #166: entry -> first database call, the hook's fixed cost on this machine. */
+  startup_ms?: number;
+  /** #166: which stage an inject failure happened at — receipt/compute/startup. */
+  stage?: string;
+  /** #166: whether context actually reached stdout on an inject failure. */
+  context_delivered?: boolean;
   error?: string;
 }
 

@@ -1,4 +1,6 @@
 import { prepareVerifiedGlobalPair } from './consolidation-fixture.js';
+import { CURRENT_SCHEMA_VERSION } from "../src/schema-version.js";
+import { CONTINUITY_SCHEMA_VERSION } from "../src/continuity-store.js";
 import { captureMutationPolicy } from '../src/fact-policy.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
@@ -60,6 +62,13 @@ import { handleToolCall } from "../src/mcp-server.js";
 import { ensureSessionMemoryState } from "../src/continuity-core.js";
 import { createCheckpointWithJob } from "../src/continuity-store.js";
 import type { ConversationExchange, ExtractedFact } from "../src/types.js";
+
+// Issue #166 — `initDatabase()` skips the migration pass when the file already
+// records the current schema version. This file fabricates older-shape databases
+// and rows (a legacy trigger, a pre-migration column, a row a current writer
+// would never write) and then expects the next open to repair them, so it opts
+// into the full pass explicitly instead of depending on the old every-open cost.
+process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE = "1";
 
 let root: string;
 let db: Database.Database;
@@ -602,6 +611,12 @@ describe("Privacy purge and telemetry", () => {
       effective_at: "2026-08-01T10:00:00.000Z", effective_at_source: "source", recorded_at: "2026-08-02T00:00:00.000Z",
       source_exchange_ids: ["ex-1"],
     });
-    expect(db.pragma("user_version", { simple: true })).toBe(7);
+    // #166: the file carries the version of the WHOLE schema pass; the
+    // continuity schema version stays in continuity_schema_meta.
+    expect(db.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
+    expect(
+      (db.prepare("SELECT value FROM continuity_schema_meta WHERE key = 'schema_version'")
+        .get() as { value: string }).value,
+    ).toBe(String(CONTINUITY_SCHEMA_VERSION));
   });
 });

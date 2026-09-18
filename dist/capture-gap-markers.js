@@ -98,6 +98,10 @@ function parseMarker(file) {
  * `sessionId` and `event` are also matched on the FILE NAME, which carries
  * both, so the common case never parses a file it cannot want. `match` sees the
  * parsed marker for everything the name cannot answer (`source`, `ts`).
+ *
+ * `classify` tallies the matched set by class BEFORE the cap, for the same
+ * reason: the page is a display budget, never the population a verdict is read
+ * from (#165 post-release review).
  */
 export function scanCaptureGapMarkers(options = {}) {
     const dir = captureGapDir();
@@ -106,7 +110,7 @@ export function scanCaptureGapMarkers(options = {}) {
         entries = fs.readdirSync(dir);
     }
     catch {
-        return { markers: [], total: 0, truncated: false };
+        return { markers: [], total: 0, truncated: false, classes: {} };
     }
     const limit = options.limit ?? MARKER_SCAN_LIMIT;
     // `<event>-<session>-<invocation>.json`, each segment already sanitized.
@@ -146,7 +150,20 @@ export function scanCaptureGapMarkers(options = {}) {
     // "oldest" and a count that stopped at 500, and how the prune could never see
     // an old marker hiding behind 500 newer ones (#162 review 10).
     matched.sort((a, b) => (a.marker.ts < b.marker.ts ? -1 : a.marker.ts > b.marker.ts ? 1 : 0));
-    return { markers: matched.slice(0, limit), total: matched.length, truncated };
+    // After the sort and before the cap: the count is the whole class and the
+    // example is that class's OLDEST marker, whether or not the page reaches it.
+    const classes = {};
+    if (options.classify) {
+        for (const entry of matched) {
+            const key = options.classify(entry.marker);
+            const stat = classes[key];
+            if (stat)
+                stat.count++;
+            else
+                classes[key] = { count: 1, oldest: entry };
+        }
+    }
+    return { markers: matched.slice(0, limit), total: matched.length, truncated, classes };
 }
 /** Oldest-first, capped at `limit` (default 500). See `scanCaptureGapMarkers`. */
 export function listCaptureGapMarkers(options = {}) {

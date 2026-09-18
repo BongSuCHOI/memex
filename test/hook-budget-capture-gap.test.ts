@@ -23,6 +23,15 @@ import {
   writeCaptureGapMarker,
 } from "../src/capture-gap-markers.js";
 import { hookLatencyCheck } from "../src/lifecycle.js";
+import {
+  busyTimeoutForRemaining,
+  hookBudgetMs,
+  hookHostTimeoutMs,
+  ingestFitsBudget,
+  HOOK_EXIT_MARGIN_MS,
+  HOOK_INGEST_RESERVE_MS,
+  HOOK_PHASE_FLOOR_MS,
+} from "../src/hook-budget.js";
 
 /**
  * Issue #162 — the continuity hook must never hand the host a timeout.
@@ -173,8 +182,9 @@ describe("continuity hook budget (issue #162)", () => {
 
     expect(run.status).toBe(0);
     expect(run.stdout).toBe("");
-    // 3 s host timeout, 2,000 ms budget: the whole process has to be well under it.
-    expect(elapsed).toBeLessThan(2_500);
+    // 10 s host timeout, 9,700 ms budget (#166): the process must exit inside the
+    // budget with room for the host's timer, however long the lock is held.
+    expect(elapsed).toBeLessThan(9_900);
 
     const markers = listCaptureGapMarkers();
     expect(markers).toHaveLength(1);
@@ -215,7 +225,28 @@ describe("continuity hook budget (issue #162)", () => {
 
     expect(run.status).toBe(0);
     expect(run.stdout).toBe("");
-    expect(elapsed).toBeLessThan(4_500);
+    expect(elapsed).toBeLessThan(14_900);
+    expect(markerFiles()).toHaveLength(1);
+  });
+
+  it.each(["SessionEnd", "Interrupt"])("%s keeps the host's 3 s cap and exits inside it under a held lock (#166)", (event) => {
+    holdWriteLock();
+    const startedAt = Date.now();
+    const run = spawnSync(process.execPath, [HOOK], {
+      input: payload(event),
+      encoding: "utf8",
+      env: childEnv(),
+    });
+    const elapsed = Date.now() - startedAt;
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("");
+    // 3 s host cap, 2,700 ms budget: the two hooks the host will not let grow.
+    // The budget bounds the hook's OWN clock (the done row); the exit margin is
+    // what has to cover node's teardown after it, so both are asserted.
+    const done = hookEventRows().find((row) => row.phase === "done")!;
+    expect(done.outcome).toBe("busy");
+    expect(Number(done.duration_ms)).toBeLessThanOrEqual(hookBudgetMs(event));
+    expect(elapsed).toBeLessThan(2_900);
     expect(markerFiles()).toHaveLength(1);
   });
 
@@ -283,10 +314,32 @@ describe("continuity hook budget (issue #162)", () => {
     expect(rows.some((row) => row.phase === "done")).toBe(false);
 
     // Doctor reads the pair; the unmatched start past budget + grace is the kill.
-    const check = hookLatencyCheck(Date.now() + 2_000 + 10_000 + 1_000);
+    const check = hookLatencyCheck(Date.now() + hookBudgetMs("Stop") + 10_000 + 1_000);
     expect(check.status).toBe("warn");
     expect(check.detail).toContain("killed by host");
     expect(check.detail).toContain("capture gap marker(s)");
+  });
+
+  /**
+   * Issue #166 — on the work Mac the whole budget went to the fixed cost before
+   * the first database call (node start, dist import, the DB open with its
+   * migration pass, the marker fsync): `deadline` with 28 ms left and
+   * `db_wait_ms: 0`. Nothing in the log said so, so the done row now measures it.
+   */
+  it("the done row measures the startup cost before the first database call (#166)", () => {
+    const run = spawnSync(process.execPath, [HOOK], {
+      input: payload("Stop"),
+      encoding: "utf8",
+      env: childEnv(),
+    });
+    expect(run.status).toBe(0);
+    const done = hookEventRows().find((row) => row.phase === "done")!;
+    expect(done.outcome).toBe("ok");
+    expect(typeof done.startup_ms).toBe("number");
+    const startup = Number(done.startup_ms);
+    const duration = Number(done.duration_ms);
+    expect(startup).toBeGreaterThan(0);
+    expect(startup).toBeLessThanOrEqual(duration);
   });
 
   it("refuses to open the capture transaction when the delta cannot fit the budget", () => {
@@ -413,6 +466,88 @@ describe("continuity hook budget (issue #162)", () => {
   });
 });
 
+/**
+ * Issue #166 — the work Mac skipped every capture with `db_wait_ms: 0`.
+ *
+ * The 0.7.24 budget was 2,000 ms of a 3 s host timeout, and the FIXED cost
+ * before the first database call there is 1.45-1.9 s (node start, dist import,
+ * the DB open with its per-open migration pass, the marker fsync). So the
+ * budget was gone before the capture phase without a single lock wait: Stop
+ * `deadline` with 28 ms left, SessionEnd `oversize` on 132,399 bytes — 6.6 ms of
+ * ingest — because the 300 ms reserve made the usable window negative.
+ */
+describe("hook budget derivation (issue #166)", () => {
+  it("derives the budget from the event's host timeout minus one exit margin", () => {
+    // The margin covers what happens AFTER the budget — node's teardown measured
+    // ~200 ms, and 150 ms left a 3 s hook exiting 84 ms before its kill.
+    expect(HOOK_EXIT_MARGIN_MS).toBe(300);
+    expect(hookHostTimeoutMs("Stop")).toBe(10_000);
+    expect(hookBudgetMs("Stop")).toBe(9_700);
+    expect(hookBudgetMs("SessionStart")).toBe(9_700);
+    expect(hookBudgetMs("PostCompact")).toBe(9_700);
+    expect(hookBudgetMs("PreCompact")).toBe(14_700);
+    // SessionEnd and Interrupt are the two hooks the host caps at 3 s, so they
+    // keep the small budget however generous the others become (#166 review).
+    expect(hookHostTimeoutMs("SessionEnd")).toBe(3_000);
+    expect(hookBudgetMs("SessionEnd")).toBe(2_700);
+    expect(hookHostTimeoutMs("Interrupt")).toBe(3_000);
+    expect(hookBudgetMs("Interrupt")).toBe(2_700);
+    // The measured fixed cost must still leave a phase floor behind it.
+    expect(hookBudgetMs("Stop") - 1_900).toBeGreaterThanOrEqual(HOOK_PHASE_FLOOR_MS);
+    expect(hookBudgetMs("SessionEnd") - 1_900).toBeGreaterThanOrEqual(HOOK_PHASE_FLOOR_MS);
+    // One lock wait may be generous now, but never eats the exit margin.
+    expect(busyTimeoutForRemaining(9_700)).toBe(2_500);
+    expect(busyTimeoutForRemaining(1_000)).toBe(700);
+    expect(busyTimeoutForRemaining(250)).toBe(0);
+    process.env.MEMEX_HOOK_BUDGET_MS = "1234";
+    expect(hookBudgetMs("Stop")).toBe(1_234);
+    delete process.env.MEMEX_HOOK_BUDGET_MS;
+  });
+
+  it("a delta whose ingest is ms of work is never oversize (#166)", () => {
+    // The observed row, to scale: 132,399 bytes is 6.6 ms at 20,000 B/ms and
+    // 267 ms of budget remained. Only the reserve made that "too large".
+    expect(ingestFitsBudget(132_399, 267)).toEqual({ ok: true });
+    expect(HOOK_INGEST_RESERVE_MS).toBe(100);
+
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    const result = captureTranscriptPrefix(db, {
+      sessionId: SESSION,
+      project: "/project",
+      transcriptPath: transcript,
+      kind: "final",
+      turnId: "turn-1",
+      deadlineAt: Date.now() + 267,
+    });
+    expect(result).toBeTruthy();
+  });
+
+  it("calls an exhausted budget a deadline, not an oversize delta (#166)", () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: "/project" });
+    // Less left than the reserve: the budget is gone. Saying `oversize` blamed
+    // the transcript for the clock and sent the reader after the wrong fix.
+    const fit = ingestFitsBudget(132_399, 90);
+    expect(fit.ok).toBe(false);
+    expect(fit.ok === false && fit.reason).toBe("deadline");
+    expect(() =>
+      captureTranscriptPrefix(db, {
+        sessionId: SESSION,
+        project: "/project",
+        transcriptPath: transcript,
+        kind: "final",
+        turnId: "turn-1",
+        deadlineAt: Date.now() + 90,
+      }),
+    ).toThrow(HookDeadlineExceeded);
+  });
+
+  it("still refuses a delta that genuinely cannot be ingested in the budget", () => {
+    const fit = ingestFitsBudget(200 * 1024 * 1024, 5_000);
+    expect(fit.ok).toBe(false);
+    expect(fit.ok === false && fit.reason).toBe("oversize");
+  });
+});
+
 describe("inject hook observability (issue #162 R5)", () => {
   it("writes a paired start/done row for a prompt it drops", () => {
     const run = spawnSync(process.execPath, [path.join(ROOT, "scripts", "inject-context.js")], {
@@ -430,6 +565,31 @@ describe("inject hook observability (issue #162 R5)", () => {
     expect(done!.invocation_id).toBe(start!.invocation_id);
     expect(done!.outcome).toBe("empty-prompt");
     expect(typeof done!.duration_ms).toBe("number");
+  });
+
+  /**
+   * #166 final review — an inject failure BEFORE stdout must not read as a
+   * delivered injection. The done row names the stage it failed at.
+   */
+  it("records the failing stage when the cold path delivers no context (#166)", () => {
+    // A database path that cannot be opened: computeInjectContext logs, returns
+    // "" and nothing is emitted, so this prompt delivered nothing.
+    const blocked = path.join(root, "blocked-db-dir");
+    fs.mkdirSync(blocked, { recursive: true });
+    const run = spawnSync(process.execPath, [path.join(ROOT, "scripts", "inject-context.js")], {
+      input: JSON.stringify({
+        prompt: "Configure the redis session store client", cwd: "/project", session_id: SESSION,
+      }),
+      encoding: "utf8",
+      env: childEnv({ MEMEX_DB_PATH: blocked }),
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("");
+    const done = hookEventRows().find(
+      (row) => row.event === "UserPromptSubmit" && row.phase === "done")!;
+    expect(done.outcome).toBe("error");
+    expect(done.context_delivered).toBe(false);
+    expect(["compute", "startup"]).toContain(done.stage);
   });
 });
 

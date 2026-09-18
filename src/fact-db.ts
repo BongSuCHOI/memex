@@ -264,9 +264,10 @@ export function insertFact(
       id, fact, category, scope_type, scope_project, source_exchange_ids, embedding,
       created_at, updated_at, consolidated_count, is_active, fact_kr,
       embedding_version, semantic_generation, semantic_updated_at,
+      lifecycle_generation, lifecycle_updated_at,
       project_id, workspace_id, workstream_id, subject_key, promotion_state, tier_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, 1, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     params.fact,
@@ -281,6 +282,12 @@ export function insertFact(
     now,
     params.fact_kr ?? null,
     EMBEDDING_VERSION,
+    now,
+    // #166 (gate): BOTH clocks, at insert time. Leaving `lifecycle_updated_at`
+    // on its `''` default made every new fact depend on a data-normalizing
+    // statement in the migration pass — and the moment an open stopped running
+    // that pass, a freshly exported facts.jsonl failed protocol v4 validation on
+    // the importing device. A writer owes the row it writes.
     now,
     projectId,
     workspaceId,

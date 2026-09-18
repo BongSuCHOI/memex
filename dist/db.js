@@ -9,6 +9,7 @@ import os from "node:os";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import { ensureContinuitySchema, exchangeContentHash, } from "./continuity-store.js";
 import { ensureModelBudgetSchema } from "./model-budget.js";
+import { CURRENT_SCHEMA_VERSION } from "./schema-version.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
 import { appendExchangeEvidence } from "./continuity-evidence.js";
 export const VEC_INT8_SCALE = 127;
@@ -135,6 +136,153 @@ export function initDatabase(options = {}) {
     // The bounded wait must be in force for the schema/migration pass below, not
     // only for the caller's own statements (issue #162 R3).
     const db = openWriteDb(dbPath, options.busyTimeoutMs);
+    // Issue #166 — the migration pass below runs only when the FILE is older than
+    // this code. It used to run on every open, and it is not free: on a 92 MB
+    // fixture one open cost 1,040 ms, almost all of it data backfill with nothing
+    // left to do, under the write lock. Five hooks opening that database at
+    // SessionStart is where a 930 ms lock wait and a skipped capture came from.
+    // `MEMEX_SCHEMA_ALWAYS_MIGRATE=1` forces the pass: a repair switch for a file
+    // whose recorded version no longer matches what it actually contains, and what
+    // the tests that fabricate an older-shape database on purpose set.
+    const force = process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE === "1";
+    // The cheap check first, outside any lock: the common case (a current file)
+    // must not take the write lock at all — that is the whole point of the gate.
+    if (!force && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION)
+        return db;
+    // ONE transaction for the whole list, with the version written inside it: the
+    // file is marked current only if every migration committed, so an interrupted
+    // upgrade re-runs the pass from the start instead of skipping the rest for
+    // ever. Nested `db.transaction()` calls inside the pass become savepoints.
+    db.transaction(() => {
+        // The AUTHORITATIVE read is here, inside BEGIN IMMEDIATE (#166 third review).
+        // Five hooks and the sync-import open the data root at SessionStart: deciding
+        // outside the lock, every one of them read a version below this build's and
+        // then ran the whole heavy pass in turn — the very contention this gate
+        // exists to remove. The losers now wait out one short lock and find 8.
+        if (!force && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION) {
+            options.onSchemaMigration?.({ ran: false, skipped: [] });
+            return;
+        }
+        const skipped = runSchemaMigrations(db);
+        options.onSchemaMigration?.({ ran: true, skipped });
+        if (skipped.length > 0) {
+            // A migration that swallows its own failure (see the taxonomy uniqueness
+            // pass below) must not let the version claim it ran: recording 8 over a
+            // skipped repair puts every later open on the fast path, so the repair
+            // could never be retried. The version stays behind and the next open tries
+            // again — the pass is idempotent, so a retry costs only the pass (#166 review).
+            console.error(`[memex] schema version ${CURRENT_SCHEMA_VERSION} not recorded: ${skipped.join(", ")} did not complete; the next open will retry`);
+            return;
+        }
+        db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+    }).immediate();
+    return db;
+}
+/**
+ * Issue #166 — apply the migration pass ONCE, outside anyone's budget.
+ *
+ * `memex update` calls this (through the installed root's dist) right after the
+ * runtime dependencies are materialized, because the alternative is what was
+ * observed: the first session after an update opens the database with five hooks
+ * at once, the first connection runs the new-table migration under the write
+ * lock, and the continuity hook waits 930 ms and gives up `busy`.
+ *
+ * Returns whether anything had to be migrated, so the caller can say so.
+ */
+export function applySchemaMigrations(options = {}) {
+    const dbPath = options.dbPath ?? getDbPath();
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    let outcome = { ran: false, skipped: [] };
+    const db = initDatabase({
+        dbPath: options.dbPath,
+        onSchemaMigration: (result) => { outcome = result; },
+    });
+    // The version this reports is the one the FILE now carries, read back, never
+    // the constant this build hoped to reach: with a skipped migration the two
+    // differ, and `memex update` printed "Schema migrated … (schema v8)" over a
+    // database still at 7 (#166 second review).
+    const version = schemaVersionOf(db);
+    db.close();
+    return {
+        // What THIS call did, not what it would have had to do: a concurrent opener
+        // may have migrated the file while this one waited on the lock.
+        migrated: outcome.ran && outcome.skipped.length === 0,
+        version,
+        skipped: outcome.skipped,
+        dbPath,
+    };
+}
+export const ROW_NORMALIZATION_INVARIANTS = [
+    {
+        name: "facts.semantic_updated_at",
+        repairSql: "UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''",
+    },
+    {
+        name: "facts.lifecycle_updated_at",
+        repairSql: "UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''",
+    },
+    {
+        name: "exchanges.assistant_learnable",
+        repairSql: "UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0",
+    },
+    {
+        name: "facts.generations",
+        pendingSql: "SELECT COUNT(*) AS n FROM facts WHERE semantic_generation < 1 OR lifecycle_generation < 1",
+        note: "the column defaults are 1; a writer that sets 0 would break every CAS",
+    },
+    {
+        name: "exchanges.metadata (continuity refreshExchangeMetadata)",
+        pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE exchange_seq <= 0 OR content_hash IS NULL " +
+            "OR content_hash = '' OR content_generation <= 0",
+    },
+    {
+        name: "exchanges.identity (continuity updateIdentity)",
+        pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE project_id IS NULL AND project <> '' AND project <> 'unknown'",
+    },
+    {
+        name: "facts.needs_consolidation",
+        note: "runs only when the column is ADDED, so it cannot be load-bearing for new rows",
+    },
+    {
+        name: "fact_context_dependencies_p2 rebuild",
+        note: "guarded by the legacy table shape; new rows are written to the current table",
+    },
+    {
+        name: "exchanges_fts rebuild",
+        note: "guarded by the trigger shape / readiness flag; new rows are maintained by triggers",
+    },
+    {
+        name: "ontology case-duplicate merge",
+        note: "a duplicate REPAIR, not row normalization; the unique indexes keep new rows clean",
+    },
+    {
+        name: "continuity evidence replay / memory_jobs reset",
+        note: "guarded by continuity_schema_meta < 7",
+    },
+];
+/** The schema version the FILE carries; 0 for a database this code never wrote. */
+function schemaVersionOf(db) {
+    try {
+        const value = Number(db.pragma("user_version", { simple: true }));
+        return Number.isFinite(value) ? value : 0;
+    }
+    catch {
+        return 0;
+    }
+}
+/**
+ * Every schema migration, in order — additive and idempotent, so a partial pass
+ * costs nothing but a repeat. Called only when the file is behind
+ * CURRENT_SCHEMA_VERSION, which is why adding anything here REQUIRES bumping
+ * that constant (src/schema-version.ts); a test fingerprints this list and fails
+ * until both move together.
+ *
+ * Returns the migrations that DID NOT complete. A migration that deliberately
+ * swallows its own failure belongs in that list: the caller then leaves the
+ * recorded version behind so the next open retries it (#166 review).
+ */
+function runSchemaMigrations(db) {
+    const skipped = [];
     // Create exchanges table
     db.exec(`
     CREATE TABLE IF NOT EXISTS exchanges (
@@ -176,7 +324,6 @@ export function initDatabase(options = {}) {
         db.exec("ALTER TABLE exchanges ADD COLUMN has_memex_recall BOOLEAN NOT NULL DEFAULT 0");
     }
     // Policy v1: agent-generated prose is context, never primary evidence.
-    db.prepare("UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0").run();
     db.exec(`
     CREATE TABLE IF NOT EXISTS recall_events (
       id TEXT PRIMARY KEY,
@@ -404,7 +551,6 @@ export function initDatabase(options = {}) {
     if (!factColumns.has("semantic_updated_at")) {
         db.exec("ALTER TABLE facts ADD COLUMN semantic_updated_at TEXT NOT NULL DEFAULT ''");
     }
-    db.prepare("UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''").run();
     // 재감사 P1-3(protocol v4): 활성 시계. is_active는 의미 state와 독립인
     // lifecycle state다 — deactivate/restore/sync lifecycle import가 generation을
     // 올리고 lifecycle_updated_at을 기록하며, embedding await가 있는 async
@@ -418,7 +564,6 @@ export function initDatabase(options = {}) {
     if (!factColumns.has("lifecycle_updated_at")) {
         db.exec("ALTER TABLE facts ADD COLUMN lifecycle_updated_at TEXT NOT NULL DEFAULT ''");
     }
-    db.prepare("UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''").run();
     // 이슈 #41: "LLM이 Misc를 골랐다"와 "실패해서 파킹됐다"를 스키마로 구분한다.
     // ontology_state = 'parked' 인 행만 실패 파킹이고, ontology_parked_version은
     // 그 파킹이 어떤 (분류 정책, 임베딩 세대)에서 일어났는지를 기록한다 —
@@ -724,8 +869,10 @@ export function initDatabase(options = {}) {
     catch (error) {
         // A database that still refuses the constraint must not brick startup:
         // createDomain/createCategory keep their oldest-row re-select, which is
-        // correct (only slower to converge) without the index.
+        // correct (only slower to converge) without the index. But the pass is then
+        // INCOMPLETE, and the caller must not record the schema version over it.
         console.error("ontology taxonomy uniqueness migration skipped:", error);
+        skipped.push("ontology-taxonomy-uniqueness");
     }
     db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_relations (
@@ -802,7 +949,15 @@ export function initDatabase(options = {}) {
     // Continuity creates memory_jobs because the budget migration adds only
     // nullable correlation columns to that queue.
     ensureModelBudgetSchema(db);
-    return db;
+    // The data-normalizing repairs, executed FROM the exported list so the list and
+    // the pass can never drift apart (#166 gate). Every column they touch exists by
+    // now, and each is a no-op on rows current writers produce — which is the
+    // invariant `test/row-normalization.test.ts` holds them to.
+    for (const invariant of ROW_NORMALIZATION_INVARIANTS) {
+        if (invariant.repairSql)
+            db.prepare(invariant.repairSql).run();
+    }
+    return skipped;
 }
 export function insertExchange(db, exchange, embedding, _toolNames) {
     const now = Date.now();

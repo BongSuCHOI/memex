@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { LIFECYCLE_COMMANDS, type HookEvent } from '../src/lifecycle.js';
+import {
+  HOOK_EXIT_MARGIN_MS,
+  hookBudgetMs,
+  hookHostTimeoutMs,
+} from '../src/hook-budget.js';
 
 /**
  * 재감사 P2-4 — SessionStart 네 명령은 hooks.json에서 서로 독립적인 async 항목이며,
@@ -66,5 +72,38 @@ describe('Continuity lifecycle hooks contract', () => {
     // The export is a separate timed entry gated on the sync switch (#110).
     expect(entries[1].async).toBeUndefined();
     expect(entries[1].timeout).toBe(3);
+  });
+
+  /**
+   * Issue #166 — the work Mac skipped 3/3 captures with `db_wait_ms: 0`: the
+   * fixed cost before the first database call (node start, dist import, DB open
+   * with its migration pass, marker fsync) is 1.45-1.9 s there, and a 2,000 ms
+   * budget derived from a 3 s host timeout was gone before the capture phase.
+   * Codex allows a larger timeout for these events, so the manifest asks for one
+   * and the budget is derived from it — the numbers may not drift apart again.
+   */
+  it('host timeouts are the raised limits, and the doctor table and budget agree (#166)', () => {
+    // learn.chatgpt.com/docs/hooks: the default and the maximum are 600 s for
+    // SessionStart, Stop, PreCompact, PostCompact, UserPromptSubmit and the tool
+    // hooks. ONLY SessionEnd and Interrupt default to 1 s and accept at most 3 s,
+    // so those two are the hooks that may not be widened (#166 review).
+    const expected: Record<string, number> = {
+      SessionStart: 10, Stop: 10, PostCompact: 10, PreCompact: 15,
+      Interrupt: 3, SessionEnd: 3,
+    };
+    for (const [event, seconds] of Object.entries(expected)) {
+      const manifest = hooksFile()[event][0].hooks[0];
+      expect(manifest.command).toContain('memex-hook-continuity');
+      expect(manifest.timeout).toBe(seconds);
+      // `memex doctor` diagnoses against its own table; it has to say the same.
+      const registered = LIFECYCLE_COMMANDS[event as HookEvent]
+        .find((command) => command.script === 'scripts/continuity-hook.js');
+      expect(registered?.timeout).toBe(seconds);
+      // And the budget is that timeout minus ONE fixed exit margin.
+      expect(hookHostTimeoutMs(event)).toBe(seconds * 1_000);
+      expect(hookBudgetMs(event)).toBe(seconds * 1_000 - HOOK_EXIT_MARGIN_MS);
+    }
+    // The export entry travels with SessionEnd's clamp, unchanged.
+    expect(hooksFile().SessionEnd[0].hooks[1].timeout).toBe(3);
   });
 });

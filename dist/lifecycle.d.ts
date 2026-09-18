@@ -8,6 +8,16 @@ export interface LifecycleCommandConfig {
     timeout?: number;
 }
 /** Relative-to-plugin-root commands registered for each event. */
+/**
+ * Issue #166 — `timeout` is the HOST timeout in seconds, and the hook budget in
+ * src/hook-budget.ts is derived from it (timeout - one exit margin). These
+ * numbers, hooks.json and HOOK_HOST_TIMEOUT_MS are pinned together by a test:
+ * a budget derived from a timeout the host does not grant is worse than none.
+ * Per learn.chatgpt.com/docs/hooks the cap is 600 s for SessionStart, Stop,
+ * PreCompact, PostCompact and UserPromptSubmit; SessionEnd and Interrupt are the
+ * only two events that default to 1 s and accept at most 3 s, so those two stay
+ * at 3 (#166 review).
+ */
 export declare const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]>;
 /** Hook scripts that must be registered for cross-device sync to work at all. */
 export declare const SYNC_LIFECYCLE_SCRIPTS: {
@@ -113,6 +123,15 @@ export interface Check {
  */
 export declare const CAPTURE_GAP_LOSS_STATEMENT = "continuity/extraction of the tail is pending #163";
 export declare function captureGapCheck(): Check;
+/**
+ * Issue #166 (third review) — `memex update` can exit 3 with "the migration did
+ * not complete", and doctor had nothing to say about it.
+ *
+ * Read-only and migration-free by construction: it opens the file with the same
+ * lightweight connection `countRows` uses and reads one pragma. A doctor run must
+ * never be the thing that migrates a database.
+ */
+export declare function schemaVersionCheck(): Check;
 export declare function hookLatencyCheck(now?: number): Check;
 export declare function llmModelCheck(): Check;
 export declare function doctor(): Promise<DoctorReport>;

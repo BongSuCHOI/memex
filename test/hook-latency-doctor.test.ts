@@ -151,6 +151,51 @@ describe("doctor capture-gap", () => {
     expect(after.detail).toContain("560 skipped capture(s)");
     expect(after.detail).toContain(`oldest ${fresh}`);
   }, 30_000);
+
+  it("classifies EVERY marker, not the first 500 the page returned (#165 post-release)", () => {
+    // 500 telemetry-only markers older than one unprocessed Stop. The scan
+    // returns the oldest 500, so before the fix the warn/ok decision was made
+    // from a page that could not contain the Stop at all: `total: 501` with
+    // `status: ok`, and a detail that never named the marker that mattered.
+    const base = Date.parse("2026-09-17T08:00:00.000Z");
+    for (let i = 0; i < 500; i++) {
+      writeCaptureGapMarker({
+        invocationId: `inv-telemetry-${i}`, event: "PostCompact", source: "auto",
+        sessionId: "session-doctor-page", cwd: "/project", transcriptPath: null,
+        transcriptBytes: null, turnId: null, ts: new Date(base + i).toISOString(),
+      });
+    }
+    const stopTs = new Date(base + 10 * 60 * 1_000).toISOString();
+    writeCaptureGapMarker({
+      invocationId: "inv-capture-behind-the-page", event: "Stop", source: null,
+      sessionId: "session-doctor-page", cwd: "/project", transcriptPath: "/tmp/rollout.jsonl",
+      transcriptBytes: 8_192, turnId: "turn-1", ts: stopTs,
+    });
+
+    const check = captureGapCheck();
+    expect(check.detail).toContain("501 skipped capture(s)");
+    expect(check.status).toBe("warn");
+    // The at-stake marker is named even though it is off the returned page.
+    expect(check.detail).toContain(
+      `capture skipped at Stop ${stopTs} (8192 uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`,
+    );
+  }, 30_000);
+
+  it("stays ok when all 501 markers have nothing at stake (#165 post-release)", () => {
+    const base = Date.parse("2026-09-17T08:00:00.000Z");
+    for (let i = 0; i < 501; i++) {
+      writeCaptureGapMarker({
+        invocationId: `inv-telemetry-${i}`, event: "PostCompact", source: "auto",
+        sessionId: "session-doctor-page-ok", cwd: "/project", transcriptPath: null,
+        transcriptBytes: null, turnId: null, ts: new Date(base + i).toISOString(),
+      });
+    }
+    const check = captureGapCheck();
+    expect(check.detail).toContain("501 skipped capture(s)");
+    expect(check.status).toBe("ok");
+    expect(check.detail).toContain("no capture at stake");
+    expect(check.detail).not.toMatch(/pending #163/);
+  }, 30_000);
 });
 
 describe("doctor hook-latency", () => {
@@ -270,5 +315,231 @@ describe("doctor hook-latency", () => {
     expect(detail).toContain("killed by host");
     expect(detail).toContain("appendSessionEvidence held the write lock for 2500 ms");
     expect(detail).not.toContain("scheduleCapsuleBacklog#1");
+  });
+
+  /**
+   * Issue #166 — the work Mac skipped 3 of 3 captures (busy, deadline, oversize)
+   * and `hook-latency` said `ok: 4 hook run(s) completed, max 8755 ms`. Every
+   * skipped capture HAS a done row; reading only duration and lock waits made the
+   * one thing the user needed to know invisible.
+   */
+  it("warns when completed runs report skipped captures (#166)", () => {
+    writeRows([
+      { ts: "2026-09-18T01:57:00.000Z", event: "SessionStart", phase: "start", invocation_id: "inv-1", pid: 11 },
+      {
+        ts: "2026-09-18T01:57:01.000Z", event: "SessionStart", phase: "done", invocation_id: "inv-1",
+        pid: 11, outcome: "busy", duration_ms: 1_045, db_wait_ms: 930, startup_ms: 110,
+        error: "database is locked",
+      },
+      { ts: "2026-09-18T01:57:10.000Z", event: "Stop", phase: "start", invocation_id: "inv-2", pid: 12 },
+      {
+        ts: "2026-09-18T01:57:11.900Z", event: "Stop", phase: "done", invocation_id: "inv-2",
+        pid: 12, outcome: "deadline", duration_ms: 1_972, db_wait_ms: 0, startup_ms: 1_700,
+        error: "hook budget exhausted before the next phase (28 ms left)",
+      },
+      { ts: "2026-09-18T01:57:20.000Z", event: "SessionEnd", phase: "start", invocation_id: "inv-3", pid: 13 },
+      {
+        ts: "2026-09-18T01:57:21.700Z", event: "SessionEnd", phase: "done", invocation_id: "inv-3",
+        pid: 13, outcome: "oversize", duration_ms: 1_733, db_wait_ms: 0, startup_ms: 1_450,
+        error: "132399 pending bytes exceed the remaining 267 ms hook budget",
+      },
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-18T01:58:00.000Z"));
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("3 skipped (busy 1, deadline 1, oversize 1)");
+    // The last error text, so the reader does not have to open the log.
+    expect(check.detail).toContain("132399 pending bytes");
+  });
+
+  /**
+   * #166 third review — a UserPromptSubmit `error` row is the documented recall
+   * receipt fallback: the context WAS delivered and the receipt stayed `prepared`.
+   * Counting it as a skipped capture told the reader a capture was lost.
+   */
+  it("calls an inject receipt failure what it is, not a skipped capture (#166)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      { ts: "2026-09-18T02:00:00.000Z", event: "UserPromptSubmit", phase: "start", invocation_id: "inv-r", pid: 31 },
+      {
+        ts: "2026-09-18T02:00:01.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-r",
+        pid: 31, outcome: "error", duration_ms: 900, db_wait_ms: 0, startup_ms: 200,
+        // #166 final review: the stage is what makes this a DELIVERED injection.
+        stage: "receipt", context_delivered: true, error: "prepared receipt not found",
+      },
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-18T02:01:00.000Z"));
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("1 receipt failure (context delivered)");
+    expect(check.detail).not.toContain("skipped");
+    expect(check.detail).toContain("prepared receipt not found");
+  });
+
+  /**
+   * #166 final review — `outcome: "error"` on a UserPromptSubmit row means three
+   * different things. scripts/inject-context.js records it for a receipt that
+   * stayed `prepared` AFTER the context was delivered (#44's fallback), for a
+   * daemon/cold compute failure where nothing reached the user, and for an import
+   * exception before any of it. Calling all three "context delivered" told the
+   * reader an injection had landed when none had, so the row carries the stage.
+   */
+  it("separates a receipt failure from an injection that delivered nothing (#166)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      {
+        ts: "2026-09-18T03:00:01.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-r",
+        pid: 41, outcome: "error", duration_ms: 900, db_wait_ms: 0, startup_ms: 200,
+        stage: "receipt", context_delivered: true, error: "prepared receipt not found",
+      },
+      {
+        ts: "2026-09-18T03:00:02.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-c",
+        pid: 42, outcome: "error", duration_ms: 800, db_wait_ms: 0, startup_ms: 200,
+        stage: "compute", context_delivered: false, error: "SQLITE_CANTOPEN: unable to open database file",
+      },
+      {
+        ts: "2026-09-18T03:00:03.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-s",
+        pid: 43, outcome: "error", duration_ms: 300, db_wait_ms: 0,
+        stage: "startup", context_delivered: false, error: "Cannot find package 'better-sqlite3'",
+      },
+      // A pre-0.7.25 row has no stage: it may not be claimed either way.
+      {
+        ts: "2026-09-18T03:00:04.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-o",
+        pid: 44, outcome: "error", duration_ms: 400, db_wait_ms: 0, error: "legacy row",
+      },
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-18T03:01:00.000Z"));
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("1 receipt failure (context delivered)");
+    expect(check.detail).toContain("2 injection failed (no context delivered)");
+    expect(check.detail).toContain("1 inject error (stage unknown)");
+    // None of them is a skipped capture, and the last error is still quoted.
+    expect(check.detail).not.toContain("skipped");
+    expect(check.detail).toContain("legacy row");
+  });
+
+  it("keeps ok for outcomes that are not skipped captures (#166)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      { ts: "2026-09-18T01:57:00.000Z", event: "UserPromptSubmit", phase: "start", invocation_id: "inv-d", pid: 21 },
+      {
+        ts: "2026-09-18T01:57:08.800Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-d",
+        pid: 21, outcome: "daemon", duration_ms: 8_755, db_wait_ms: 0, startup_ms: 240,
+      },
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-18T01:58:00.000Z"));
+    expect(check.status).toBe("ok");
+    expect(check.detail).not.toContain("skipped");
+    // Issue #166: the fixed cost before the first database call is reported, so
+    // "the budget was gone before the capture" is measurable per machine.
+    expect(check.detail).toMatch(/max startup \d+ ms/);
+  });
+
+  it("names the skipped captures beside a database wait it already warned about (#166)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      ...paired("inv-c", "PreCompact", { db_wait_ms: 5_200, outcome: "busy" }),
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z"));
+    expect(check.status).toBe("warn");
+    // The existing rule keeps its verdict; the skip is added, not substituted.
+    expect(check.detail).toContain("hooks waited on the database");
+    expect(check.detail).toContain("1 skipped (busy 1)");
+  });
+
+  /**
+   * Post-release P2 (#165) — the worker-transactions row is written when the
+   * transaction ENDS, so its `ts` is the end, and the held interval is
+   * `[ts - held_ms, ts]`. Reading `ts` as the start made doctor wrong in both
+   * directions: the holder that was still holding when the hook gave up sits
+   * beyond `toMs` and was skipped, while a transaction that had already
+   * finished before the hook began looked like it started right then.
+   */
+  it("reads the worker row's ts as the END of the transaction (#165 post-release)", () => {
+    // The offending hook ran 08:00:00.000 -> 08:00:01.000 (duration_ms 1000).
+    writeRows([
+      { ts: "2026-09-17T08:00:00.000Z", event: "Stop", phase: "start", invocation_id: "inv-w", pid: 111 },
+      {
+        ts: "2026-09-17T08:00:01.000Z", event: "Stop", phase: "done", invocation_id: "inv-w",
+        pid: 111, outcome: "busy", duration_ms: 1_000, db_wait_ms: 5_200,
+      },
+    ]);
+    writeWorkerTransactions([
+      // Ended 100 ms after the hook's window began, so it held [07:59:58.100,
+      // 08:00:00.100] — an overlap either way of reading `ts`.
+      { ts: "2026-09-17T08:00:00.100Z", pid: 43, label: "appendSessionEvidence", wait_ms: 5, held_ms: 2_000 },
+      // The real holder: [07:59:58.000, 08:00:03.000] covers the whole hook and
+      // ends 2 s after it. Read as a START this row lands after the window and
+      // was skipped, leaving the lighter row above named instead.
+      { ts: "2026-09-17T08:00:03.000Z", pid: 44, label: "settleTurn", wait_ms: 5, held_ms: 5_000 },
+    ]);
+    const detail = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z")).detail;
+    expect(detail).toContain("hooks waited on the database");
+    expect(detail).toContain("worker transaction settleTurn held the write lock for 5000 ms");
+    expect(detail).not.toContain("no worker transaction overlapped this hook");
+  });
+
+  it("does not name a worker transaction that had already ended (#165 post-release)", () => {
+    writeRows([
+      { ts: "2026-09-17T08:00:00.000Z", event: "Stop", phase: "start", invocation_id: "inv-w", pid: 111 },
+      {
+        ts: "2026-09-17T08:00:01.000Z", event: "Stop", phase: "done", invocation_id: "inv-w",
+        pid: 111, outcome: "busy", duration_ms: 1_000, db_wait_ms: 5_200,
+      },
+    ]);
+    writeWorkerTransactions([
+      // Held [07:59:57.000, 07:59:59.000]: over and done 1 s before the hook
+      // began, which is outside the ±250 ms skew margin. Read as a START it
+      // looked like it ran straight through the hook.
+      { ts: "2026-09-17T07:59:59.000Z", pid: 43, label: "applyWorkCapsulePatch", wait_ms: 5, held_ms: 2_000 },
+    ]);
+    const detail = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z")).detail;
+    expect(detail).toContain("hooks waited on the database");
+    expect(detail).not.toContain("applyWorkCapsulePatch");
+    expect(detail).toContain("no worker transaction overlapped this hook");
+  });
+
+  /**
+   * #166 third review — the killed-hook correlation window ran to
+   * `budget + 10 s grace`. The grace exists to decide "no done row means killed",
+   * not to widen who could have been holding the lock: a transaction that started
+   * seconds AFTER the host had already killed the hook was named as its holder.
+   */
+  it("correlates a killed hook only inside the host's own timeout (#166 third review)", () => {
+    writeRows([
+      { ts: "2026-09-17T08:00:00.000Z", event: "Stop", phase: "start", invocation_id: "inv-k", pid: 777 },
+      ...paired("inv-a", "Stop"),
+    ]);
+    writeWorkerTransactions([
+      // Held [08:00:12.000, 08:00:14.000]: the host killed this hook at 08:00:10,
+      // so this transaction cannot be what it waited on.
+      { ts: "2026-09-17T08:00:14.000Z", pid: 45, label: "scheduleCapsuleBacklog#2", wait_ms: 5, held_ms: 2_000 },
+    ]);
+    const after = hookLatencyCheck(Date.parse("2026-09-17T08:00:30.000Z")).detail;
+    expect(after).toContain("killed by host");
+    expect(after).not.toContain("scheduleCapsuleBacklog#2");
+    expect(after).toContain("no worker transaction overlapped this hook");
+
+    // A transaction inside the host window is still named.
+    writeWorkerTransactions([
+      { ts: "2026-09-17T08:00:09.000Z", pid: 46, label: "appendSessionEvidence", wait_ms: 5, held_ms: 3_000 },
+    ]);
+    const inside = hookLatencyCheck(Date.parse("2026-09-17T08:00:30.000Z")).detail;
+    expect(inside).toContain("appendSessionEvidence held the write lock for 3000 ms");
+  });
+
+  it("keeps the ±250 ms skew margin around the hook's window (#165 post-release)", () => {
+    writeRows([
+      { ts: "2026-09-17T08:00:00.000Z", event: "Stop", phase: "start", invocation_id: "inv-w", pid: 111 },
+      {
+        ts: "2026-09-17T08:00:01.000Z", event: "Stop", phase: "done", invocation_id: "inv-w",
+        pid: 111, outcome: "busy", duration_ms: 1_000, db_wait_ms: 5_200,
+      },
+    ]);
+    writeWorkerTransactions([
+      // Ended 100 ms BEFORE the window began: two processes, two clocks and a
+      // log written after the fact, so this is still the holder to name.
+      { ts: "2026-09-17T07:59:59.900Z", pid: 43, label: "appendSessionEvidence", wait_ms: 5, held_ms: 2_000 },
+    ]);
+    const detail = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z")).detail;
+    expect(detail).toContain("worker transaction appendSessionEvidence held the write lock for 2000 ms");
   });
 });

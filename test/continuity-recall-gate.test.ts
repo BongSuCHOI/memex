@@ -23,7 +23,7 @@ import { embeddingCallStats, stubEmbedding } from "../src/embeddings.js";
 import { decideRecall, type RecallGateState } from "../src/recall-gate.js";
 import { recordIncidentOccurrence, recordChronicleEvent } from "../src/chronicle.js";
 import { advanceContextEpoch, ensureSessionMemoryState, handleContinuityHook } from "../src/continuity-core.js";
-import { bindSessionWorkstream, createWorkstream, indexHotEvidenceForSession, sessionProjectRevisionState } from "../src/continuity-identity.js";
+import { bindSessionWorkstream, createWorkstream, indexHotEvidenceForSession, readHotEvidence, sessionProjectRevisionState } from "../src/continuity-identity.js";
 import type { ConversationExchange } from "../src/types.js";
 
 let root: string;
@@ -91,6 +91,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   db.close();
   delete process.env.TEST_DB_PATH;
   delete process.env.MEMEX_HOME;
@@ -155,6 +156,13 @@ describe("Phase 5B adversarial gate", () => {
   });
 
   it("3. sibling Hot Evidence is injected once per epoch and the session's own evidence is never echoed back", async () => {
+    // The fixture below pins absolute dates, so the CLOCK has to be pinned too.
+    // Hot Evidence expires 14 days after it is indexed, and the SessionStart
+    // rehydration in this case legitimately reads the wall clock (a hook runs
+    // now, by definition) — so on 2026-09-18 this test started failing on a
+    // fixture written for 2026-09-04, having passed the day before.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-04T00:06:00.000Z"));
     const own = ensureSessionMemoryState(db, { sessionId: SESSION, project: cwd, prompt: "start" });
     bindSessionWorkstream(db, { sessionId: "sibling", projectId: own.projectId, workspaceId: own.workspaceId, projectPath: cwd, explicitWorkstreamId: own.workstreamId });
     insertExchange(db, exchange("own-ex", SESSION, "2026-09-04T00:00:00.000Z", "My own latest instruction about the redis client"), stubEmbedding("own"));
@@ -181,6 +189,32 @@ describe("Phase 5B adversarial gate", () => {
     const afterCompact = await inject("Tune the redis session store timeout for the api gateway path", SESSION, { now: "2026-09-04T00:05:00.000Z" });
     expect(afterCompact.embeddings).toBeGreaterThanOrEqual(1);
     expect(afterCompact.context).not.toContain("Sibling confirmed the failover");
+  });
+
+  it("3b. the injected clock, not the wall clock, decides Hot Evidence recency", async () => {
+    // `computeInjectContext(..., { now })` governs every other time-dependent
+    // decision in the inject path, but the Hot Evidence read passed no clock and
+    // filtered `expires_at > Date.now()`. A caller replaying a past prompt — or a
+    // test with a fixture era — silently lost the sibling lane once the wall
+    // clock had moved past the 14-day TTL of evidence its own `now` predates.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-25T00:00:00.000Z"));
+    const own = ensureSessionMemoryState(db, { sessionId: SESSION, project: cwd, prompt: "start" });
+    bindSessionWorkstream(db, { sessionId: "sibling", projectId: own.projectId, workspaceId: own.workspaceId, projectPath: cwd, explicitWorkstreamId: own.workstreamId });
+    insertExchange(db, exchange("sib-past", "sibling", "2026-09-04T00:00:00.000Z", "Sibling measured P95 240ms on the redis client benchmark"), stubEmbedding("sibling"));
+    // Indexed in the fixture's era: it expires 2026-09-18, before the wall clock.
+    indexHotEvidenceForSession(db, "sibling", { now: "2026-09-04T00:00:01.000Z" });
+    fact("The runtime session store is Redis");
+    settleRevision();
+
+    // The lane is empty against the wall clock and full against the prompt's own.
+    const scope = { projectId: own.projectId, workstreamId: own.workstreamId, excludeSessionId: SESSION };
+    expect(readHotEvidence(db, scope)).toHaveLength(0);
+    expect(readHotEvidence(db, { ...scope, now: "2026-09-04T00:01:00.000Z" }).length).toBeGreaterThan(0);
+
+    const replay = await inject("Configure the redis runtime session store client", SESSION, { now: "2026-09-04T00:01:00.000Z" });
+    expect(replay.context).toContain("[RECENT EVIDENCE — NOT YET DISTILLED]");
+    expect(replay.context).toContain("Sibling measured P95");
   });
 
   it("4. a WATCH warning is suppressed inside its TTL and re-emitted on a fresh match after five substantive prompts", async () => {

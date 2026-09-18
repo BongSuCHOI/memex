@@ -2,6 +2,138 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.25 - 2026-09-18
+
+Hook budgets that fit a slow machine, and three doctor readings that were wrong
+about a healthy install (#166, #165).
+
+### Hooks
+
+- The host timeouts in hooks.json are raised where the host allows it —
+  SessionStart, Stop and PostCompact to 10 s, PreCompact to 15 s — and the hook
+  budget is now DERIVED from the event's timeout minus one fixed 300 ms exit
+  margin: 9,700 ms, 14,700 ms, and 2,700 ms for SessionEnd and Interrupt, the only
+  two events the host caps at 3 s (learn.chatgpt.com/docs/hooks: every other hook
+  defaults to and accepts up to 600 s). `MEMEX_HOOK_BUDGET_MS` still overrides.
+  One lock wait may now take 2,500 ms (was 800 ms) and still never eats the exit
+  margin, which is 300 ms rather than 150 because the done row lands at the
+  deadline by design and node's teardown after it measured ~200 ms: a 3 s hook was
+  observed exiting 2,916 ms in, 84 ms from a kill. The doctor's expected-hooks
+  table and HOOK_HOST_TIMEOUT_MS are pinned to hooks.json by a per-event test.
+  0.7.24 spent 2,000 ms of a 3 s timeout and reserved a second for an exit that
+  costs tens of ms; on a machine whose fixed cost before the first database call is
+  1.45-1.9 s, that budget was gone before the capture phase and three of three
+  captures were skipped with `db_wait_ms: 0`.
+- The ingest pre-check no longer calls an exhausted budget an oversize delta. When
+  less than the 100 ms reserve (was 300 ms) remains, the outcome is `deadline`;
+  `oversize` is reserved for a delta that genuinely cannot be ingested. The
+  observed SessionEnd reported "132399 pending bytes exceed the remaining 267 ms
+  hook budget" for 6.6 ms of ingest, because 267 - 300 is negative.
+- The done row carries `startup_ms`: process entry to just before the first
+  database call. That fixed cost is what decides whether a budget is generous or
+  already spent, and it was invisible.
+
+### Database
+
+- `insertFact` sets `lifecycle_updated_at` (and `lifecycle_generation`) itself.
+  It never did: the column default `''` survived the insert and the every-open
+  migration pass repaired it on the NEXT open. With the pass skipped for a current
+  file that latent writer bug became visible — a freshly exported facts.jsonl
+  carried `"lifecycle_updated_at":""` and the importing device rejected the
+  archive with "row failed protocol v4 schema validation", which is how the Web UI
+  import gate failed. The data-normalizing statements of the pass now run from one
+  exported list (`ROW_NORMALIZATION_INVARIANTS`), and a table-driven test holds
+  every one of them to the invariant that makes the fast path safe: a no-op on
+  rows the current writers produce. They stay in the pass for older files.
+  CURRENT_SCHEMA_VERSION is 9, so a database written by an earlier build of this
+  change re-runs the pass once and repairs any row left with an empty clock.
+
+- `initDatabase()` runs the migration list only when the FILE is behind the code,
+  gated on `PRAGMA user_version` against `CURRENT_SCHEMA_VERSION`
+  (src/schema-version.ts), and records the version inside the same transaction as
+  the migrations. That decision is made INSIDE the `BEGIN IMMEDIATE` that runs the
+  pass — a cheap unlocked check still keeps the common case lock-free. Deciding it
+  outside the lock meant the five hooks and the sync-import that open the data root
+  at SessionStart all read a stale version and then ran the whole pass in turn, the
+  contention this gate exists to remove; the losers now wait out one short lock and
+  find nothing to do. `applySchemaMigrations()` reports whether THIS call migrated,
+  not whether a migration was due. It used to run every migration on every open: measured on a
+  92 MB fixture with 15,000 exchanges, one open cost 1,040 ms cold / 415 ms warm —
+  the DDL under 1 ms, the rest data backfill with nothing left to do, under the
+  write lock (`UPDATE exchanges SET project_id …` 371 ms, a per-row metadata
+  UPDATE 197 ms over 15,000 calls, 173 ms of COMMIT, a 146 ms driving scan). The
+  same open on a current file now costs about 2 ms. Five hooks opening that
+  database at SessionStart is where the reported 930 ms lock wait came from.
+  Adding or changing a migration requires bumping CURRENT_SCHEMA_VERSION: a test
+  fingerprints the statements the pass executes and fails until it moves. A
+  migration that swallows its own failure by design (the taxonomy uniqueness
+  index, which must not brick startup on a database that refuses the constraint)
+  keeps the version from being recorded at all, so the next open retries the
+  repair instead of taking the fast path over an unrepaired file for ever.
+- `memex update` applies the migration once, after materializing dependencies and
+  through the newly installed root's build, printing `Schema migrated for <version>`
+  or `Schema already current`. Also available as
+  `node scripts/migrate-schema.mjs [--root <plugin root>]`, whose exit codes are 0
+  (migrated or already current), 1 (could not run) and 3 (ran, but a migration was
+  skipped). The version it reports is read back from the file, not the constant
+  this build aimed at: a skipped migration used to print
+  `Schema migrated … (schema v8)` over a database still at v7. With a skipped
+  migration it prints `Schema migration incomplete: <names> — will retry on next
+  open (schema v7)` and exits 3, and `memex update` ends with that warning rather
+  than aborting — the install itself succeeded, and the migration is idempotent.
+
+### Doctor
+
+- New check `schema-version`: the file's `PRAGMA user_version` against
+  CURRENT_SCHEMA_VERSION, read through a read-only connection that can never
+  migrate — `current (v8)`, or a warn with
+  `pending migrations: v7 < v8 — will retry on next open or run memex update`.
+  `memex update`'s exit 3 pointed at doctor, which until now had nothing to say.
+- `hook-latency` no longer calls a UserPromptSubmit `error` row a skipped capture,
+  and no longer calls all of them delivered. The inject hook's done row now carries
+  `stage` (`receipt`/`compute`/`startup`) and `context_delivered`, because that one
+  outcome covered three different events: #44's documented fallback, where the
+  context WAS delivered and only its recall receipt stayed `prepared`
+  (`1 receipt failure (context delivered)`); a daemon or cold compute failure,
+  where nothing reached the user (`1 injection failed (no context delivered)`); and
+  an import failure before any of it. A row written before 0.7.25 has no stage and
+  is reported as `1 inject error (stage unknown)` rather than claimed either way.
+  All of them warn; none of them is a skipped capture.
+- `hook-latency` correlates a killed hook's lock holder inside the host's own
+  timeout (+500 ms of skew), not the budget plus the 10 s kill grace. The grace
+  decides "no done row means killed"; using it as the correlation window let a
+  transaction that started after the kill be named as the holder.
+
+- `inject-output` accepts `context-only`. A last injection that delivered
+  Capsule/continuity context with zero facts was reported
+  `WARN inject-output: context-only via=daemon …` although nothing had failed:
+  the check's ok-status map never learned the status 0.6.0 introduced, so it
+  fell through to "unknown status". `injection-yield` already counts that line
+  as a normal zero-fact retrieval and `recall-provenance` as an emitted bundle —
+  one log line now gets one verdict. A `receipt-failed` line inside the window
+  still warns, and `error`/`receipt-failed` on the last line still fails.
+- `hook-latency` reads the worker transaction row's `ts` as the END of the
+  transaction, because that is when the row is written: the held interval is
+  `[ts - held_ms, ts]`, not `[ts, ts + held_ms]` (the ±250 ms skew margin is
+  unchanged). Both directions were wrong — the worker that was still holding the
+  write lock when the hook gave up sits past the hook's window and was skipped
+  ("no worker transaction overlapped this hook"), while a transaction that had
+  already finished before the hook began was named as the holder.
+- `hook-latency` warns when a COMPLETED run reports a skipped capture. Any done
+  row whose outcome is not one of ok/daemon/fallback/empty-prompt/skipped —
+  busy, deadline, oversize, error — is now counted and named
+  (`3 skipped (busy 1, deadline 1, oversize 1) last error: …`), beside the
+  existing kill and lock-wait verdicts rather than instead of them, and the ok
+  line reports `max startup N ms` from the new `startup_ms`. The machine that
+  skipped three of three captures was told `ok: 4 hook run(s) completed`.
+- `capture-gap` decides warn/ok from EVERY marker, not from the first 500 the
+  scan returns. 500 old telemetry-only PostCompact markers ahead of one
+  unprocessed Stop reported `501 skipped capture(s)` with `status: ok`: the
+  count was already read from the whole set, the classification was not. The
+  per-class tallies are now computed before the return cap, and the oldest
+  marker of each warning class leads the detail, so the marker that decided the
+  verdict is named even when it is off the returned page.
+
 ## 0.7.24 - 2026-09-17
 
 Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).

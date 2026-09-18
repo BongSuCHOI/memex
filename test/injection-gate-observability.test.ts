@@ -241,3 +241,47 @@ it("the baseline margin is measurable and overridable without a code change", as
     expect(core.resolveBaselineMargin()).toBe(0.045);
   }
 });
+
+/**
+ * Issue #165 — the last injection delivered Capsule/continuity context with zero
+ * facts (`context-only`, the status #32 introduced above) and doctor reported:
+ *
+ *   WARN  inject-output: context-only via=daemon 2026-09-17T11:39:53.668Z
+ *
+ * Nothing had failed. The inject-output check's `okStatuses` map simply never
+ * learned the new status, so it fell through to "unknown status → warn" while
+ * `injection-yield` in the same file counted the very same line as a normal
+ * zero-fact retrieval (ZERO_FACT_STATUSES) and `recall-provenance` counted it as
+ * an emitted bundle. One log line, three checks, two verdicts.
+ */
+it("a context-only last line is a normal outcome for inject-output (#165)", async () => {
+  appendInjectLog({
+    status: "context-only", project: root, prompt_len: 40, candidates: 5, injected: 0,
+    chars: 208, sections: ["ASSISTANT CONTEXT"], lexical_lane: "ok", via: "daemon",
+  });
+
+  const injectOutput = await check("inject-output");
+  expect(injectOutput.status).toBe("ok");
+  expect(injectOutput.detail).toContain("context-only via=daemon");
+  expect(injectOutput.detail).not.toContain("no durable recall receipt");
+  // The zero-fact question is injection-yield's, and one run is not a streak.
+  expect((await check("injection-yield")).status).toBe("ok");
+});
+
+it("a context-only last line still warns when a receipt failed in the window (#165)", async () => {
+  appendInjectLog({
+    status: "receipt-failed", project: root, via: "daemon",
+    error: "prepared receipt not found",
+  });
+  appendInjectLog({
+    status: "context-only", project: root, prompt_len: 40, candidates: 5, injected: 0,
+    chars: 208, sections: ["ASSISTANT CONTEXT"], lexical_lane: "ok", via: "daemon",
+  });
+
+  // Accepting the status must not swallow #44's contract violation: the receipt
+  // failure is still in the window, so the verdict is warn, with the count.
+  const injectOutput = await check("inject-output");
+  expect(injectOutput.status).toBe("warn");
+  expect(injectOutput.detail).toContain("context-only via=daemon");
+  expect(injectOutput.detail).toContain("1/2 recent runs emitted context with no durable recall receipt");
+});

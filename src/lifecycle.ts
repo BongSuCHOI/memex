@@ -23,9 +23,14 @@ import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { lastObserved, readHookEventTail, type HookEventRow } from "./observe-hook-event.js";
-import { scanCaptureGapMarkers, type CaptureGapMarker } from "./capture-gap-markers.js";
-import { hookBudgetMs } from "./hook-budget.js";
+import {
+  scanCaptureGapMarkers,
+  type CaptureGapMarker,
+  type LoadedCaptureGapMarker,
+} from "./capture-gap-markers.js";
+import { hookBudgetMs, hookHostTimeoutMs } from "./hook-budget.js";
 import { getDbPath, getMemexHome } from "./paths.js";
+import { CURRENT_SCHEMA_VERSION } from "./schema-version.js";
 import { resolveLlmSelection } from "./model-settings.js";
 import { readExportStatus } from "./sync-export.js";
 import { readSyncConfig, resolveSyncDir } from "./sync-paths.js";
@@ -66,9 +71,19 @@ export interface LifecycleCommandConfig {
 }
 
 /** Relative-to-plugin-root commands registered for each event. */
+/**
+ * Issue #166 — `timeout` is the HOST timeout in seconds, and the hook budget in
+ * src/hook-budget.ts is derived from it (timeout - one exit margin). These
+ * numbers, hooks.json and HOOK_HOST_TIMEOUT_MS are pinned together by a test:
+ * a budget derived from a timeout the host does not grant is worse than none.
+ * Per learn.chatgpt.com/docs/hooks the cap is 600 s for SessionStart, Stop,
+ * PreCompact, PostCompact and UserPromptSubmit; SessionEnd and Interrupt are the
+ * only two events that default to 1 s and accept at most 3 s, so those two stay
+ * at 3 (#166 review).
+ */
 export const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]> = {
   SessionStart: [
-    { script: "scripts/continuity-hook.js", matcher: "startup|resume|clear|compact", timeout: 3 },
+    { script: "scripts/continuity-hook.js", matcher: "startup|resume|clear|compact", timeout: 10 },
     { script: "scripts/version-drift-check.js", async: true, matcher: "startup|resume" },
     { script: "cli/memex.js", args: ["sync", "--background"], async: true, matcher: "startup|resume" },
     { script: "scripts/sync-import-hook.js", async: true, matcher: "startup|resume" },
@@ -78,10 +93,10 @@ export const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]> = {
     { script: "scripts/inject-context-hook.sh" },
     { script: "scripts/session-start-maintenance.js", args: ["--prompt"], async: true },
   ],
-  Stop: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
+  Stop: [{ script: "scripts/continuity-hook.js", timeout: 10 }],
   Interrupt: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
-  PreCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 5 }],
-  PostCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 3 }],
+  PreCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 15 }],
+  PostCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 10 }],
   // Issue #35: SessionEnd is still a bounded final capture fence — the export
   // is a SEPARATE async entry that Codex does not wait for. It is a no-op
   // unless cross-device sync is enabled AND durable state changed since the
@@ -933,54 +948,81 @@ const CAPTURE_MARKER_EVENTS = new Set(["Stop", "Interrupt", "PreCompact", "Sessi
  * continuity tail was pending #163, for thirty days. Three classes, three
  * statements, and only the first two are worth a warning.
  */
-function captureGapMarkerLine(marker: CaptureGapMarker): { text: string; atStake: boolean } {
-  if (CAPTURE_MARKER_EVENTS.has(marker.event)) {
-    // `transcriptBytes` is the transcript size the invocation saw; with no
-    // database reachable at marker time there is no committed boundary to
-    // subtract, so this is the bound on what the skip left uncaptured.
-    return {
-      atStake: true,
-      text: `capture skipped at ${marker.event} ${marker.ts} (${
-        marker.transcriptBytes ?? 0} uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`,
-    };
-  }
+type CaptureGapClass = "capture" | "epoch" | "neutral";
+
+/** The classes a leftover marker is warned about; the rest are recorded only. */
+const CAPTURE_GAP_AT_STAKE_CLASSES: CaptureGapClass[] = ["capture", "epoch"];
+
+function captureGapMarkerClass(marker: CaptureGapMarker): CaptureGapClass {
+  if (CAPTURE_MARKER_EVENTS.has(marker.event)) return "capture";
   if (marker.event === "SessionStart" && (marker.source === "clear" || marker.source === "compact")) {
-    // Not a capture: the epoch advance. It heals itself on the next injection,
-    // which is why this says so instead of quoting the tail statement.
-    return {
-      atStake: true,
-      text: `epoch advance skipped at SessionStart(${marker.source}) ${marker.ts}; ` +
-        "repaired by the next injection",
-    };
+    return "epoch";
   }
-  return {
-    atStake: false,
-    text: `hook did not finish at ${marker.event} ${marker.ts} (no capture at stake)`,
-  };
+  return "neutral";
+}
+
+function captureGapMarkerLine(marker: CaptureGapMarker): string {
+  switch (captureGapMarkerClass(marker)) {
+    case "capture":
+      // `transcriptBytes` is the transcript size the invocation saw; with no
+      // database reachable at marker time there is no committed boundary to
+      // subtract, so this is the bound on what the skip left uncaptured.
+      return `capture skipped at ${marker.event} ${marker.ts} (${
+        marker.transcriptBytes ?? 0} uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`;
+    case "epoch":
+      // Not a capture: the epoch advance. It heals itself on the next injection,
+      // which is why this says so instead of quoting the tail statement.
+      return `epoch advance skipped at SessionStart(${marker.source}) ${marker.ts}; ` +
+        "repaired by the next injection";
+    default:
+      return `hook did not finish at ${marker.event} ${marker.ts} (no capture at stake)`;
+  }
 }
 
 export function captureGapCheck(): Check {
   const name = "capture-gap";
   let scan: ReturnType<typeof scanCaptureGapMarkers>;
   try {
-    // The COUNT and the OLDEST come from the whole matched set, not from the
-    // first page a directory listing happened to return (#162 review 10).
-    scan = scanCaptureGapMarkers();
+    // The COUNT, the OLDEST and the per-class tallies all come from the whole
+    // matched set, not from the first page a directory listing happened to
+    // return (#162 review 10, #165 post-release review).
+    scan = scanCaptureGapMarkers({ classify: captureGapMarkerClass });
   } catch {
     return { name, status: "warn", detail: "unable to read the capture gap markers" };
   }
   if (scan.total === 0) {
     return { name, status: "ok", detail: "no skipped captures recorded" };
   }
-  const classified = scan.markers.map(({ marker }) => captureGapMarkerLine(marker));
-  const lines = classified.slice(0, CAPTURE_GAP_DETAIL_LIMIT).map((entry) => entry.text);
+  // The verdict is read from the tallies, never from the page: 500 telemetry-only
+  // markers older than one unprocessed Stop fill the returned 500 exactly, and
+  // classifying only those reported `501 skipped capture(s)` with `status: ok`.
+  const atStakeClasses = CAPTURE_GAP_AT_STAKE_CLASSES.filter(
+    (cls) => (scan.classes[cls]?.count ?? 0) > 0);
+  // Each at-stake class contributes its oldest marker to the wording first, so
+  // the marker that decided the verdict is named even when it is off the page.
+  const examples: LoadedCaptureGapMarker[] = [];
+  const seen = new Set<string>();
+  for (const cls of atStakeClasses) {
+    const oldest = scan.classes[cls]?.oldest;
+    if (!oldest || seen.has(oldest.file)) continue;
+    seen.add(oldest.file);
+    examples.push(oldest);
+  }
+  for (const entry of scan.markers) {
+    if (examples.length >= CAPTURE_GAP_DETAIL_LIMIT) break;
+    if (seen.has(entry.file)) continue;
+    seen.add(entry.file);
+    examples.push(entry);
+  }
+  const lines = examples
+    .slice(0, CAPTURE_GAP_DETAIL_LIMIT)
+    .map(({ marker }) => captureGapMarkerLine(marker));
   const more = scan.total - lines.length;
-  const atStake = classified.some((entry) => entry.atStake);
   return {
     name,
     // Markers whose hook had nothing durable at stake are recorded, not alarmed
     // about: they expire on their own and no repair is pending.
-    status: atStake ? "warn" : "ok",
+    status: atStakeClasses.length > 0 ? "warn" : "ok",
     detail:
       `${scan.total} skipped capture(s)${scan.truncated ? "+" : ""}, oldest ${
         scan.markers[0].marker.ts} — ` +
@@ -988,14 +1030,133 @@ export function captureGapCheck(): Check {
   };
 }
 
+/**
+ * Issue #166 (third review) — `memex update` can exit 3 with "the migration did
+ * not complete", and doctor had nothing to say about it.
+ *
+ * Read-only and migration-free by construction: it opens the file with the same
+ * lightweight connection `countRows` uses and reads one pragma. A doctor run must
+ * never be the thing that migrates a database.
+ */
+export function schemaVersionCheck(): Check {
+  const name = "schema-version";
+  const dbPath = getDbPath();
+  if (!fs.existsSync(dbPath)) {
+    return { name, status: "ok", detail: `unknown (no database yet at ${dbPath})` };
+  }
+  let recorded: number | null = null;
+  try {
+    const Database = runtimeRequire("better-sqlite3");
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      const value = Number(db.pragma("user_version", { simple: true }));
+      recorded = Number.isFinite(value) ? value : null;
+    } finally {
+      db.close();
+    }
+  } catch {
+    recorded = null;
+  }
+  if (recorded === null) {
+    return { name, status: "warn", detail: `unknown (cannot read ${dbPath})` };
+  }
+  if (recorded >= CURRENT_SCHEMA_VERSION) {
+    return { name, status: "ok", detail: `current (v${CURRENT_SCHEMA_VERSION})` };
+  }
+  return {
+    name,
+    status: "warn",
+    detail:
+      `pending migrations: v${recorded} < v${CURRENT_SCHEMA_VERSION} — will retry on ` +
+      "next open or run memex update",
+  };
+}
+
 /** A hook killed by the host is only visible as a start row with no done row. */
 const HOOK_LATENCY_WINDOW_ROWS = 200;
 /** Grace beyond the budget before an unpaired start counts as a host kill. */
 const HOOK_KILL_GRACE_MS = 10_000;
+/** Skew allowance on the END of a killed hook's own window (#166 third review). */
+const HOOK_KILL_WINDOW_MARGIN_MS = 500;
 /** A done row above this much lock wait is worth naming. */
 const HOOK_DB_WAIT_WARN_MS = 1_000;
 /** UserPromptSubmit has no host timeout in hooks.json — never claim one. */
 const UNTIMED_HOOK_EVENTS = new Set(["UserPromptSubmit"]);
+/**
+ * Issue #166 — done-row outcomes that did NOT skip anything.
+ *
+ * Every other outcome (busy, deadline, oversize, error) is a hook that ran to
+ * completion and captured nothing. The work Mac skipped 3 of 3 captures and
+ * `hook-latency` reported `ok: 4 hook run(s) completed, max 8755 ms`, because
+ * the check read durations and lock waits but never the outcome it had itself
+ * written. `daemon`/`fallback`/`empty-prompt`/`skipped` are the inject hook's
+ * normal paths, not skipped captures.
+ */
+const HEALTHY_HOOK_OUTCOMES = new Set([
+  "ok", "daemon", "fallback", "empty-prompt", "skipped",
+]);
+/** Fixed order so the counts read the same way every time. */
+const SKIPPED_OUTCOME_ORDER = ["busy", "deadline", "oversize", "error"];
+/**
+ * #166 third review — the inject lane's `error` is not a skipped capture.
+ *
+ * UserPromptSubmit reports `error` for three different things, and the row's
+ * `stage` (#166 final review) is what tells them apart:
+ *
+ *  - `receipt`: the context WAS delivered and only its durable recall receipt
+ *    could not be marked emitted (#44's documented fallback);
+ *  - `compute`: retrieval failed, so nothing reached the user;
+ *  - `startup`: the imports failed before any of it.
+ *
+ * Calling all three "context delivered" said an injection had landed when none
+ * had. A row written before 0.7.25 carries no stage and is not claimed either way.
+ */
+const INJECT_LANE_EVENTS = new Set(["UserPromptSubmit"]);
+
+/** `3 skipped (busy 1, deadline 1, oversize 1) last error: …`, or "". */
+function skippedCaptureLine(rows: HookEventRow[]): string {
+  const failing = rows.filter((row) =>
+    row.phase === "done" && !HEALTHY_HOOK_OUTCOMES.has(String(row.outcome ?? "")));
+  const injectFailures = failing.filter((row) => INJECT_LANE_EVENTS.has(row.event));
+  const skipped = failing.filter((row) => !INJECT_LANE_EVENTS.has(row.event));
+  const receiptFailures = injectFailures.filter((row) => row.stage === "receipt");
+  const undelivered = injectFailures.filter((row) =>
+    row.stage === "compute" || row.stage === "startup");
+  const unknownStage = injectFailures.filter((row) =>
+    row.stage !== "receipt" && row.stage !== "compute" && row.stage !== "startup");
+  if (failing.length === 0) return "";
+  const parts: string[] = [];
+  if (skipped.length > 0) {
+    const counts = new Map<string, number>();
+    for (const row of skipped) {
+      const outcome = String(row.outcome ?? "unknown");
+      counts.set(outcome, (counts.get(outcome) ?? 0) + 1);
+    }
+    const ordered = [...counts.keys()].sort((a, b) => {
+      const ai = SKIPPED_OUTCOME_ORDER.indexOf(a);
+      const bi = SKIPPED_OUTCOME_ORDER.indexOf(b);
+      if (ai !== bi) return (ai < 0 ? SKIPPED_OUTCOME_ORDER.length : ai) -
+        (bi < 0 ? SKIPPED_OUTCOME_ORDER.length : bi);
+      return a < b ? -1 : 1;
+    });
+    parts.push(`${skipped.length} skipped (${
+      ordered.map((outcome) => `${outcome} ${counts.get(outcome)}`).join(", ")})`);
+  }
+  if (receiptFailures.length > 0) {
+    parts.push(`${receiptFailures.length} receipt failure${
+      receiptFailures.length === 1 ? "" : "s"} (context delivered)`);
+  }
+  if (undelivered.length > 0) {
+    parts.push(`${undelivered.length} injection failed (no context delivered)`);
+  }
+  if (unknownStage.length > 0) {
+    // A pre-0.7.25 row: neither claim can be made about it.
+    parts.push(`${unknownStage.length} inject error (stage unknown)`);
+  }
+  const lastError = [...failing].reverse().find((row) => String(row.error ?? "").trim());
+  return ` — ${parts.join(", ")}` +
+    (lastError ? ` last error: ${String(lastError.error).slice(0, 120)}` : "");
+}
 
 interface WorkerTransactionRow {
   ts?: string;
@@ -1028,9 +1189,16 @@ function workerLockHolderLine(window: { fromMs: number; toMs: number }): string 
         // The holder has to have been holding WHILE this hook ran. Naming the
         // heaviest row in the log regardless of time pointed at transactions
         // that had finished hours earlier.
-        const startedAt = Date.parse(String(row.ts ?? ""));
-        if (!Number.isFinite(startedAt)) continue;
-        const endedAt = startedAt + held;
+        //
+        // The row is written when the transaction ENDS, so its `ts` is the end
+        // and the held interval is `[ts - held_ms, ts]`. Reading `ts` as the
+        // start was wrong both ways (#165 post-release review): the worker that
+        // was still holding when the hook gave up sits past `toMs` and was
+        // skipped, and one that had already finished looked like it started as
+        // the hook began.
+        const endedAt = Date.parse(String(row.ts ?? ""));
+        if (!Number.isFinite(endedAt)) continue;
+        const startedAt = endedAt - held;
         if (endedAt < window.fromMs - WORKER_OVERLAP_MARGIN_MS) continue;
         if (startedAt > window.toMs + WORKER_OVERLAP_MARGIN_MS) continue;
         if (!top || held > Number(top.held_ms ?? 0)) top = row;
@@ -1056,11 +1224,15 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
   const killed: HookEventRow[] = [];
   const waited: HookEventRow[] = [];
   let maxDuration = 0;
+  let maxStartup: number | null = null;
   let paired = 0;
   rows.forEach((row, index) => {
     if (row.phase === "done") {
       paired++;
       maxDuration = Math.max(maxDuration, Number(row.duration_ms ?? 0));
+      if (typeof row.startup_ms === "number" && Number.isFinite(row.startup_ms)) {
+        maxStartup = Math.max(maxStartup ?? 0, row.startup_ms);
+      }
       if (Number(row.db_wait_ms ?? 0) > HOOK_DB_WAIT_WARN_MS) waited.push(row);
       return;
     }
@@ -1081,6 +1253,9 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
   if (rows.length === 0) {
     return { name, status: "ok", detail: "no hook runs observed yet" };
   }
+  // #166: a skipped capture has a done row, so it is never a reason to stop
+  // reporting a kill or a lock wait — it is added to whichever verdict applies.
+  const skipped = skippedCaptureLine(rows);
   if (killed.length > 0) {
     const markers = (() => {
       try {
@@ -1090,19 +1265,21 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
       }
     })();
     const worst = killed[killed.length - 1];
-    // A killed hook has no done row, so its window is its start plus the budget
-    // the host allowed it before the kill.
+    // A killed hook has no done row, so its window is its start plus the time the
+    // HOST allowed it — its timeout, plus a small skew margin. The 10 s grace
+    // above decides "no done row means killed"; using it here made a transaction
+    // that started seconds after the kill a candidate holder (#166 third review).
     const startedAt = Date.parse(worst.ts);
     const holder = workerLockHolderLine({
       fromMs: startedAt,
-      toMs: startedAt + hookBudgetMs(worst.event) + HOOK_KILL_GRACE_MS,
+      toMs: startedAt + hookHostTimeoutMs(worst.event) + HOOK_KILL_WINDOW_MARGIN_MS,
     });
     return {
       name,
       status: "warn",
       detail:
         `${killed.length} hook run(s) started and never finished — killed by host ` +
-        `(latest ${worst.event} ${worst.ts}); ${markers} capture gap marker(s)` + holder,
+        `(latest ${worst.event} ${worst.ts}); ${markers} capture gap marker(s)` + holder + skipped,
     };
   }
   if (waited.length > 0) {
@@ -1120,15 +1297,19 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
       detail:
         `hooks waited on the database — ${waited.length}/${paired} runs over ` +
         `${HOOK_DB_WAIT_WARN_MS} ms (worst ${worst.event} ${
-          Math.round(Number(worst.db_wait_ms))} ms, ${worst.ts})` + holder,
+          Math.round(Number(worst.db_wait_ms))} ms, ${worst.ts})` + holder + skipped,
     };
   }
   // Nothing went wrong, so there is no hook to correlate a holder with: naming
   // one here was the inaccuracy, not the omission.
   return {
     name,
-    status: "ok",
-    detail: `${paired} hook run(s) completed, max ${maxDuration} ms`,
+    // A completed run that captured nothing is not ok, however fast it was (#166).
+    status: skipped ? "warn" : "ok",
+    detail: `${paired} hook run(s) completed, max ${maxDuration} ms` +
+      // #166: the fixed cost before the first database call, per machine. This
+      // is the number that decides whether a budget is generous or already gone.
+      (maxStartup === null ? "" : `, max startup ${maxStartup} ms`) + skipped,
   };
 }
 
@@ -1471,8 +1652,15 @@ export async function doctor(): Promise<DoctorReport> {
     if (fs.existsSync(logPath)) {
       const last = recent.length ? recent[recent.length - 1] : null;
       if (last) {
+        // Issue #165: `context-only` belongs here. It is the status #32 added
+        // for an emission that carried Capsule/continuity context and zero
+        // facts — a normal retrieval outcome that `injection-yield`
+        // (ZERO_FACT_STATUSES) already owns and `recall-provenance` counts as an
+        // emitted bundle. Missing from this map it fell through to "unknown
+        // status", so a healthy install was reported as `inject-output: warn`.
         const okStatuses: Record<string, true> = {
           injected: true,
+          "context-only": true,
           "no-match": true,
           deduped: true,
           skipped: true,
@@ -1520,6 +1708,7 @@ export async function doctor(): Promise<DoctorReport> {
   // Issue #162: a hook the host killed, and the captures it skipped.
   checks.push(captureGapCheck());
   checks.push(hookLatencyCheck());
+  checks.push(schemaVersionCheck());
   checks.push(recallProvenanceCheck(recent));
   checks.push(injectionYieldCheck(recent));
   checks.push(llmModelCheck());

@@ -161,12 +161,19 @@ export function insertFact(db, params) {
       id, fact, category, scope_type, scope_project, source_exchange_ids, embedding,
       created_at, updated_at, consolidated_count, is_active, fact_kr,
       embedding_version, semantic_generation, semantic_updated_at,
+      lifecycle_generation, lifecycle_updated_at,
       project_id, workspace_id, workstream_id, subject_key, promotion_state, tier_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, 1, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, params.fact, params.category, params.scope_type, params.scope_project, JSON.stringify(params.source_exchange_ids), params.embedding
         ? Buffer.from(new Float32Array(params.embedding).buffer)
-        : null, now, now, params.fact_kr ?? null, EMBEDDING_VERSION, now, projectId, workspaceId, workstreamId, subjectKey, promotionState, tierReason);
+        : null, now, now, params.fact_kr ?? null, EMBEDDING_VERSION, now, 
+    // #166 (gate): BOTH clocks, at insert time. Leaving `lifecycle_updated_at`
+    // on its `''` default made every new fact depend on a data-normalizing
+    // statement in the migration pass — and the moment an open stopped running
+    // that pass, a freshly exported facts.jsonl failed protocol v4 validation on
+    // the importing device. A writer owes the row it writes.
+    now, projectId, workspaceId, workstreamId, subjectKey, promotionState, tierReason);
     // Insert into vector index (atomic DELETE+INSERT via transaction)
     if (params.embedding) {
         const p = vecParamFor(db, "vec_facts", params.embedding);

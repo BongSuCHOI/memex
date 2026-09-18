@@ -36,7 +36,60 @@ export declare function openWriteDb(dbPath?: string, busyTimeoutMs?: number): Da
 export declare function initDatabase(options?: {
     busyTimeoutMs?: number;
     dbPath?: string;
+    /**
+     * #166 review — what the pass did: whether it RAN at all (a concurrent opener
+     * may have migrated first) and which migrations swallowed a failure. Callers
+     * that REPORT the outcome (`applySchemaMigrations`, `memex update`) need it;
+     * the hooks that just want a connection ignore it.
+     */
+    onSchemaMigration?: (outcome: {
+        ran: boolean;
+        skipped: string[];
+    }) => void;
 }): Database.Database;
+/**
+ * Issue #166 — apply the migration pass ONCE, outside anyone's budget.
+ *
+ * `memex update` calls this (through the installed root's dist) right after the
+ * runtime dependencies are materialized, because the alternative is what was
+ * observed: the first session after an update opens the database with five hooks
+ * at once, the first connection runs the new-table migration under the write
+ * lock, and the continuity hook waits 930 ms and gives up `busy`.
+ *
+ * Returns whether anything had to be migrated, so the caller can say so.
+ */
+export declare function applySchemaMigrations(options?: {
+    dbPath?: string;
+}): {
+    migrated: boolean;
+    version: number;
+    skipped: string[];
+    dbPath: string;
+};
+/**
+ * Issue #166 (gate) — the data-normalizing statements of the migration pass, and
+ * the invariant that makes the fast path safe.
+ *
+ * These repair rows written by OLDER code, and they stay in the pass for that.
+ * But once the pass is skipped for a current file, a normalizer that a CURRENT
+ * writer still depends on becomes a silent data bug: `insertFact` left
+ * `lifecycle_updated_at = ''`, the every-open backfill filled it in on the next
+ * open, and the moment that open stopped running the pass the Web UI import of a
+ * freshly exported archive rejected its own facts.jsonl ("row failed protocol v4
+ * schema validation"). So the invariant is: a row produced by a current writer
+ * must already satisfy every entry here, and `test/row-normalization.test.ts`
+ * iterates this list to prove it.
+ */
+export interface RowNormalizationInvariant {
+    name: string;
+    /** The migration statement, when it is a plain WHERE-filtered UPDATE. */
+    repairSql?: string;
+    /** Rows a parameterised or per-row normalizer would still rewrite. */
+    pendingSql?: string;
+    /** Why an entry carries no assertion (guarded, or not row normalization). */
+    note?: string;
+}
+export declare const ROW_NORMALIZATION_INVARIANTS: RowNormalizationInvariant[];
 export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): boolean;
 export declare function isMemexRecallToolName(toolName: string): boolean;
 /**

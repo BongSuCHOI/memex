@@ -364,7 +364,10 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         // are acknowledged, so query limits and budget cutoffs remain retryable.
         const hot = readHotEvidence(db, {
             projectId: sessionScope.projectId, workstreamId: sessionScope.workstreamId,
-            excludeSessionId: sessionId, afterSeq: hotCursor, limit: 2,
+            // `now` decides every other time-dependent choice in this function, and
+            // Hot Evidence has a 14-day TTL: reading it against the wall clock instead
+            // made the lane disappear for any caller whose `now` is older than the TTL.
+            excludeSessionId: sessionId, afterSeq: hotCursor, limit: 2, now,
         });
         const capsule = readWorkCapsule(db, sessionScope.workstreamId);
         const currentCapsuleGeneration = capsule?.generation ?? 0;
@@ -924,6 +927,9 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
                     sessionId, projectId: sessionScope.projectId, workstreamId: sessionScope.workstreamId,
                     contextEpoch: residency.contextEpoch, fromSeq: hotCursor,
                     emittedSeqs: hot.slice(0, emitted).map((item) => Number(item.seq)),
+                    // The prefix check must re-read on the SAME clock as the read above,
+                    // or an injected past `now` fails the commit it just satisfied.
+                    now,
                 });
             }
             commitGateState(db, { sessionId, workstreamId: sessionScope.workstreamId,

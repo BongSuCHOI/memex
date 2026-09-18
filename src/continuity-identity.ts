@@ -1562,6 +1562,8 @@ export function commitHotEvidenceCursor(
   input: {
     sessionId: string; projectId: string; workstreamId: string; contextEpoch: number;
     fromSeq: number; emittedSeqs: number[];
+    /** The clock the emitting read used; the verification must match it. */
+    now?: string;
   },
 ): void {
   if (!db.inTransaction) throw new Error("Hot Evidence cursor requires the residency transaction");
@@ -1569,7 +1571,7 @@ export function commitHotEvidenceCursor(
   const end = input.emittedSeqs.at(-1)!;
   const current = readHotEvidence(db, {
     projectId: input.projectId, workstreamId: input.workstreamId, excludeSessionId: input.sessionId,
-    afterSeq: input.fromSeq, limit: input.emittedSeqs.length,
+    afterSeq: input.fromSeq, limit: input.emittedSeqs.length, now: input.now,
   });
   if (current.length !== input.emittedSeqs.length ||
       current.some((row, i) => Number(row.seq) !== input.emittedSeqs[i])) {
