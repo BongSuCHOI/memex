@@ -1382,7 +1382,7 @@ export function commitHotEvidenceCursor(db, input) {
     const end = input.emittedSeqs.at(-1);
     const current = readHotEvidence(db, {
         projectId: input.projectId, workstreamId: input.workstreamId, excludeSessionId: input.sessionId,
-        afterSeq: input.fromSeq, limit: input.emittedSeqs.length,
+        afterSeq: input.fromSeq, limit: input.emittedSeqs.length, now: input.now,
     });
     if (current.length !== input.emittedSeqs.length ||
         current.some((row, i) => Number(row.seq) !== input.emittedSeqs[i])) {

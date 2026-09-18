@@ -156,6 +156,8 @@ export declare function commitHotEvidenceCursor(db: Database.Database, input: {
     contextEpoch: number;
     fromSeq: number;
     emittedSeqs: number[];
+    /** The clock the emitting read used; the verification must match it. */
+    now?: string;
 }): void;
 export declare function assignFactSubject(db: Database.Database, input: {
     factId: string;
