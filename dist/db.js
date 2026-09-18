@@ -153,6 +153,8 @@ export function initDatabase(options = {}) {
     // ever. Nested `db.transaction()` calls inside the pass become savepoints.
     db.transaction(() => {
         const skipped = runSchemaMigrations(db);
+        if (skipped.length > 0)
+            options.onSkippedMigrations?.(skipped);
         if (skipped.length > 0) {
             // A migration that swallows its own failure (see the taxonomy uniqueness
             // pass below) must not let the version claim it ran: recording 8 over a
@@ -194,9 +196,23 @@ export function applySchemaMigrations(options = {}) {
         // An unreadable file is the migration's problem, not the probe's.
         before = 0;
     }
-    const db = initDatabase({ dbPath: options.dbPath });
+    let skipped = [];
+    const db = initDatabase({
+        dbPath: options.dbPath,
+        onSkippedMigrations: (names) => { skipped = names; },
+    });
+    // The version this reports is the one the FILE now carries, read back, never
+    // the constant this build hoped to reach: with a skipped migration the two
+    // differ, and `memex update` printed "Schema migrated … (schema v8)" over a
+    // database still at 7 (#166 second review).
+    const version = schemaVersionOf(db);
     db.close();
-    return { migrated: before < CURRENT_SCHEMA_VERSION, version: CURRENT_SCHEMA_VERSION, dbPath };
+    return {
+        migrated: skipped.length === 0 && before < CURRENT_SCHEMA_VERSION,
+        version,
+        skipped,
+        dbPath,
+    };
 }
 /** The schema version the FILE carries; 0 for a database this code never wrote. */
 function schemaVersionOf(db) {

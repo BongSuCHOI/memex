@@ -36,6 +36,12 @@ export declare function openWriteDb(dbPath?: string, busyTimeoutMs?: number): Da
 export declare function initDatabase(options?: {
     busyTimeoutMs?: number;
     dbPath?: string;
+    /**
+     * #166 review — the names of migrations the pass swallowed a failure for.
+     * Callers that REPORT the outcome (`applySchemaMigrations`, `memex update`)
+     * need them; the hooks that just want a connection ignore them.
+     */
+    onSkippedMigrations?: (skipped: string[]) => void;
 }): Database.Database;
 /**
  * Issue #166 — apply the migration pass ONCE, outside anyone's budget.
@@ -53,6 +59,7 @@ export declare function applySchemaMigrations(options?: {
 }): {
     migrated: boolean;
     version: number;
+    skipped: string[];
     dbPath: string;
 };
 export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): boolean;

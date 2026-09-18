@@ -141,3 +141,61 @@ test('memex update --dry-run does not open the database (#166)', (t) => {
   assert.doesNotMatch(result.stdout, /Schema/);
   assert.equal(fs.existsSync(f.dbPath), false);
 });
+
+/**
+ * #166 second review — `applySchemaMigrations()` reported `version: 8` from the
+ * constant, so a run whose taxonomy migration was skipped (real `user_version`
+ * still 7) printed "Schema migrated … (schema v8)" and exited 0. The number a
+ * report states has to be the one the FILE carries.
+ */
+test('a skipped migration is reported with the recorded version and exit 3 (#166)', (t) => {
+  const f = fixture(t, 'git');
+  const migrate = (env = f.env) => spawnSync(
+    process.execPath,
+    [path.join(ROOT, 'scripts', 'migrate-schema.mjs'), '--root', ROOT],
+    { env, encoding: 'utf8' },
+  );
+
+  // A current file first, then the conflict the taxonomy migration cannot merge:
+  // two case-duplicate domains whose categories collide when the merge reassigns
+  // them, against the category unique index that is already there.
+  assert.equal(migrate().status, 0);
+  const seed = new Database(f.dbPath);
+  seed.exec(`
+    DROP INDEX IF EXISTS idx_ontology_domains_name;
+    INSERT INTO ontology_domains (id, name, created_at)
+      VALUES ('d-keep', 'Infra', '2026-01-01T00:00:00.000Z'),
+             ('d-dup', 'infra', '2026-01-02T00:00:00.000Z');
+    INSERT INTO ontology_categories (id, domain_id, name, created_at)
+      VALUES ('c-keep', 'd-keep', 'Cache', '2026-01-01T00:00:00.000Z'),
+             ('c-dup', 'd-dup', 'Cache', '2026-01-02T00:00:00.000Z');
+    PRAGMA user_version = 0;
+  `);
+  seed.close();
+
+  const skipped = migrate();
+  assert.equal(skipped.status, 3, skipped.stdout + skipped.stderr);
+  assert.match(skipped.stdout, /Schema migration incomplete: ontology-taxonomy-uniqueness/);
+  assert.match(skipped.stdout, /will retry on next open/);
+  // The version in the message is the one the file carries, never the constant.
+  const db = new Database(f.dbPath, { readonly: true });
+  const recorded = Number(db.pragma('user_version', { simple: true }));
+  db.close();
+  assert.ok(recorded < 8, `expected the file to stay behind, got ${recorded}`);
+  assert.match(skipped.stdout, new RegExp(`schema v${recorded}\\)`));
+
+  // `memex update` still succeeds — the install did — and ends with the warning.
+  const update = run(f);
+  assert.equal(update.status, 0, update.stderr);
+  assert.match(update.stdout + update.stderr, /Schema migration incomplete/);
+  assert.match(update.stdout, /Restart Codex/);
+
+  // Conflict gone: the next run completes the pass and says so with exit 0.
+  const repaired = new Database(f.dbPath);
+  repaired.exec("DELETE FROM ontology_categories WHERE id = 'c-dup'; DELETE FROM ontology_domains WHERE id = 'd-dup';");
+  repaired.close();
+  const clean = migrate();
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /Schema migrated for/);
+  assert.match(migrate().stdout, /Schema already current \(schema v8\)/);
+});

@@ -666,7 +666,12 @@ Git marketplace에서는 marketplace snapshot을 갱신하고 plugin cache를 �
 DB를 열고 그중 하나가 새 테이블 migration을 쓰기 잠금으로 수행하는데, continuity 훅이 그것을 930 ms
 기다린 뒤 `busy`로 capture를 건너뛴 사례가 있었습니다. migration은 idempotent하고 모든 진입점이
 여전히 수행하므로 이 단계가 실패해도 업데이트는 성공이며, 첫 세션이 대신 수행합니다
-(`node scripts/migrate-schema.mjs [--root <plugin root>]`로 직접 실행할 수도 있습니다).
+(`node scripts/migrate-schema.mjs [--root <plugin root>]`로 직접 실행할 수도 있습니다 — 종료 코드는
+**0**(적용 또는 이미 최신), **1**(아예 실행 불가), **3**(실행했으나 건너뛴 migration이 있음)입니다).
+건너뛴 migration이 있으면 `Schema migration incomplete: <이름> — will retry on next open (schema v<실제
+기록된 버전>)`을 출력하고 3으로 끝납니다 — 버전 숫자는 이 빌드가 목표한 값이 아니라 **파일에 실제로
+기록된** 값입니다(0.7.25, #166 2차 리뷰). 설치 자체는 이미 성공했으므로 `memex update`는 중단하지 않고
+마지막에 경고만 남깁니다.
 
 0.7.0 이후 **0.6.x로 내려가면** 사용자 오버레이가 조용히 꺼집니다 — 0.6.x 코어는
 `overlays/`를 읽지 않으므로 내 게이트 규칙과 추출 제한이 적용되지 않고, `hold_reason`이 남은 작업은

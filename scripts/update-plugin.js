@@ -115,7 +115,12 @@ try {
     [path.join(HERE, 'migrate-schema.mjs'), '--root', migrateRoot],
     { stdio: 'inherit' },
   );
-  if (migrate.error || migrate.status !== 0) {
+  // Exit 3 means it ran and skipped something: the database is still behind and
+  // the next open retries it. The install itself succeeded either way, so this is
+  // a warning at the end of a successful update, never an abort.
+  if (migrate.status === 3) {
+    console.error('The schema migration above did not complete. It is retried on the next session; `memex doctor` reports the state.');
+  } else if (migrate.error || migrate.status !== 0) {
     console.error('Schema will be migrated by the first session instead (run: memex doctor to confirm).');
   }
   console.log('Memex data was preserved. Restart Codex to load updated MCP, skills, and hooks.');

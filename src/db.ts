@@ -175,7 +175,18 @@ export function openWriteDb(
   return initializeConnection(new Database(dbPath), "write", busyTimeoutMs);
 }
 
-export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string } = {}): Database.Database {
+export function initDatabase(
+  options: {
+    busyTimeoutMs?: number;
+    dbPath?: string;
+    /**
+     * #166 review — the names of migrations the pass swallowed a failure for.
+     * Callers that REPORT the outcome (`applySchemaMigrations`, `memex update`)
+     * need them; the hooks that just want a connection ignore them.
+     */
+    onSkippedMigrations?: (skipped: string[]) => void;
+  } = {},
+): Database.Database {
   const dbPath = options.dbPath ?? getDbPath();
 
   // Ensure directory exists
@@ -203,6 +214,7 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
   // ever. Nested `db.transaction()` calls inside the pass become savepoints.
   db.transaction(() => {
     const skipped = runSchemaMigrations(db);
+    if (skipped.length > 0) options.onSkippedMigrations?.(skipped);
     if (skipped.length > 0) {
       // A migration that swallows its own failure (see the taxonomy uniqueness
       // pass below) must not let the version claim it ran: recording 8 over a
@@ -233,7 +245,7 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
  */
 export function applySchemaMigrations(
   options: { dbPath?: string } = {},
-): { migrated: boolean; version: number; dbPath: string } {
+): { migrated: boolean; version: number; skipped: string[]; dbPath: string } {
   const dbPath = options.dbPath ?? getDbPath();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   let before = 0;
@@ -248,9 +260,23 @@ export function applySchemaMigrations(
     // An unreadable file is the migration's problem, not the probe's.
     before = 0;
   }
-  const db = initDatabase({ dbPath: options.dbPath });
+  let skipped: string[] = [];
+  const db = initDatabase({
+    dbPath: options.dbPath,
+    onSkippedMigrations: (names) => { skipped = names; },
+  });
+  // The version this reports is the one the FILE now carries, read back, never
+  // the constant this build hoped to reach: with a skipped migration the two
+  // differ, and `memex update` printed "Schema migrated … (schema v8)" over a
+  // database still at 7 (#166 second review).
+  const version = schemaVersionOf(db);
   db.close();
-  return { migrated: before < CURRENT_SCHEMA_VERSION, version: CURRENT_SCHEMA_VERSION, dbPath };
+  return {
+    migrated: skipped.length === 0 && before < CURRENT_SCHEMA_VERSION,
+    version,
+    skipped,
+    dbPath,
+  };
 }
 
 /** The schema version the FILE carries; 0 for a database this code never wrote. */

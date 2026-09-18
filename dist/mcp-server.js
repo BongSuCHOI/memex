@@ -12866,6 +12866,7 @@ function initDatabase(options = {}) {
   if (process.env.MEMEX_SCHEMA_ALWAYS_MIGRATE !== "1" && schemaVersionOf(db) >= CURRENT_SCHEMA_VERSION) return db;
   db.transaction(() => {
     const skipped = runSchemaMigrations(db);
+    if (skipped.length > 0) options.onSkippedMigrations?.(skipped);
     if (skipped.length > 0) {
       console.error(
         `[memex] schema version ${CURRENT_SCHEMA_VERSION} not recorded: ${skipped.join(", ")} did not complete; the next open will retry`

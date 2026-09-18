@@ -10,6 +10,10 @@
 //
 // `--root <path>` selects WHICH build to migrate with (the freshly installed
 // plugin root, whose dist is the one the next session will load).
+//
+// Exit codes: 0 migrated or already current, 1 could not run at all, 3 ran but at
+// least one migration was skipped — the database is still behind and the next
+// open retries it (#166 second review).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -38,6 +42,14 @@ try {
       return '';
     }
   })();
+  if (result.skipped?.length) {
+    // The number is the one the FILE carries: saying v8 over a database the
+    // taxonomy migration left at v7 is exactly the report this fixes.
+    console.log(
+      `Schema migration incomplete: ${result.skipped.join(', ')} — will retry on next open (schema v${result.version})`,
+    );
+    process.exit(3);
+  }
   console.log(
     result.migrated
       ? `Schema migrated for ${version || `schema v${result.version}`} (schema v${result.version})`

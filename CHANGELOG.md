@@ -54,8 +54,14 @@ about a healthy install (#166, #165).
 - `memex update` applies the migration once, after materializing dependencies and
   through the newly installed root's build, printing `Schema migrated for <version>`
   or `Schema already current`. Also available as
-  `node scripts/migrate-schema.mjs [--root <plugin root>]`. It is best effort: the
-  migration is idempotent and every entry point still runs it.
+  `node scripts/migrate-schema.mjs [--root <plugin root>]`, whose exit codes are 0
+  (migrated or already current), 1 (could not run) and 3 (ran, but a migration was
+  skipped). The version it reports is read back from the file, not the constant
+  this build aimed at: a skipped migration used to print
+  `Schema migrated … (schema v8)` over a database still at v7. With a skipped
+  migration it prints `Schema migration incomplete: <names> — will retry on next
+  open (schema v7)` and exits 3, and `memex update` ends with that warning rather
+  than aborting — the install itself succeeded, and the migration is idempotent.
 
 ### Doctor
 
