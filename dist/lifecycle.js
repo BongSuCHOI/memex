@@ -779,8 +779,17 @@ const CAPTURE_MARKER_EVENTS = new Set(["Stop", "Interrupt", "PreCompact", "Sessi
 /** The classes a leftover marker is warned about; the rest are recorded only. */
 const CAPTURE_GAP_AT_STAKE_CLASSES = ["capture", "epoch"];
 function captureGapMarkerClass(marker) {
-    if (CAPTURE_MARKER_EVENTS.has(marker.event))
+    if (CAPTURE_MARKER_EVENTS.has(marker.event)) {
+        // Issue #168 — `codex exec --ephemeral` has no transcript file, so its
+        // Stop/SessionEnd payload carries no path and the marker no byte count.
+        // Reporting that as a skipped capture printed "0 uncaptured bytes" and
+        // claimed a pending continuity tail for thirty days; there was never
+        // anything at stake. A marker that DOES name a transcript stays a capture
+        // even with an unknown byte count — that hook had work to do.
+        if (!marker.transcriptPath && !marker.transcriptBytes)
+            return "no-transcript";
         return "capture";
+    }
     if (marker.event === "SessionStart" && (marker.source === "clear" || marker.source === "compact")) {
         return "epoch";
     }
@@ -793,6 +802,11 @@ function captureGapMarkerLine(marker) {
             // database reachable at marker time there is no committed boundary to
             // subtract, so this is the bound on what the skip left uncaptured.
             return `capture skipped at ${marker.event} ${marker.ts} (${marker.transcriptBytes ?? 0} uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`;
+        case "no-transcript":
+            // #168: the event happened, the session had no transcript. Named, not
+            // alarmed about — these age out on their own.
+            return `no transcript at ${marker.event} ${marker.ts} ` +
+                "(ephemeral session; nothing to capture)";
         case "epoch":
             // Not a capture: the epoch advance. It heals itself on the next injection,
             // which is why this says so instead of quoting the tail statement.
@@ -916,7 +930,10 @@ const UNTIMED_HOOK_EVENTS = new Set(["UserPromptSubmit"]);
  * normal paths, not skipped captures.
  */
 const HEALTHY_HOOK_OUTCOMES = new Set([
-    "ok", "daemon", "fallback", "empty-prompt", "skipped",
+    // #168: `no-transcript` is a capture event with no transcript to capture —
+    // a completed hook, not a skipped capture. Counting it produced
+    // `11 skipped (error 11) last error: capture hook requires transcript_path`.
+    "ok", "daemon", "fallback", "empty-prompt", "skipped", "no-transcript",
 ]);
 /** Fixed order so the counts read the same way every time. */
 const SKIPPED_OUTCOME_ORDER = ["busy", "deadline", "oversize", "error"];

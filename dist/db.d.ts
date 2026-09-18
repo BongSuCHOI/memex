@@ -86,6 +86,12 @@ export interface RowNormalizationInvariant {
     repairSql?: string;
     /** Rows a parameterised or per-row normalizer would still rewrite. */
     pendingSql?: string;
+    /**
+     * Rows a normalizer would still rewrite when SQL cannot express the test —
+     * #169's content hash needs sha256 over the row, which SQLite has no function
+     * for. Read-only by contract, and asserted exactly like `pendingSql`.
+     */
+    pendingRows?: (db: Database.Database) => number;
     /** Why an entry carries no assertion (guarded, or not row normalization). */
     note?: string;
 }

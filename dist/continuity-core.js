@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readJobFailureToClear, recordClearedJobFailure, settleStaleOpenExchanges, } from "./continuity-store.js";
+import { CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL, readJobFailureToClear, recordClearedJobFailure, settleStaleOpenExchanges, } from "./continuity-store.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,7 +9,7 @@ import { initDatabase, recordRecallEvent } from "./db.js";
 import { fitsContextBudget, REHYDRATION_CONTEXT_LIMITS, wrapMemoryContext, } from "./context-envelope.js";
 import { getMemexHome, getSessionsRoot } from "./paths.js";
 import { recordHookDone, recordHookStart } from "./observe-hook-event.js";
-import { busyTimeoutForRemaining, captureGapAlreadyRecorded, hookBudgetMs, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, markCaptureGapRecorded, ingestFitsBudget, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
+import { busyTimeoutForRemaining, captureGapAlreadyRecorded, hookBudgetMs, HookCaptureFailed, HookCaptureNoTranscript, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, markCaptureGapRecorded, ingestFitsBudget, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
 import { deleteCaptureGapMarker, listEpochAdvanceMarkers, pruneCaptureGapMarkers, writeCaptureGapMarker, CAPTURE_GAP_MARKER_MAX_AGE_MS, } from "./capture-gap-markers.js";
 import { isConversationExcludedSession } from "./conversation-policy.js";
 import { CAPSULE_POLICY_VERSION, capsulePageIsCurrent, commitCapsulePage } from "./continuity-evidence.js";
@@ -60,7 +60,7 @@ export function capsuleMaxChars() {
 // predicate live in a leaf module so `memex doctor` can quote the same numbers
 // without importing better-sqlite3. Re-exported here because the hook scripts
 // load exactly one module from dist.
-export { busyTimeoutForRemaining, hookBudgetMs, hookHostTimeoutMs, hookIngestBytesPerMs, ingestFitsBudget, HookCaptureFailed, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_EXIT_MARGIN_MS, HOOK_HOST_TIMEOUT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_INGEST_RESERVE_MS, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
+export { busyTimeoutForRemaining, hookBudgetMs, hookHostTimeoutMs, hookIngestBytesPerMs, ingestFitsBudget, HookCaptureFailed, HookCaptureNoTranscript, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, HOOK_EXIT_MARGIN_MS, HOOK_HOST_TIMEOUT_MS, HOOK_INGEST_BYTES_PER_MS, HOOK_INGEST_RESERVE_MS, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
 const capsuleStringListSchema = { type: "array", items: { type: "string" } };
 const capsuleEvidenceListSchema = {
     type: "array",
@@ -2220,7 +2220,7 @@ export function handleContinuityHook(payloadValue, options = {}) {
     let finalized = false;
     const ownDb = !options.db;
     let db;
-    const finish = (outcome, error) => {
+    const finish = (outcome, error, extra = {}) => {
         if (finalized)
             return;
         finalized = true;
@@ -2232,6 +2232,8 @@ export function handleContinuityHook(payloadValue, options = {}) {
             durationMs: Date.now() - startedAt,
             dbWaitMs,
             ...(startupMs === null ? {} : { startupMs }),
+            ...(extra.detail ? { detail: extra.detail } : {}),
+            ...(extra.stage ? { stage: extra.stage } : {}),
             ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
         });
     };
@@ -2341,6 +2343,44 @@ export function handleContinuityHook(payloadValue, options = {}) {
         return { ...result, finalize };
     }
     catch (error) {
+        // #168: a capture event with no transcript at all. Nothing was captured and
+        // nothing was left uncaptured, so this is an ok-class completion: the marker
+        // goes (there is no gap for doctor to report and nothing for #163 to replay)
+        // and no `capture_gaps` row is opened. `MEMEX_STRICT_CAPTURE=1` still throws,
+        // because a host that promised a transcript and sent none is a real defect.
+        if (error instanceof HookCaptureNoTranscript) {
+            // Strict mode is the opt-in that says a missing transcript is a DEFECT, so
+            // it gets the failure treatment in full: the marker survives and the done row
+            // says `error` (with the stage, so the reason is still readable). Deleting
+            // the marker and writing an ok-class outcome before throwing left the loud
+            // failure with no durable evidence — doctor called the run healthy and the
+            // only trace was a stderr line the host discards (#168 post-fix review).
+            if (strictCapture) {
+                finish("error", error, { stage: "no-transcript" });
+                throw error;
+            }
+            deleteCaptureGapMarker(markerFile);
+            // One bounded, best-effort repair of the rows the PREVIOUS versions opened
+            // for this same situation. They can never be recovered by a later capture,
+            // so without this they stay `open` until the v10 pass runs — and a root that
+            // is never updated would carry them for ever. Same budget rule as the gap
+            // row below: only with enough left to finish, and a failure costs nothing.
+            const repairLeft = deadlineAt - Date.now();
+            if (repairLeft > HOOK_RETRY_FLOOR_MS) {
+                const repairStartedAt = Date.now();
+                try {
+                    db.pragma(`busy_timeout = ${busyTimeoutForRemaining(repairLeft)}`);
+                    db.prepare(CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL).run();
+                }
+                catch (repairError) {
+                    /* the v10 schema pass closes them on the next update */
+                    if (isSqliteBusyError(repairError))
+                        dbWaitMs += Date.now() - repairStartedAt;
+                }
+            }
+            finish("no-transcript", undefined, { detail: error.message });
+            return { stdout: "", warning: error.message };
+        }
         const captureFailure = error instanceof HookCaptureFailed;
         const cause = captureFailure ? error.cause : error;
         const outcome = boundedSkipOutcome(cause);
@@ -2397,7 +2437,9 @@ function runContinuityHook(db, payload, options) {
         const kind = captureKind(payload.hookEventName);
         if (kind) {
             if (!payload.transcriptPath) {
-                throw new HookCaptureFailed(new Error("capture hook requires transcript_path"));
+                // #168: nothing to capture and nothing left uncaptured. The caller ends
+                // this as `no-transcript` and deletes the marker; strict mode throws.
+                throw new HookCaptureNoTranscript();
             }
             const transcriptPath = payload.transcriptPath;
             options.enterPhase(true);

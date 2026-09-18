@@ -2,6 +2,93 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.26 - 2026-09-18
+
+Two post-release readings that were wrong about unchanged data (#169, #168).
+
+### Database
+
+- `content_hash` is now computed from the row that is actually STORED, so the
+  first `refreshExchangeMetadata` after an insert can no longer bump
+  `content_generation` on an exchange nothing touched (#169). `insertExchange`
+  hashed the in-memory exchange — an empty `tool_result` as `""`, a falsy
+  `tool_input` as its original value — and then wrote both to `tool_calls` as SQL
+  NULL. The recompute (the migration pass, and every `ensureExtractionTarget`)
+  reads those columns, so it produced a different hash, treated the exchange as
+  new content and re-processed it: evidence re-appended, extraction re-run. There
+  is now ONE canonical stored form (`storedToolInput`/`storedToolResult`: absent or
+  empty is NULL, everything else its JSON text) and one reduction
+  (`contentHashOfStoredRow`) that the writer, the recompute and the invariant all
+  go through. The tool order is decided in that reduction too, not by `ORDER BY
+  id`: SQLite's BINARY collation and `localeCompare` disagree on case, which was a
+  second way two hashes for one unchanged row could differ.
+  - Measured on the pre-fix code, an affected exchange gained one generation at
+    the FIRST refresh after each insert, not one per open: the refresh stored its
+    own row-derived hash, so the next refresh agreed and stopped bumping. A
+    re-index of the same exchange wrote the drifting hash again and cost another
+    two (insert 1 → refresh 2 → re-insert 3 → refresh 4). Before 0.7.24 that first
+    bump landed on the first database open after the insert; since 0.7.24's
+    `PRAGMA user_version` fast path it lands on the session's next extraction,
+    because `ensureExtractionTarget` calls the refresh directly and is not gated.
+  - Upgrading does NOT re-process untouched history. Changing how the hash is
+    computed makes every 0.7.25 row disagree with its own recompute, and the
+    refresh reads a disagreement as a content change — so the v10 pass would have
+    bumped `content_generation` across existing history and re-run evidence and
+    extraction for all of it. `refreshExchangeMetadata` now reconstructs the hashes
+    the pre-0.7.26 `insertExchange` could have produced for that exact stored row
+    (each stored NULL rendered both as `null` and as `""`, in both tool orders,
+    capped so a pathological row cannot cost unbounded work) and, on a match,
+    rewrites `content_hash` in place while leaving the generation, evidence and
+    extraction state untouched, logging one count per pass. Only a hash matching
+    neither the canonical value nor a legacy variant is a real content change. The
+    check lives in the refresh function, not in the v10 pass, because
+    `ensureExtractionTarget` calls it too. A row whose old hash covered a `0` or
+    `false` tool input (which no transcript parser produces) is still treated as a
+    real change — the pre-fix behaviour, once.
+  - `ROW_NORMALIZATION_INVARIANTS` gains "insert then refresh changes nothing"
+    (`countStaleExchangeContentHashes`). The 0.7.25 list only asserted that the
+    column was non-empty, which a hash disagreeing with its own row passed.
+    Entries may now carry a `pendingRows` callback for a normalizer SQL cannot
+    express — sha256 over a row is not a SQLite function.
+
+### Hooks and doctor
+
+- A capture event whose payload carries no `transcript_path` completes as
+  `outcome: "no-transcript"` (an ok-class outcome) with its intent marker deleted
+  and no `capture_gaps` row, instead of `outcome: "error"` with the marker kept
+  (#168). `codex exec --ephemeral` sessions have no transcript file, so their
+  Stop/SessionEnd payload has no path: nothing was captured and nothing was left
+  uncaptured. Before 0.7.24 this ended as a quiet warning; 0.7.24/0.7.25 made
+  every capture failure durable, and `memex doctor` reported eleven ephemeral
+  review runs as `capture skipped at Stop … (0 uncaptured bytes); … pending #163`
+  for thirty days. `MEMEX_STRICT_CAPTURE=1` still throws — a host that promised a
+  transcript and sent none is a real defect — and in strict mode the failure keeps
+  its evidence: the marker survives and the done row says `error` with
+  `stage: "no-transcript"`, so `hook-latency` reports it. Recording the ok-class
+  outcome and deleting the marker before throwing left the loud failure with no
+  durable trace but a stderr line the host discards. `capture-gap` deliberately
+  stays ok either way: it answers what is at stake for the DATA, and a session with
+  no transcript still has nothing uncaptured.
+- `capture-gap` classifies a capture marker with no transcript path and no byte
+  count as "nothing at stake": named as `no transcript at <event> <ts> (ephemeral
+  session; nothing to capture)`, never warned about, so the markers 0.7.24/0.7.25
+  already left behind age out silently. A marker that DOES name a transcript stays
+  a capture even when its byte count is unknown — that hook had work to do.
+- `hook-latency` counts `no-transcript` among the healthy outcomes, so it no
+  longer reports `11 skipped (error 11) last error: capture hook requires
+  transcript_path` for a healthy install.
+- The `capture_gaps` rows 0.7.24/0.7.25 already opened for those sessions are
+  closed: `state = 'recovered'` with the original reason kept and ` — no
+  transcript, nothing to capture` appended. No later capture could ever recover
+  them, so they would have stood as `open` for ever in pipeline-status
+  `captureGapsOpen` under the advice "the next successful capture on that session
+  closes them" — about a session with no transcript to capture. The repair runs
+  from the migration list (so `CURRENT_SCHEMA_VERSION` goes to **10** and every
+  existing file runs the pass once on update) and on the hook's own no-transcript
+  path, so a root that is never updated heals too. It matches ONLY rows still open
+  whose reason is that one message, and `state = 'open'` makes it idempotent — a
+  genuine skipped capture keeps its state, its wording and its empty timestamp.
+
 ## 0.7.25 - 2026-09-18
 
 Hook budgets that fit a slow machine, and three doctor readings that were wrong

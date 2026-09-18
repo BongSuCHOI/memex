@@ -8894,6 +8894,40 @@ var init_continuity_identity = __esm({
   }
 });
 
+// src/hook-budget.ts
+function isSqliteBusyError(error2) {
+  const code = error2?.code;
+  if (typeof code === "string" && /^SQLITE_BUSY/.test(code)) return true;
+  const message = error2 instanceof Error ? error2.message : String(error2 ?? "");
+  return /SQLITE_BUSY|database is locked|database table is locked/i.test(message);
+}
+var HOOK_HOST_TIMEOUT_MS, HOOK_HOST_TIMEOUT_DEFAULT_MS, HOOK_EXIT_MARGIN_MS, HOOK_BUDGET_MS, HOOK_BUDGET_PRECOMPACT_MS, NO_TRANSCRIPT_CAPTURE_REASON, CAPTURE_GAP_RECORDED;
+var init_hook_budget = __esm({
+  "src/hook-budget.ts"() {
+    "use strict";
+    HOOK_HOST_TIMEOUT_MS = {
+      SessionStart: 1e4,
+      Stop: 1e4,
+      PostCompact: 1e4,
+      PreCompact: 15e3,
+      // learn.chatgpt.com/docs/hooks: SessionStart, Stop, PreCompact, PostCompact,
+      // UserPromptSubmit and the tool hooks default to 600 s and accept up to 600 s.
+      // ONLY SessionEnd and Interrupt default to 1 s and accept at most 3 s, so
+      // these two keep the small budget however generous the others become — asking
+      // for more would be a budget the host never granted, and a hook killed
+      // mid-capture is the failure the budget exists to prevent (#166 review).
+      Interrupt: 3e3,
+      SessionEnd: 3e3
+    };
+    HOOK_HOST_TIMEOUT_DEFAULT_MS = 1e4;
+    HOOK_EXIT_MARGIN_MS = 300;
+    HOOK_BUDGET_MS = HOOK_HOST_TIMEOUT_DEFAULT_MS - HOOK_EXIT_MARGIN_MS;
+    HOOK_BUDGET_PRECOMPACT_MS = HOOK_HOST_TIMEOUT_MS.PreCompact - HOOK_EXIT_MARGIN_MS;
+    NO_TRANSCRIPT_CAPTURE_REASON = "capture hook requires transcript_path";
+    CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
+  }
+});
+
 // src/continuity-store.ts
 import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
 import path7 from "node:path";
@@ -8907,6 +8941,64 @@ function parseStoredJson(value) {
   } catch {
     return value;
   }
+}
+function hashExchangeShape(row, tools) {
+  return sha256(
+    JSON.stringify({
+      user: row.userMessage,
+      assistant: row.assistantMessage,
+      lineEnd: row.lineEnd,
+      tools
+    })
+  );
+}
+function byIdBinary(left, right) {
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+function contentHashOfStoredRow(row) {
+  return hashExchangeShape(
+    row,
+    [...row.tools].sort(byIdBinary).map((tool) => ({
+      id: tool.id,
+      name: tool.toolName,
+      input: parseStoredJson(tool.toolInput),
+      result: tool.toolResult,
+      error: tool.isError
+    }))
+  );
+}
+function legacyContentHashes(row) {
+  const hashes = /* @__PURE__ */ new Set();
+  if (row.tools.length === 0) return hashes;
+  const slots = [];
+  row.tools.forEach((tool, index) => {
+    if (tool.toolInput === null) slots.push({ tool: index, field: "toolInput" });
+    if (tool.toolResult === null) slots.push({ tool: index, field: "toolResult" });
+  });
+  const masks = [];
+  if (slots.length === 0) masks.push(0);
+  else if (slots.length <= LEGACY_NULL_COMBINATION_LIMIT) {
+    for (let mask = 0; mask < 1 << slots.length; mask++) masks.push(mask);
+  } else {
+    masks.push(0, (1 << slots.length) - 1 >>> 0);
+  }
+  const orders = [byIdBinary, (l3, r) => l3.id.localeCompare(r.id)];
+  for (const mask of masks) {
+    const rendered = row.tools.map((tool) => ({
+      id: tool.id,
+      name: tool.toolName,
+      input: parseStoredJson(tool.toolInput),
+      result: tool.toolResult,
+      error: tool.isError
+    }));
+    slots.forEach((slot, index) => {
+      if (!(mask & 1 << index)) return;
+      if (slot.field === "toolInput") rendered[slot.tool].input = "";
+      else rendered[slot.tool].result = "";
+    });
+    for (const order of orders) hashes.add(hashExchangeShape(row, [...rendered].sort(order)));
+  }
+  return hashes;
 }
 function columnNames(db, table) {
   return new Set(
@@ -9967,6 +10059,37 @@ function ensureChronicleSchema(db, options) {
   `);
   options.afterMigrationStage?.("chronicle-indexes");
 }
+function storedExchangeReader(db) {
+  const selectTools = db.prepare(`
+    SELECT id, tool_name, tool_input, tool_result, is_error
+    FROM tool_calls WHERE exchange_id = ?
+  `);
+  return (row) => ({
+    userMessage: row.user_message,
+    assistantMessage: row.assistant_message,
+    lineEnd: row.line_end,
+    tools: selectTools.all(row.id).map((tool) => ({
+      id: tool.id,
+      toolName: tool.tool_name,
+      toolInput: tool.tool_input,
+      toolResult: tool.tool_result,
+      isError: !!tool.is_error
+    }))
+  });
+}
+function storedExchangeHasher(db) {
+  const read = storedExchangeReader(db);
+  return (row) => contentHashOfStoredRow(read(row));
+}
+function countStaleExchangeContentHashes(db) {
+  const rows = db.prepare(
+    "SELECT id, user_message, assistant_message, line_end, content_hash FROM exchanges"
+  ).all();
+  const hashOf = storedExchangeHasher(db);
+  let stale = 0;
+  for (const row of rows) if (row.content_hash && hashOf(row) !== row.content_hash) stale++;
+  return stale;
+}
 function refreshExchangeMetadata(db, sessionId) {
   const rows = db.prepare(`
       SELECT rowid, id, session_id, user_message, assistant_message, line_end,
@@ -9981,28 +10104,19 @@ function refreshExchangeMetadata(db, sessionId) {
     SET exchange_seq = ?, content_hash = ?, content_generation = ?
     WHERE id = ?
   `);
-  const selectTools = db.prepare(`
-    SELECT id, tool_name, tool_input, tool_result, is_error
-    FROM tool_calls WHERE exchange_id = ? ORDER BY id
-  `);
+  const read = storedExchangeReader(db);
+  let migratedFormat = 0;
   for (const row of rows) {
     const key = row.session_id ?? `__row__${row.rowid}`;
     const next = (nextBySession.get(key) ?? 0) + 1;
     nextBySession.set(key, Math.max(next, row.exchange_seq));
-    const tools = selectTools.all(row.id);
-    const hash2 = sha256(JSON.stringify({
-      user: row.user_message,
-      assistant: row.assistant_message,
-      lineEnd: row.line_end,
-      tools: tools.map((tool) => ({
-        id: tool.id,
-        name: tool.tool_name,
-        input: parseStoredJson(tool.tool_input),
-        result: tool.tool_result,
-        error: !!tool.is_error
-      }))
-    }));
-    const changed = !!row.content_hash && row.content_hash !== hash2;
+    const stored = read(row);
+    const hash2 = contentHashOfStoredRow(stored);
+    let changed = !!row.content_hash && row.content_hash !== hash2;
+    if (changed && legacyContentHashes(stored).has(row.content_hash)) {
+      changed = false;
+      migratedFormat++;
+    }
     update.run(
       row.exchange_seq > 0 ? row.exchange_seq : next,
       hash2,
@@ -10010,15 +10124,24 @@ function refreshExchangeMetadata(db, sessionId) {
       row.id
     );
   }
+  if (migratedFormat > 0) {
+    process.stderr.write(
+      `[memex] migrated ${migratedFormat} pre-0.7.26 content hash(es) in place; content generations, evidence and extraction state are unchanged (#169)
+`
+    );
+  }
 }
-var CONTINUITY_SCHEMA_VERSION, CHRONICLE_EVENT_KINDS, CHRONICLE_COLUMNS;
+var CONTINUITY_SCHEMA_VERSION, CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL, LEGACY_NULL_COMBINATION_LIMIT, CHRONICLE_EVENT_KINDS, CHRONICLE_COLUMNS;
 var init_continuity_store = __esm({
   "src/continuity-store.ts"() {
     "use strict";
     init_project_identity();
     init_continuity_identity();
     init_continuity_evidence();
+    init_hook_budget();
     CONTINUITY_SCHEMA_VERSION = 7;
+    CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL = `UPDATE capture_gaps SET state = 'recovered', recovered_at = COALESCE(recovered_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), reason = reason || ' \u2014 no transcript, nothing to capture' WHERE state = 'open' AND reason LIKE '%${NO_TRANSCRIPT_CAPTURE_REASON}%'`;
+    LEGACY_NULL_COMBINATION_LIMIT = 6;
     CHRONICLE_EVENT_KINDS = [
       "ASSERTED",
       "CHANGED",
@@ -12796,7 +12919,7 @@ var CURRENT_SCHEMA_VERSION;
 var init_schema_version = __esm({
   "src/schema-version.ts"() {
     "use strict";
-    CURRENT_SCHEMA_VERSION = 9;
+    CURRENT_SCHEMA_VERSION = 10;
   }
 });
 
@@ -13532,6 +13655,21 @@ var init_db = __esm({
       {
         name: "exchanges.metadata (continuity refreshExchangeMetadata)",
         pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE exchange_seq <= 0 OR content_hash IS NULL OR content_hash = '' OR content_generation <= 0"
+      },
+      {
+        name: "exchanges.content_hash (insert then refresh changes nothing)",
+        // #169: "pending 0" above only proved the column was non-empty. A hash that
+        // disagreed with its own row passed that and still made the next refresh bump
+        // content_generation, re-processing unchanged content as a new generation.
+        pendingRows: countStaleExchangeContentHashes
+      },
+      {
+        name: "capture_gaps.no-transcript rows (#168)",
+        // The gap rows 0.7.24/0.7.25 opened for sessions that never had a transcript.
+        // No later capture can recover them, so `open` would stand for ever and keep
+        // inflating pipeline-status `captureGapsOpen`. A no-op for current writers:
+        // the no-transcript path no longer opens a gap row at all.
+        repairSql: CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL
       },
       {
         name: "exchanges.identity (continuity updateIdentity)",
@@ -28809,32 +28947,8 @@ if (process.argv[1] && path11.basename(process.argv[1]) === "observe-hook-event.
   }
 }
 
-// src/hook-budget.ts
-var HOOK_HOST_TIMEOUT_MS = {
-  SessionStart: 1e4,
-  Stop: 1e4,
-  PostCompact: 1e4,
-  PreCompact: 15e3,
-  // learn.chatgpt.com/docs/hooks: SessionStart, Stop, PreCompact, PostCompact,
-  // UserPromptSubmit and the tool hooks default to 600 s and accept up to 600 s.
-  // ONLY SessionEnd and Interrupt default to 1 s and accept at most 3 s, so
-  // these two keep the small budget however generous the others become — asking
-  // for more would be a budget the host never granted, and a hook killed
-  // mid-capture is the failure the budget exists to prevent (#166 review).
-  Interrupt: 3e3,
-  SessionEnd: 3e3
-};
-var HOOK_HOST_TIMEOUT_DEFAULT_MS = 1e4;
-var HOOK_EXIT_MARGIN_MS = 300;
-var HOOK_BUDGET_MS = HOOK_HOST_TIMEOUT_DEFAULT_MS - HOOK_EXIT_MARGIN_MS;
-var HOOK_BUDGET_PRECOMPACT_MS = HOOK_HOST_TIMEOUT_MS.PreCompact - HOOK_EXIT_MARGIN_MS;
-var CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
-function isSqliteBusyError(error2) {
-  const code = error2?.code;
-  if (typeof code === "string" && /^SQLITE_BUSY/.test(code)) return true;
-  const message = error2 instanceof Error ? error2.message : String(error2 ?? "");
-  return /SQLITE_BUSY|database is locked|database table is locked/i.test(message);
-}
+// src/continuity-core.ts
+init_hook_budget();
 
 // src/capture-gap-markers.ts
 init_paths();
@@ -28954,6 +29068,7 @@ init_paths();
 init_continuity_evidence();
 init_continuity_identity();
 init_continuity_evidence();
+init_hook_budget();
 var CAPTURE_CHUNK_BYTES = 4 * 1024 * 1024;
 var SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
 var capsuleStringListSchema = { type: "array", items: { type: "string" } };
@@ -33633,7 +33748,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.25"
+    version: "0.7.26"
   },
   {
     capabilities: {

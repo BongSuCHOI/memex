@@ -168,6 +168,35 @@ export class HookCaptureFailed extends Error {
         this.cause = cause;
     }
 }
+/**
+ * The one message this situation is recorded under, everywhere.
+ *
+ * It is the error's text, the `capture_gaps.reason` the pre-0.7.26 versions wrote,
+ * and therefore the predicate the #168 repair matches on — three places that must
+ * never drift apart, since a repair keyed on a message it no longer matches is a
+ * repair that silently does nothing.
+ */
+export const NO_TRANSCRIPT_CAPTURE_REASON = "capture hook requires transcript_path";
+/**
+ * Issue #168 — a capture event whose payload carries no `transcript_path`.
+ *
+ * `codex exec --ephemeral` sessions have no transcript file, so their
+ * Stop/Interrupt/PreCompact/SessionEnd payload has no path. There is nothing to
+ * capture and nothing left uncaptured, which is NOT the same thing as a capture
+ * that was skipped: 0.7.24/0.7.25 recorded `outcome: "error"`, kept the intent
+ * marker, and `memex doctor` reported eleven ephemeral review runs as skipped
+ * captures with "0 uncaptured bytes" for thirty days.
+ *
+ * Its own class so the hook can end as `no-transcript` (an ok-class outcome, no
+ * marker, no capture-gap row) while `MEMEX_STRICT_CAPTURE=1` still throws.
+ */
+export class HookCaptureNoTranscript extends Error {
+    code = "MEMEX_HOOK_NO_TRANSCRIPT";
+    constructor(message = NO_TRANSCRIPT_CAPTURE_REASON) {
+        super(message);
+        this.name = "HookCaptureNoTranscript";
+    }
+}
 /** Flag carried on an error whose capture gap has ALREADY been recorded. */
 const CAPTURE_GAP_RECORDED = Symbol.for("memex.captureGapRecorded");
 /** Mark an error so a caller does not spend a second lock wait on the same gap. */

@@ -196,6 +196,66 @@ describe("doctor capture-gap", () => {
     expect(check.detail).toContain("no capture at stake");
     expect(check.detail).not.toMatch(/pending #163/);
   }, 30_000);
+
+  /**
+   * Issue #168 — `codex exec --ephemeral` sessions have no transcript file, so
+   * their Stop/SessionEnd markers carry no path and no byte count. Reporting
+   * them as skipped captures printed "0 uncaptured bytes" and claimed a pending
+   * continuity tail for thirty days. There was never anything to capture.
+   */
+  it("a capture marker with no transcript has nothing at stake (#168)", () => {
+    const ts = "2026-09-18T01:54:17.000Z";
+    for (let i = 0; i < 11; i++) {
+      writeCaptureGapMarker({
+        invocationId: `inv-ephemeral-${i}`,
+        event: i % 2 === 0 ? "Stop" : "SessionEnd",
+        source: null,
+        sessionId: `session-codex-exec-${i}`,
+        cwd: "/project",
+        transcriptPath: null,
+        transcriptBytes: null,
+        turnId: null,
+        ts,
+      });
+    }
+    const check = captureGapCheck();
+    expect(check.status).toBe("ok");
+    expect(check.detail).not.toMatch(/pending #163/);
+    expect(check.detail).not.toMatch(/uncaptured bytes/);
+    // Both capture events read the same way; which one the page names first is
+    // a directory-order detail no verdict may depend on.
+    expect(check.detail).toMatch(
+      new RegExp(`no transcript at (Stop|SessionEnd) ${ts} \\(ephemeral session; nothing to capture\\)`),
+    );
+  });
+
+  it("an explicit 0-byte transcript is nothing at stake either (#168)", () => {
+    writeCaptureGapMarker({
+      invocationId: "inv-zero-bytes", event: "SessionEnd", source: null,
+      sessionId: "session-zero", cwd: "/project", transcriptPath: null,
+      transcriptBytes: 0, turnId: null, ts: "2026-09-18T01:55:00.000Z",
+    });
+    expect(captureGapCheck().status).toBe("ok");
+  });
+
+  it("a marker that DID have bytes at stake still warns (#168 boundary)", () => {
+    writeCaptureGapMarker({
+      invocationId: "inv-real-skip", event: "Stop", source: null,
+      sessionId: "session-real", cwd: "/project", transcriptPath: "/tmp/rollout.jsonl",
+      transcriptBytes: 4_096, turnId: "turn-1", ts: "2026-09-18T01:56:00.000Z",
+    });
+    // A transcript path with no byte count is still a capture that did not run.
+    writeCaptureGapMarker({
+      invocationId: "inv-unknown-bytes", event: "Stop", source: null,
+      sessionId: "session-real-2", cwd: "/project", transcriptPath: "/tmp/rollout.jsonl",
+      transcriptBytes: null, turnId: "turn-2", ts: "2026-09-18T01:57:00.000Z",
+    });
+    const check = captureGapCheck();
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain(
+      `capture skipped at Stop 2026-09-18T01:56:00.000Z (4096 uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`,
+    );
+  });
 });
 
 describe("doctor hook-latency", () => {
@@ -213,6 +273,25 @@ describe("doctor hook-latency", () => {
     expect(check.name).toBe("hook-latency");
     expect(check.status).toBe("ok");
     expect(check.detail).toContain("2 hook run(s) completed");
+  });
+
+  /**
+   * #168 — `no-transcript` is a completed hook that had nothing to capture, so it
+   * belongs to the healthy outcomes. Counting it as a skipped capture produced
+   * `11 skipped (error 11) last error: capture hook requires transcript_path`.
+   */
+  it("does not count a no-transcript capture event as skipped (#168)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      ...paired("inv-nt", "Stop", { outcome: "no-transcript" }),
+      ...paired("inv-nt2", "SessionEnd", {
+        outcome: "no-transcript", error: "capture hook requires transcript_path",
+      }),
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z"));
+    expect(check.status).toBe("ok");
+    expect(check.detail).not.toContain("skipped");
+    expect(check.detail).not.toContain("requires transcript_path");
   });
 
   it("warns when a hook waited on the database", () => {

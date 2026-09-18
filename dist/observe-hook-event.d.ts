@@ -1,5 +1,12 @@
 /** Outcomes a hook may report on its done row. Never a host-timeout claim. */
-export type HookOutcome = "ok" | "busy" | "oversize" | "deadline" | "error" | "empty-prompt" | "daemon" | "fallback" | "skipped";
+export type HookOutcome = "ok" | "busy" | "oversize" | "deadline" | "error"
+/**
+ * #168 — a capture event (Stop/Interrupt/PreCompact/SessionEnd) whose payload
+ * carried no `transcript_path`, as `codex exec --ephemeral` sessions do. The
+ * hook completed and there was nothing to capture, so this is an ok-class
+ * outcome: doctor must not count it as a skipped capture.
+ */
+ | "no-transcript" | "empty-prompt" | "daemon" | "fallback" | "skipped";
 export declare function newInvocationId(): string;
 export declare function dataRoot(): string;
 export declare function observationLogPath(): string;
