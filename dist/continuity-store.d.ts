@@ -43,6 +43,62 @@ export type ExtractionCommitStage = "target-items" | "generation-state" | "targe
 export declare function storedToolInput(value: unknown): string | null;
 /** The stored representation of a tool call's result. See `storedToolInput`. */
 export declare function storedToolResult(value: unknown): string | null;
+/** One exchange's tool calls as the `tool_calls` columns hold them. */
+interface StoredToolRow {
+    id: string;
+    toolName: string;
+    toolInput: string | null;
+    toolResult: string | null;
+    isError: boolean;
+}
+interface StoredExchangeRow {
+    userMessage: string;
+    assistantMessage: string;
+    lineEnd: number;
+    tools: StoredToolRow[];
+}
+/**
+ * The worst-case number of candidate hashes one row can cost: the exhaustive head,
+ * times one uniform rendering per candidate value for the tail, times the two tool
+ * orders. A guarantee the tests assert directly.
+ */
+export declare const LEGACY_RECONSTRUCTION_MAX_HASHES: number;
+/**
+ * Issue #169 (post-fix review) — the hashes a PRE-0.7.26 writer could have left in
+ * `content_hash` for this exact stored row.
+ *
+ * Changing how the hash is computed makes every 0.7.25 row disagree with its own
+ * recompute, and `refreshExchangeMetadata` reads a disagreement as a content
+ * change: upgrading would bump `content_generation` on untouched history and
+ * re-run evidence and extraction for all of it. A hash-FORMAT change is not a
+ * content change, so the refresh checks this set first and, on a match, rewrites
+ * the hash and leaves the generation alone.
+ *
+ * Only the old `insertExchange` could disagree. The old `refreshExchangeMetadata`
+ * already hashed the STORED columns in SQL `ORDER BY id`, which is exactly the
+ * canonical value — so a row last written by the old refresh needs nothing.
+ *
+ * The old insert differed in two ways, and both are reconstructed here:
+ *
+ *  - It hashed the IN-MEMORY value where the row now holds NULL, and NULL is not
+ *    invertible — so every stored NULL is tried as each value that could have been
+ *    erased into it (`LEGACY_INPUT_RENDERINGS` / `LEGACY_RESULT_RENDERINGS`),
+ *    per column and bounded by `LEGACY_RENDERING_LIMIT`.
+ *  - It ordered tools with `localeCompare`. Both orders are tried, because
+ *    `localeCompare` depends on the ICU build that wrote the row and this process
+ *    may collate differently than the one that did.
+ *
+ * Exact for up to `LEGACY_EXHAUSTIVE_SLOTS` NULL columns, and for a seventh —
+ * enumerating one tail column uniformly IS enumerating it exhaustively. The one
+ * residual limitation: a row with EIGHT or more NULL columns whose columns past the
+ * sixth did not all hold the same value. Those share one rendering, so such a row
+ * is not reconstructed and takes one bump (then stays stable, because the refresh
+ * writes the canonical hash). No transcript this parser produces has that shape.
+ *
+ * Exported for the tests that assert the bound and the documented limitation; it is
+ * a pure function of the stored row.
+ */
+export declare function legacyContentHashes(row: StoredExchangeRow): Set<string>;
 export declare function exchangeContentHash(exchange: {
     userMessage: string;
     assistantMessage: string;
@@ -367,3 +423,4 @@ export declare function claimExtractionTarget(db: Database.Database, target: Ext
  * handoff, retry backoff, and attempt-cap distinctly (issue #11).
  */
 export declare function claimExtractionTargetWithReason(db: Database.Database, target: ExtractionTarget, owner?: `${string}-${string}-${string}-${string}-${string}`, now?: Date): ExtractionTargetClaimOutcome;
+export {};

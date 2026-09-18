@@ -208,13 +208,31 @@ const LEGACY_INPUT_RENDERINGS: readonly unknown[] = [null, "", 0, false];
 const LEGACY_RESULT_RENDERINGS: readonly unknown[] = [null, ""];
 
 /**
- * Above this many renderings of one row, only the UNIFORM ones are tried: every
- * NULL input as the same scalar, every NULL result as the same value. The
- * per-column enumeration is a product over the row's NULLs, so it needs a bound;
- * a row past it falls through to the real-change path rather than costing
- * unbounded work.
+ * The exhaustive budget: 4^6, so a row with up to six NULL tool columns is
+ * reconstructed EXACTLY whatever mixture of legacy values it held.
+ *
+ * The per-column enumeration is a product over the row's NULLs, so it needs a
+ * bound. The first bound (512) was too small and its fallback too blunt: it
+ * rendered every NULL with the SAME value, so a row of five mixed scalars —
+ * `[0, false, "", 0, false]` — could not be reconstructed at all and took the
+ * spurious bump anyway (#169 second post-release review).
  */
-const LEGACY_RENDERING_LIMIT = 512;
+const LEGACY_RENDERING_LIMIT = 4_096;
+
+/**
+ * Past that budget the LEADING columns are still enumerated exhaustively and only
+ * the tail is uniform, which keeps the work bounded without flattening the whole
+ * row. Six leading columns, the same width as the budget.
+ */
+const LEGACY_EXHAUSTIVE_SLOTS = 6;
+
+/**
+ * The worst-case number of candidate hashes one row can cost: the exhaustive head,
+ * times one uniform rendering per candidate value for the tail, times the two tool
+ * orders. A guarantee the tests assert directly.
+ */
+export const LEGACY_RECONSTRUCTION_MAX_HASHES =
+  LEGACY_RENDERING_LIMIT * LEGACY_INPUT_RENDERINGS.length * 2;
 
 /**
  * Issue #169 (post-fix review) — the hashes a PRE-0.7.26 writer could have left in
@@ -240,8 +258,18 @@ const LEGACY_RENDERING_LIMIT = 512;
  *  - It ordered tools with `localeCompare`. Both orders are tried, because
  *    `localeCompare` depends on the ICU build that wrote the row and this process
  *    may collate differently than the one that did.
+ *
+ * Exact for up to `LEGACY_EXHAUSTIVE_SLOTS` NULL columns, and for a seventh —
+ * enumerating one tail column uniformly IS enumerating it exhaustively. The one
+ * residual limitation: a row with EIGHT or more NULL columns whose columns past the
+ * sixth did not all hold the same value. Those share one rendering, so such a row
+ * is not reconstructed and takes one bump (then stays stable, because the refresh
+ * writes the canonical hash). No transcript this parser produces has that shape.
+ *
+ * Exported for the tests that assert the bound and the documented limitation; it is
+ * a pure function of the stored row.
  */
-function legacyContentHashes(row: StoredExchangeRow): Set<string> {
+export function legacyContentHashes(row: StoredExchangeRow): Set<string> {
   const hashes = new Set<string>();
   // With no tool calls nothing could have differed: same text, same lineEnd, and
   // an empty tool list orders and renders identically under either algorithm.
@@ -264,47 +292,73 @@ function legacyContentHashes(row: StoredExchangeRow): Set<string> {
 
   // Mixed-radix over the slots, so each NULL column varies independently — a row
   // with `0` on one tool and `false` on another is not any uniform rendering of it.
-  let total = 1;
-  for (const slot of slots) {
-    total *= slot.choices.length;
-    if (total > LEGACY_RENDERING_LIMIT) break;
+  // The head is enumerated exhaustively within the budget; any tail shares one
+  // rendering, which for a single tail column is still exhaustive.
+  let head = 0;
+  let headTotal = 1;
+  while (head < slots.length && head < LEGACY_EXHAUSTIVE_SLOTS) {
+    const next = headTotal * slots[head].choices.length;
+    if (next > LEGACY_RENDERING_LIMIT) break;
+    headTotal = next;
+    head++;
   }
+  const tail = slots.slice(head);
+  const tailWidth = tail.length === 0
+    ? 1
+    : Math.max(...tail.map((slot) => slot.choices.length));
+
   const combinations: number[][] = [];
-  if (total <= LEGACY_RENDERING_LIMIT) {
-    const choice = slots.map(() => 0);
+  const choice = slots.map(() => 0);
+  for (let uniform = 0; uniform < tailWidth; uniform++) {
+    // The tail's shared choice, clamped per field so a narrower field repeats its
+    // last candidate instead of running off the end.
+    for (let index = head; index < slots.length; index++) {
+      choice[index] = Math.min(uniform, slots[index].choices.length - 1);
+    }
+    for (let index = 0; index < head; index++) choice[index] = 0;
     for (;;) {
       combinations.push([...choice]);
-      let carry = slots.length - 1;
+      let carry = head - 1;
       while (carry >= 0 && ++choice[carry] >= slots[carry].choices.length) {
         choice[carry] = 0;
         carry--;
       }
       if (carry < 0) break;
     }
-  } else {
-    // Uniform only: every NULL rendered as the SAME choice, once per scalar. The
-    // indices are clamped, so a field with fewer choices repeats its last one.
-    const widest = Math.max(...slots.map((slot) => slot.choices.length));
-    for (let index = 0; index < widest; index++) {
-      combinations.push(
-        slots.map((slot) => Math.min(index, slot.choices.length - 1)),
-      );
-    }
   }
 
-  const orders = [byIdBinary, (l: { id: string }, r: { id: string }) => l.id.localeCompare(r.id)];
+  // The orders depend only on the ids, so they are resolved ONCE rather than per
+  // combination — and when they agree (the common case) only one is hashed.
+  const indices = row.tools.map((_, index) => index);
+  const binaryOrder = [...indices].sort((l, r) => byIdBinary(row.tools[l], row.tools[r]));
+  const localeOrder = [...indices].sort((l, r) =>
+    row.tools[l].id.localeCompare(row.tools[r].id));
+  const orders = binaryOrder.join() === localeOrder.join()
+    ? [binaryOrder]
+    : [binaryOrder, localeOrder];
+
+  const rendered = row.tools.map((tool) => ({
+    id: tool.id,
+    name: tool.toolName,
+    input: parseStoredJson(tool.toolInput) as unknown,
+    result: tool.toolResult as unknown,
+    error: tool.isError,
+  }));
+  const canonicalInput = rendered.map((tool) => tool.input);
+  const canonicalResult = rendered.map((tool) => tool.result);
   for (const combination of combinations) {
-    const rendered = row.tools.map((tool) => ({
-      id: tool.id,
-      name: tool.toolName,
-      input: parseStoredJson(tool.toolInput) as unknown,
-      result: tool.toolResult as unknown,
-      error: tool.isError,
-    }));
+    // Reuse one array: every slot is reset from the canonical value first, so a
+    // previous combination cannot leak into this one.
+    for (let index = 0; index < rendered.length; index++) {
+      rendered[index].input = canonicalInput[index];
+      rendered[index].result = canonicalResult[index];
+    }
     slots.forEach((slot, index) => {
       rendered[slot.tool][slot.field] = slot.choices[combination[index]];
     });
-    for (const order of orders) hashes.add(hashExchangeShape(row, [...rendered].sort(order)));
+    for (const order of orders) {
+      hashes.add(hashExchangeShape(row, order.map((index) => rendered[index])));
+    }
   }
   return hashes;
 }

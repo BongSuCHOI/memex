@@ -8,6 +8,8 @@ import type Database from "better-sqlite3";
 import { initDatabase, insertExchange } from "../src/db.js";
 import {
   countStaleExchangeContentHashes,
+  legacyContentHashes,
+  LEGACY_RECONSTRUCTION_MAX_HASHES,
   refreshExchangeMetadata,
 } from "../src/continuity-store.js";
 import type { ToolCall } from "../src/types.js";
@@ -216,6 +218,29 @@ describe("a 0.7.25 content hash is a format change, not a content change (#169)"
       legacyStore: (id) => nullStoredToolInput(`${id}-t1`),
     },
     {
+      // Issue #169 (second post-release review): the >limit fallback rendered
+      // EVERY NULL with the same value, so a row whose legacy scalars differed
+      // could not be reconstructed at all and took the bump anyway.
+      name: "five NULL inputs with mixed legacy scalars",
+      tools: (id) =>
+        [0, false, "", 0, false].map((input, index) =>
+          toolCall(id, { id: `${id}-t${index}`, toolInput: input, toolResult: "ok" })),
+      legacyStore: (id) => {
+        for (let index = 0; index < 5; index++) nullStoredToolInput(`${id}-t${index}`);
+      },
+    },
+    {
+      name: "seven NULL inputs with mixed legacy scalars",
+      // Past the exhaustive product, so the tail is enumerated uniformly — with a
+      // single tail column that is still exact.
+      tools: (id) =>
+        [0, false, "", 0, false, 0, false].map((input, index) =>
+          toolCall(id, { id: `${id}-t${index}`, toolInput: input, toolResult: "ok" })),
+      legacyStore: (id) => {
+        for (let index = 0; index < 7; index++) nullStoredToolInput(`${id}-t${index}`);
+      },
+    },
+    {
       name: "two tools with DIFFERENT falsy scalars — 0 on one, false on the other",
       // Per-column again: no single uniform rendering of the row's NULLs matches.
       tools: (id) => [
@@ -267,6 +292,57 @@ describe("a 0.7.25 content hash is a format change, not a content change (#169)"
       expect(countEvidence()).toBe(evidenceBefore);
     });
   }
+
+  it("stays bounded, and states the limit it stops being exact at", () => {
+    // The bound is a property of the reconstruction, so ask it directly rather
+    // than inferring it from a refresh.
+    const nullInputTools = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        id: `t${index}`,
+        toolName: "Bash",
+        toolInput: null as string | null,
+        toolResult: "ok" as string | null,
+        isError: false,
+      }));
+
+    for (const count of [6, 7, 8, 12]) {
+      const hashes = legacyContentHashes({ ...BASE, tools: nullInputTools(count) });
+      expect(hashes.size).toBeLessThanOrEqual(LEGACY_RECONSTRUCTION_MAX_HASHES);
+      expect(hashes.size).toBeGreaterThan(0);
+    }
+
+    // What a six-column mixed row costs, measured rather than assumed.
+    const started = Date.now();
+    legacyContentHashes({ ...BASE, tools: nullInputTools(6) });
+    const elapsedMs = Date.now() - started;
+    // Generous: the assertion is that it is bounded work, not a benchmark.
+    expect(elapsedMs).toBeLessThan(5_000);
+    console.error(`[measure] six mixed NULL columns reconstructed in ${elapsedMs} ms`);
+  });
+
+  it("documents the residual limitation: a 2+ column tail with DIFFERENT values", () => {
+    // Eight NULL inputs, and the two past the exhaustive head disagree. The tail
+    // is rendered uniformly, so this row is NOT reconstructed and takes one bump —
+    // the pre-fix behaviour, once, for a shape no real transcript produces.
+    const id = "ex-eight-mixed-tail";
+    const values: unknown[] = [0, false, "", 0, false, 0, false, 0];
+    const toolCalls = values.map((input, index) =>
+      toolCall(id, { id: `${id}-t${index}`, toolInput: input, toolResult: "ok" }));
+    insert(id, toolCalls);
+    for (let index = 0; index < values.length; index++) {
+      nullStoredToolInput(`${id}-t${index}`);
+    }
+    stampLegacyHash(id, legacyInsertHash({ ...BASE, toolCalls }));
+    expect(countStaleExchangeContentHashes(db)).toBe(1);
+
+    refreshExchangeMetadata(db);
+
+    // Bumped once, then stable: the row is not re-processed again and again.
+    expect(metadataOf(id).content_generation).toBe(2);
+    expect(countStaleExchangeContentHashes(db)).toBe(0);
+    refreshExchangeMetadata(db);
+    expect(metadataOf(id).content_generation).toBe(2);
+  });
 
   it("still bumps the generation for a hash that is no legacy variant", () => {
     const id = "ex-real-change";

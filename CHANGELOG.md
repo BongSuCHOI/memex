@@ -17,9 +17,20 @@ Two post-release readings of 0.7.26 (#169, #171).
   `content_generation` bump on the v10 refresh — the one thing that reconstruction
   exists to prevent. Each stored NULL input is now tried as `null`, `""`, `0` and
   `false` (a stored NULL result as `null` or `""`, since `tool_result` is always a
-  string by the time it is stored), per column and bounded: past
-  `LEGACY_RENDERING_LIMIT` only the uniform renderings are tried, so a pathological
-  row cannot cost unbounded work.
+  string by the time it is stored), per column and bounded.
+- That bound is now exhaustive up to six NULL tool columns (`LEGACY_RENDERING_LIMIT`
+  4^6), and past it the LEADING six are still enumerated exhaustively while only the
+  tail shares one rendering (#169 second review). The first version fell back to
+  rendering every NULL with the SAME value, so a row of five mixed scalars —
+  `[0, false, "", 0, false]` — could not be reconstructed at all and took the
+  spurious bump the reconstruction exists to prevent. Seven columns are exact too,
+  because enumerating a one-column tail uniformly IS enumerating it exhaustively.
+  The residual limitation, stated rather than hidden: a row with eight or more NULL
+  columns whose columns past the sixth did not all hold the same value is not
+  reconstructed and takes one bump (then stays stable). Worst case is
+  `LEGACY_RECONSTRUCTION_MAX_HASHES` candidate hashes for a row; measured, a
+  six-column mixed row reconstructs in about 8 ms and the worst shapes in about
+  30 ms.
 
 ### Doctor
 
