@@ -185,8 +185,36 @@ function contentHashOfStoredRow(row: StoredExchangeRow): string {
   );
 }
 
-/** Above this many stored NULLs, only the two uniform renderings are tried. */
-const LEGACY_NULL_COMBINATION_LIMIT = 6;
+/**
+ * What a stored `tool_input = NULL` could have been in memory when the PRE-0.7.26
+ * writer hashed it.
+ *
+ * That writer stored NULL for any FALSY input (`toolInput ? JSON.stringify(...) :
+ * null`) while hashing the value raw (`toolInput ?? null`). The rollout parser
+ * really produces these: `safeParseInput` returns `JSON.parse(raw)`, so a tool
+ * input of `0` or `false` arrives as the scalar and its own type union says
+ * `number | boolean` (src/codex-rollout.ts). The first reconstruction left the two
+ * scalars out as values "no parser produces", which was simply wrong — such a row
+ * failed the legacy match and took a spurious generation bump (#169 post-release).
+ */
+const LEGACY_INPUT_RENDERINGS: readonly unknown[] = [null, "", 0, false];
+
+/**
+ * And for a stored `tool_result = NULL`. Only two, because `toolResult` is always a
+ * string by the time it is stored — the parser writes
+ * `typeof output === "string" ? output : JSON.stringify(output)` — so the old
+ * writer's `toolResult || null` could only have erased `""` (or nothing at all).
+ */
+const LEGACY_RESULT_RENDERINGS: readonly unknown[] = [null, ""];
+
+/**
+ * Above this many renderings of one row, only the UNIFORM ones are tried: every
+ * NULL input as the same scalar, every NULL result as the same value. The
+ * per-column enumeration is a product over the row's NULLs, so it needs a bound;
+ * a row past it falls through to the real-change path rather than costing
+ * unbounded work.
+ */
+const LEGACY_RENDERING_LIMIT = 512;
 
 /**
  * Issue #169 (post-fix review) — the hashes a PRE-0.7.26 writer could have left in
@@ -205,19 +233,13 @@ const LEGACY_NULL_COMBINATION_LIMIT = 6;
  *
  * The old insert differed in two ways, and both are reconstructed here:
  *
- *  - It hashed the IN-MEMORY value where the row now holds NULL. `""` (and `0` /
- *    `false` for an input) were hashed raw and stored as NULL, and NULL is not
- *    invertible — so every stored NULL is tried both ways. That is 2^k for k NULL
- *    columns, which is why it is capped: above the cap only the two uniform
- *    renderings are tried, and a row past it falls through to the real-change path
- *    rather than costing unbounded work.
+ *  - It hashed the IN-MEMORY value where the row now holds NULL, and NULL is not
+ *    invertible — so every stored NULL is tried as each value that could have been
+ *    erased into it (`LEGACY_INPUT_RENDERINGS` / `LEGACY_RESULT_RENDERINGS`),
+ *    per column and bounded by `LEGACY_RENDERING_LIMIT`.
  *  - It ordered tools with `localeCompare`. Both orders are tried, because
  *    `localeCompare` depends on the ICU build that wrote the row and this process
  *    may collate differently than the one that did.
- *
- * `0` / `false` inputs are deliberately NOT reconstructed: no transcript parser
- * produces them, and including them would multiply the combinations. Such a row
- * is treated as a real content change — the pre-fix behaviour, once.
  */
 function legacyContentHashes(row: StoredExchangeRow): Set<string> {
   const hashes = new Set<string>();
@@ -225,24 +247,53 @@ function legacyContentHashes(row: StoredExchangeRow): Set<string> {
   // an empty tool list orders and renders identically under either algorithm.
   if (row.tools.length === 0) return hashes;
 
-  // Every stored NULL the old writer may have hashed as `""` instead.
-  const slots: Array<{ tool: number; field: "toolInput" | "toolResult" }> = [];
+  // Every stored NULL, with the values the old writer could have erased into it.
+  const slots: Array<{
+    tool: number;
+    field: "input" | "result";
+    choices: readonly unknown[];
+  }> = [];
   row.tools.forEach((tool, index) => {
-    if (tool.toolInput === null) slots.push({ tool: index, field: "toolInput" });
-    if (tool.toolResult === null) slots.push({ tool: index, field: "toolResult" });
+    if (tool.toolInput === null) {
+      slots.push({ tool: index, field: "input", choices: LEGACY_INPUT_RENDERINGS });
+    }
+    if (tool.toolResult === null) {
+      slots.push({ tool: index, field: "result", choices: LEGACY_RESULT_RENDERINGS });
+    }
   });
 
-  const masks: number[] = [];
-  if (slots.length === 0) masks.push(0);
-  else if (slots.length <= LEGACY_NULL_COMBINATION_LIMIT) {
-    for (let mask = 0; mask < 1 << slots.length; mask++) masks.push(mask);
+  // Mixed-radix over the slots, so each NULL column varies independently — a row
+  // with `0` on one tool and `false` on another is not any uniform rendering of it.
+  let total = 1;
+  for (const slot of slots) {
+    total *= slot.choices.length;
+    if (total > LEGACY_RENDERING_LIMIT) break;
+  }
+  const combinations: number[][] = [];
+  if (total <= LEGACY_RENDERING_LIMIT) {
+    const choice = slots.map(() => 0);
+    for (;;) {
+      combinations.push([...choice]);
+      let carry = slots.length - 1;
+      while (carry >= 0 && ++choice[carry] >= slots[carry].choices.length) {
+        choice[carry] = 0;
+        carry--;
+      }
+      if (carry < 0) break;
+    }
   } else {
-    // All-NULL and all-empty only: the bound on work a pathological row may cost.
-    masks.push(0, (1 << slots.length) - 1 >>> 0);
+    // Uniform only: every NULL rendered as the SAME choice, once per scalar. The
+    // indices are clamped, so a field with fewer choices repeats its last one.
+    const widest = Math.max(...slots.map((slot) => slot.choices.length));
+    for (let index = 0; index < widest; index++) {
+      combinations.push(
+        slots.map((slot) => Math.min(index, slot.choices.length - 1)),
+      );
+    }
   }
 
   const orders = [byIdBinary, (l: { id: string }, r: { id: string }) => l.id.localeCompare(r.id)];
-  for (const mask of masks) {
+  for (const combination of combinations) {
     const rendered = row.tools.map((tool) => ({
       id: tool.id,
       name: tool.toolName,
@@ -251,9 +302,7 @@ function legacyContentHashes(row: StoredExchangeRow): Set<string> {
       error: tool.isError,
     }));
     slots.forEach((slot, index) => {
-      if (!(mask & (1 << index))) return;
-      if (slot.field === "toolInput") rendered[slot.tool].input = "";
-      else rendered[slot.tool].result = "";
+      rendered[slot.tool][slot.field] = slot.choices[combination[index]];
     });
     for (const order of orders) hashes.add(hashExchangeShape(row, [...rendered].sort(order)));
   }

@@ -8972,18 +8972,40 @@ function legacyContentHashes(row) {
   if (row.tools.length === 0) return hashes;
   const slots = [];
   row.tools.forEach((tool, index) => {
-    if (tool.toolInput === null) slots.push({ tool: index, field: "toolInput" });
-    if (tool.toolResult === null) slots.push({ tool: index, field: "toolResult" });
+    if (tool.toolInput === null) {
+      slots.push({ tool: index, field: "input", choices: LEGACY_INPUT_RENDERINGS });
+    }
+    if (tool.toolResult === null) {
+      slots.push({ tool: index, field: "result", choices: LEGACY_RESULT_RENDERINGS });
+    }
   });
-  const masks = [];
-  if (slots.length === 0) masks.push(0);
-  else if (slots.length <= LEGACY_NULL_COMBINATION_LIMIT) {
-    for (let mask = 0; mask < 1 << slots.length; mask++) masks.push(mask);
+  let total = 1;
+  for (const slot of slots) {
+    total *= slot.choices.length;
+    if (total > LEGACY_RENDERING_LIMIT) break;
+  }
+  const combinations = [];
+  if (total <= LEGACY_RENDERING_LIMIT) {
+    const choice = slots.map(() => 0);
+    for (; ; ) {
+      combinations.push([...choice]);
+      let carry = slots.length - 1;
+      while (carry >= 0 && ++choice[carry] >= slots[carry].choices.length) {
+        choice[carry] = 0;
+        carry--;
+      }
+      if (carry < 0) break;
+    }
   } else {
-    masks.push(0, (1 << slots.length) - 1 >>> 0);
+    const widest = Math.max(...slots.map((slot) => slot.choices.length));
+    for (let index = 0; index < widest; index++) {
+      combinations.push(
+        slots.map((slot) => Math.min(index, slot.choices.length - 1))
+      );
+    }
   }
   const orders = [byIdBinary, (l3, r) => l3.id.localeCompare(r.id)];
-  for (const mask of masks) {
+  for (const combination of combinations) {
     const rendered = row.tools.map((tool) => ({
       id: tool.id,
       name: tool.toolName,
@@ -8992,9 +9014,7 @@ function legacyContentHashes(row) {
       error: tool.isError
     }));
     slots.forEach((slot, index) => {
-      if (!(mask & 1 << index)) return;
-      if (slot.field === "toolInput") rendered[slot.tool].input = "";
-      else rendered[slot.tool].result = "";
+      rendered[slot.tool][slot.field] = slot.choices[combination[index]];
     });
     for (const order of orders) hashes.add(hashExchangeShape(row, [...rendered].sort(order)));
   }
@@ -10131,7 +10151,7 @@ function refreshExchangeMetadata(db, sessionId) {
     );
   }
 }
-var CONTINUITY_SCHEMA_VERSION, CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL, LEGACY_NULL_COMBINATION_LIMIT, CHRONICLE_EVENT_KINDS, CHRONICLE_COLUMNS;
+var CONTINUITY_SCHEMA_VERSION, CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL, LEGACY_INPUT_RENDERINGS, LEGACY_RESULT_RENDERINGS, LEGACY_RENDERING_LIMIT, CHRONICLE_EVENT_KINDS, CHRONICLE_COLUMNS;
 var init_continuity_store = __esm({
   "src/continuity-store.ts"() {
     "use strict";
@@ -10141,7 +10161,9 @@ var init_continuity_store = __esm({
     init_hook_budget();
     CONTINUITY_SCHEMA_VERSION = 7;
     CLOSE_NO_TRANSCRIPT_CAPTURE_GAPS_SQL = `UPDATE capture_gaps SET state = 'recovered', recovered_at = COALESCE(recovered_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), reason = reason || ' \u2014 no transcript, nothing to capture' WHERE state = 'open' AND reason LIKE '%${NO_TRANSCRIPT_CAPTURE_REASON}%'`;
-    LEGACY_NULL_COMBINATION_LIMIT = 6;
+    LEGACY_INPUT_RENDERINGS = [null, "", 0, false];
+    LEGACY_RESULT_RENDERINGS = [null, ""];
+    LEGACY_RENDERING_LIMIT = 512;
     CHRONICLE_EVENT_KINDS = [
       "ASSERTED",
       "CHANGED",

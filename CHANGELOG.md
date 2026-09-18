@@ -2,6 +2,25 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.27 - 2026-09-18
+
+Two post-release readings of 0.7.26 (#169, #171).
+
+### Database
+
+- The legacy content-hash reconstruction covers `0` and `false` tool inputs
+  (#169). 0.7.26 left them out as values "no transcript parser produces", which
+  was wrong: `safeParseInput` hands back `JSON.parse(raw)`, so an input of `0` or
+  `false` arrives as the scalar and the parser's own type union says
+  `number | boolean`. The pre-0.7.26 writer hashed the scalar raw and stored NULL,
+  so such a row failed the legacy match and still took a spurious
+  `content_generation` bump on the v10 refresh — the one thing that reconstruction
+  exists to prevent. Each stored NULL input is now tried as `null`, `""`, `0` and
+  `false` (a stored NULL result as `null` or `""`, since `tool_result` is always a
+  string by the time it is stored), per column and bounded: past
+  `LEGACY_RENDERING_LIMIT` only the uniform renderings are tried, so a pathological
+  row cannot cost unbounded work.
+
 ## 0.7.26 - 2026-09-18
 
 Two post-release readings that were wrong about unchanged data (#169, #168).
