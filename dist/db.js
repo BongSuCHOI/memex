@@ -7,7 +7,7 @@ import { getMemexHome, getDbPath, ensureDbDir, LLM_WORKDIR_BASENAME, } from "./p
 import { sessionsRoot } from "./codex-rollout.js";
 import os from "node:os";
 import { EMBEDDING_VERSION } from "./embeddings.js";
-import { ensureContinuitySchema, exchangeContentHash, } from "./continuity-store.js";
+import { countStaleExchangeContentHashes, ensureContinuitySchema, exchangeContentHash, storedToolInput, storedToolResult, } from "./continuity-store.js";
 import { ensureModelBudgetSchema } from "./model-budget.js";
 import { CURRENT_SCHEMA_VERSION } from "./schema-version.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
@@ -234,6 +234,13 @@ export const ROW_NORMALIZATION_INVARIANTS = [
         name: "exchanges.metadata (continuity refreshExchangeMetadata)",
         pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE exchange_seq <= 0 OR content_hash IS NULL " +
             "OR content_hash = '' OR content_generation <= 0",
+    },
+    {
+        name: "exchanges.content_hash (insert then refresh changes nothing)",
+        // #169: "pending 0" above only proved the column was non-empty. A hash that
+        // disagreed with its own row passed that and still made the next refresh bump
+        // content_generation, re-processing unchanged content as a new generation.
+        pendingRows: countStaleExchangeContentHashes,
     },
     {
         name: "exchanges.identity (continuity updateIdentity)",
@@ -1113,7 +1120,10 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
       `);
             for (const toolCall of exchange.toolCalls) {
                 const evidence = classifyToolEvidence(toolCall.toolName, toolCall.toolInput, { cwd: exchange.cwd });
-                toolStmt.run(toolCall.id, toolCall.exchangeId, toolCall.toolName, toolCall.toolInput ? JSON.stringify(toolCall.toolInput) : null, toolCall.toolResult || null, toolCall.isError ? 1 : 0, toolCall.timestamp, toolCall.sourceType ?? evidence.sourceType, (toolCall.learnable ?? evidence.learnable) &&
+                toolStmt.run(toolCall.id, toolCall.exchangeId, toolCall.toolName, 
+                // #169: one canonical stored form, shared with the content hash, so the
+                // hash this row was written with is the hash it reads back as.
+                storedToolInput(toolCall.toolInput), storedToolResult(toolCall.toolResult), toolCall.isError ? 1 : 0, toolCall.timestamp, toolCall.sourceType ?? evidence.sourceType, (toolCall.learnable ?? evidence.learnable) &&
                     !toolCall.isError &&
                     toolCall.toolResult
                     ? 1

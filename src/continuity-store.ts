@@ -75,6 +75,73 @@ function nullableNumber(value: unknown): number | null {
   return value === null || value === undefined ? null : Number(value);
 }
 
+/**
+ * Issue #169 — the STORED representation of a tool call's input, and the single
+ * place that decides it.
+ *
+ * `content_hash` is a content identity that two different code paths compute:
+ * `insertExchange` at write time from the in-memory exchange, and
+ * `refreshExchangeMetadata` afterwards from the `tool_calls` rows (the migration
+ * pass, and every `ensureExtractionTarget`). They agree only if the writer stores
+ * exactly what the hash covers. It did not: an empty `tool_result` and a falsy
+ * `tool_input` were hashed as `""` and stored as SQL NULL, so the first recompute
+ * produced a different hash, bumped `content_generation`, and re-processed an
+ * unchanged exchange as new content.
+ *
+ * So there is one canonical form — absent/empty is NULL, everything else is its
+ * JSON text — and both the INSERT and the hash go through these two functions.
+ */
+export function storedToolInput(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  const json = JSON.stringify(value);
+  return json === undefined ? null : json;
+}
+
+/** The stored representation of a tool call's result. See `storedToolInput`. */
+export function storedToolResult(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  return String(value);
+}
+
+/**
+ * The hash over the stored shape of one exchange. Both callers reduce to this,
+ * which is what makes "insert then refresh changes nothing" true by construction.
+ *
+ * The tool order is decided HERE, not by `ORDER BY id`: SQLite's BINARY
+ * collation and `localeCompare` disagree on case and punctuation, which was a
+ * second way the same two hashes could differ for identical rows.
+ */
+function contentHashOfStoredRow(row: {
+  userMessage: string;
+  assistantMessage: string;
+  lineEnd: number;
+  tools: Array<{
+    id: string;
+    toolName: string;
+    toolInput: string | null;
+    toolResult: string | null;
+    isError: boolean;
+  }>;
+}): string {
+  const tools = [...row.tools]
+    .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+    .map((tool) => ({
+      id: tool.id,
+      name: tool.toolName,
+      input: parseStoredJson(tool.toolInput),
+      result: tool.toolResult,
+      error: tool.isError,
+    }));
+  return sha256(
+    JSON.stringify({
+      user: row.userMessage,
+      assistant: row.assistantMessage,
+      lineEnd: row.lineEnd,
+      tools,
+    }),
+  );
+}
+
 export function exchangeContentHash(exchange: {
   userMessage: string;
   assistantMessage: string;
@@ -87,23 +154,19 @@ export function exchangeContentHash(exchange: {
     isError: boolean;
   }>;
 }): string {
-  const tools = (exchange.toolCalls ?? [])
-    .map((tool) => ({
+  return contentHashOfStoredRow({
+    userMessage: exchange.userMessage,
+    assistantMessage: exchange.assistantMessage,
+    lineEnd: exchange.lineEnd,
+    tools: (exchange.toolCalls ?? []).map((tool) => ({
       id: tool.id,
-      name: tool.toolName,
-      input: tool.toolInput ?? null,
-      result: tool.toolResult ?? null,
-      error: tool.isError,
-    }))
-    .sort((left, right) => left.id.localeCompare(right.id));
-  return sha256(
-    JSON.stringify({
-      user: exchange.userMessage,
-      assistant: exchange.assistantMessage,
-      lineEnd: exchange.lineEnd,
-      tools,
-    }),
-  );
+      toolName: tool.toolName,
+      // Exactly what the INSERT will put in the row — see `storedToolInput`.
+      toolInput: storedToolInput(tool.toolInput),
+      toolResult: storedToolResult(tool.toolResult),
+      isError: !!tool.isError,
+    })),
+  });
 }
 
 function columnNames(db: Database.Database, table: string): Set<string> {
@@ -1310,6 +1373,74 @@ function ensureChronicleSchema(
   options.afterMigrationStage?.("chronicle-indexes");
 }
 
+/**
+ * The hash of an exchange AS STORED, prepared once for a whole pass.
+ *
+ * #169: `refreshExchangeMetadata` and the invariant that checks it must read the
+ * same columns and reduce them the same way, or the check would pass while the
+ * pass still rewrote the row. One factory, both callers.
+ */
+function storedExchangeHasher(db: Database.Database): (row: {
+  id: string;
+  user_message: string;
+  assistant_message: string;
+  line_end: number;
+}) => string {
+  const selectTools = db.prepare(`
+    SELECT id, tool_name, tool_input, tool_result, is_error
+    FROM tool_calls WHERE exchange_id = ?
+  `);
+  return (row) => {
+    const tools = selectTools.all(row.id) as Array<{
+      id: string;
+      tool_name: string;
+      tool_input: string | null;
+      tool_result: string | null;
+      is_error: number;
+    }>;
+    return contentHashOfStoredRow({
+      userMessage: row.user_message,
+      assistantMessage: row.assistant_message,
+      lineEnd: row.line_end,
+      tools: tools.map((tool) => ({
+        id: tool.id,
+        toolName: tool.tool_name,
+        toolInput: tool.tool_input,
+        toolResult: tool.tool_result,
+        isError: !!tool.is_error,
+      })),
+    });
+  };
+}
+
+/**
+ * #169 — exchanges whose stored `content_hash` is NOT the hash of their stored
+ * row: exactly the rows the next `refreshExchangeMetadata` would rewrite with a
+ * bumped `content_generation`, re-processing unchanged content as new.
+ *
+ * Read-only. `ROW_NORMALIZATION_INVARIANTS` asserts zero for rows a current
+ * writer produced, which is the "insert then refresh changes nothing" invariant.
+ */
+export function countStaleExchangeContentHashes(db: Database.Database): number {
+  const rows = db
+    .prepare(
+      "SELECT id, user_message, assistant_message, line_end, content_hash FROM exchanges",
+    )
+    .all() as Array<{
+    id: string;
+    user_message: string;
+    assistant_message: string;
+    line_end: number;
+    content_hash: string | null;
+  }>;
+  const hashOf = storedExchangeHasher(db);
+  let stale = 0;
+  // An empty hash is a legacy row the pass fills in, not a drifted one: the
+  // generation bump this counts needs an existing hash to disagree with.
+  for (const row of rows) if (row.content_hash && hashOf(row) !== row.content_hash) stale++;
+  return stale;
+}
+
 /** Backfill rows inserted by legacy readers or direct migration fixtures. */
 export function refreshExchangeMetadata(
   db: Database.Database,
@@ -1340,33 +1471,15 @@ export function refreshExchangeMetadata(
     SET exchange_seq = ?, content_hash = ?, content_generation = ?
     WHERE id = ?
   `);
-  const selectTools = db.prepare(`
-    SELECT id, tool_name, tool_input, tool_result, is_error
-    FROM tool_calls WHERE exchange_id = ? ORDER BY id
-  `);
+  // #169: the SAME reduction the writer used. Recomputing the hash from its own
+  // copy of the shape is how a stored NULL and a hashed "" drifted apart and
+  // bumped the generation of an exchange nothing had touched.
+  const hashOf = storedExchangeHasher(db);
   for (const row of rows) {
     const key = row.session_id ?? `__row__${row.rowid}`;
     const next = (nextBySession.get(key) ?? 0) + 1;
     nextBySession.set(key, Math.max(next, row.exchange_seq));
-    const tools = selectTools.all(row.id) as Array<{
-      id: string;
-      tool_name: string;
-      tool_input: string | null;
-      tool_result: string | null;
-      is_error: number;
-    }>;
-    const hash = sha256(JSON.stringify({
-      user: row.user_message,
-      assistant: row.assistant_message,
-      lineEnd: row.line_end,
-      tools: tools.map((tool) => ({
-        id: tool.id,
-        name: tool.tool_name,
-        input: parseStoredJson(tool.tool_input),
-        result: tool.tool_result,
-        error: !!tool.is_error,
-      })),
-    }));
+    const hash = hashOf(row);
     const changed = !!row.content_hash && row.content_hash !== hash;
     update.run(
       row.exchange_seq > 0 ? row.exchange_seq : next,

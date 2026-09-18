@@ -2,6 +2,40 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.26 - 2026-09-18
+
+A post-release reading that was wrong about unchanged data (#169).
+
+### Database
+
+- `content_hash` is now computed from the row that is actually STORED, so the
+  first `refreshExchangeMetadata` after an insert can no longer bump
+  `content_generation` on an exchange nothing touched (#169). `insertExchange`
+  hashed the in-memory exchange — an empty `tool_result` as `""`, a falsy
+  `tool_input` as its original value — and then wrote both to `tool_calls` as SQL
+  NULL. The recompute (the migration pass, and every `ensureExtractionTarget`)
+  reads those columns, so it produced a different hash, treated the exchange as
+  new content and re-processed it: evidence re-appended, extraction re-run. There
+  is now ONE canonical stored form (`storedToolInput`/`storedToolResult`: absent or
+  empty is NULL, everything else its JSON text) and one reduction
+  (`contentHashOfStoredRow`) that the writer, the recompute and the invariant all
+  go through. The tool order is decided in that reduction too, not by `ORDER BY
+  id`: SQLite's BINARY collation and `localeCompare` disagree on case, which was a
+  second way two hashes for one unchanged row could differ.
+  - Measured on the pre-fix code, an affected exchange gained one generation at
+    the FIRST refresh after each insert, not one per open: the refresh stored its
+    own row-derived hash, so the next refresh agreed and stopped bumping. A
+    re-index of the same exchange wrote the drifting hash again and cost another
+    two (insert 1 → refresh 2 → re-insert 3 → refresh 4). Before 0.7.24 that first
+    bump landed on the first database open after the insert; since 0.7.24's
+    `PRAGMA user_version` fast path it lands on the session's next extraction,
+    because `ensureExtractionTarget` calls the refresh directly and is not gated.
+  - `ROW_NORMALIZATION_INVARIANTS` gains "insert then refresh changes nothing"
+    (`countStaleExchangeContentHashes`). The 0.7.25 list only asserted that the
+    column was non-empty, which a hash disagreeing with its own row passed.
+    Entries may now carry a `pendingRows` callback for a normalizer SQL cannot
+    express — sha256 over a row is not a SQLite function.
+
 ## 0.7.25 - 2026-09-18
 
 Hook budgets that fit a slow machine, and three doctor readings that were wrong

@@ -8908,6 +8908,23 @@ function parseStoredJson(value) {
     return value;
   }
 }
+function contentHashOfStoredRow(row) {
+  const tools = [...row.tools].sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0).map((tool) => ({
+    id: tool.id,
+    name: tool.toolName,
+    input: parseStoredJson(tool.toolInput),
+    result: tool.toolResult,
+    error: tool.isError
+  }));
+  return sha256(
+    JSON.stringify({
+      user: row.userMessage,
+      assistant: row.assistantMessage,
+      lineEnd: row.lineEnd,
+      tools
+    })
+  );
+}
 function columnNames(db, table) {
   return new Set(
     db.prepare(`PRAGMA table_info(${table})`).all().map(
@@ -9967,6 +9984,36 @@ function ensureChronicleSchema(db, options) {
   `);
   options.afterMigrationStage?.("chronicle-indexes");
 }
+function storedExchangeHasher(db) {
+  const selectTools = db.prepare(`
+    SELECT id, tool_name, tool_input, tool_result, is_error
+    FROM tool_calls WHERE exchange_id = ?
+  `);
+  return (row) => {
+    const tools = selectTools.all(row.id);
+    return contentHashOfStoredRow({
+      userMessage: row.user_message,
+      assistantMessage: row.assistant_message,
+      lineEnd: row.line_end,
+      tools: tools.map((tool) => ({
+        id: tool.id,
+        toolName: tool.tool_name,
+        toolInput: tool.tool_input,
+        toolResult: tool.tool_result,
+        isError: !!tool.is_error
+      }))
+    });
+  };
+}
+function countStaleExchangeContentHashes(db) {
+  const rows = db.prepare(
+    "SELECT id, user_message, assistant_message, line_end, content_hash FROM exchanges"
+  ).all();
+  const hashOf = storedExchangeHasher(db);
+  let stale = 0;
+  for (const row of rows) if (row.content_hash && hashOf(row) !== row.content_hash) stale++;
+  return stale;
+}
 function refreshExchangeMetadata(db, sessionId) {
   const rows = db.prepare(`
       SELECT rowid, id, session_id, user_message, assistant_message, line_end,
@@ -9981,27 +10028,12 @@ function refreshExchangeMetadata(db, sessionId) {
     SET exchange_seq = ?, content_hash = ?, content_generation = ?
     WHERE id = ?
   `);
-  const selectTools = db.prepare(`
-    SELECT id, tool_name, tool_input, tool_result, is_error
-    FROM tool_calls WHERE exchange_id = ? ORDER BY id
-  `);
+  const hashOf = storedExchangeHasher(db);
   for (const row of rows) {
     const key = row.session_id ?? `__row__${row.rowid}`;
     const next = (nextBySession.get(key) ?? 0) + 1;
     nextBySession.set(key, Math.max(next, row.exchange_seq));
-    const tools = selectTools.all(row.id);
-    const hash2 = sha256(JSON.stringify({
-      user: row.user_message,
-      assistant: row.assistant_message,
-      lineEnd: row.line_end,
-      tools: tools.map((tool) => ({
-        id: tool.id,
-        name: tool.tool_name,
-        input: parseStoredJson(tool.tool_input),
-        result: tool.tool_result,
-        error: !!tool.is_error
-      }))
-    }));
+    const hash2 = hashOf(row);
     const changed = !!row.content_hash && row.content_hash !== hash2;
     update.run(
       row.exchange_seq > 0 ? row.exchange_seq : next,
@@ -13532,6 +13564,13 @@ var init_db = __esm({
       {
         name: "exchanges.metadata (continuity refreshExchangeMetadata)",
         pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE exchange_seq <= 0 OR content_hash IS NULL OR content_hash = '' OR content_generation <= 0"
+      },
+      {
+        name: "exchanges.content_hash (insert then refresh changes nothing)",
+        // #169: "pending 0" above only proved the column was non-empty. A hash that
+        // disagreed with its own row passed that and still made the next refresh bump
+        // content_generation, re-processing unchanged content as a new generation.
+        pendingRows: countStaleExchangeContentHashes
       },
       {
         name: "exchanges.identity (continuity updateIdentity)",

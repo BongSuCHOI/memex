@@ -14,8 +14,11 @@ import { sessionsRoot } from "./codex-rollout.js";
 import os from "node:os";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import {
+  countStaleExchangeContentHashes,
   ensureContinuitySchema,
   exchangeContentHash,
+  storedToolInput,
+  storedToolResult,
 } from "./continuity-store.js";
 import { ensureModelBudgetSchema } from "./model-budget.js";
 import { CURRENT_SCHEMA_VERSION } from "./schema-version.js";
@@ -299,6 +302,12 @@ export interface RowNormalizationInvariant {
   repairSql?: string;
   /** Rows a parameterised or per-row normalizer would still rewrite. */
   pendingSql?: string;
+  /**
+   * Rows a normalizer would still rewrite when SQL cannot express the test —
+   * #169's content hash needs sha256 over the row, which SQLite has no function
+   * for. Read-only by contract, and asserted exactly like `pendingSql`.
+   */
+  pendingRows?: (db: Database.Database) => number;
   /** Why an entry carries no assertion (guarded, or not row normalization). */
   note?: string;
 }
@@ -327,6 +336,13 @@ export const ROW_NORMALIZATION_INVARIANTS: RowNormalizationInvariant[] = [
     pendingSql:
       "SELECT COUNT(*) AS n FROM exchanges WHERE exchange_seq <= 0 OR content_hash IS NULL " +
       "OR content_hash = '' OR content_generation <= 0",
+  },
+  {
+    name: "exchanges.content_hash (insert then refresh changes nothing)",
+    // #169: "pending 0" above only proved the column was non-empty. A hash that
+    // disagreed with its own row passed that and still made the next refresh bump
+    // content_generation, re-processing unchanged content as a new generation.
+    pendingRows: countStaleExchangeContentHashes,
   },
   {
     name: "exchanges.identity (continuity updateIdentity)",
@@ -1396,8 +1412,10 @@ export function insertExchange(
           toolCall.id,
           toolCall.exchangeId,
           toolCall.toolName,
-          toolCall.toolInput ? JSON.stringify(toolCall.toolInput) : null,
-          toolCall.toolResult || null,
+          // #169: one canonical stored form, shared with the content hash, so the
+          // hash this row was written with is the hash it reads back as.
+          storedToolInput(toolCall.toolInput),
+          storedToolResult(toolCall.toolResult),
           toolCall.isError ? 1 : 0,
           toolCall.timestamp,
           toolCall.sourceType ?? evidence.sourceType,

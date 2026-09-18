@@ -113,6 +113,29 @@ describe("rows a current writer produces need no migration (issue #166 gate)", (
         sessionId: "session-normalized",
         closureState: "closed",
         parserVersion: 2,
+        // Issue #169 — the falsy tool-call shapes a real transcript produces. The
+        // writer stores both as SQL NULL, so the hash it wrote has to say NULL
+        // too; hashing `""` here is what made the next refresh bump the
+        // generation of an exchange nothing had touched.
+        toolCalls: [
+          {
+            id: "tool-empty-result",
+            exchangeId: "ex-normalized",
+            toolName: "Bash",
+            toolInput: { command: "ls" },
+            toolResult: "",
+            isError: false,
+            timestamp: "2026-09-18T00:00:01.000Z",
+          },
+          {
+            id: "tool-no-input",
+            exchangeId: "ex-normalized",
+            toolName: "Read",
+            toolResult: "ok",
+            isError: false,
+            timestamp: "2026-09-18T00:00:02.000Z",
+          },
+        ],
       }, new Array(384).fill(0.1));
 
       // Table-driven on purpose: a writer added later is covered the moment its
@@ -133,8 +156,14 @@ describe("rows a current writer produces need no migration (issue #166 gate)", (
             pending: Number((db.prepare(invariant.pendingSql).get() as { n: number }).n),
           }).toEqual({ name: invariant.name, pending: 0 });
         }
+        // #169: the same assertion for a normalizer SQL cannot express.
+        if (invariant.pendingRows) {
+          asserted.push(invariant.name);
+          expect({ name: invariant.name, pending: invariant.pendingRows(db) })
+            .toEqual({ name: invariant.name, pending: 0 });
+        }
         // An entry with neither is documented as not load-bearing for new rows.
-        if (!invariant.repairSql && !invariant.pendingSql) {
+        if (!invariant.repairSql && !invariant.pendingSql && !invariant.pendingRows) {
           expect(invariant.note, `${invariant.name} needs a note or an assertion`).toBeTruthy();
         }
       }
