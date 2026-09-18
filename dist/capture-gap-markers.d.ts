@@ -16,6 +16,12 @@ export interface LoadedCaptureGapMarker {
     file: string;
     marker: CaptureGapMarker;
 }
+export interface CaptureGapMarkerClassStat {
+    /** Markers of this class in the WHOLE matched set, not in the page. */
+    count: number;
+    /** The oldest marker of this class, available even when it is off the page. */
+    oldest: LoadedCaptureGapMarker;
+}
 export interface CaptureGapMarkerScan {
     /** Oldest first, capped at the caller's limit. */
     markers: LoadedCaptureGapMarker[];
@@ -23,6 +29,15 @@ export interface CaptureGapMarkerScan {
     total: number;
     /** The parse bound was reached, so even `total` is an undercount. */
     truncated: boolean;
+    /**
+     * Per `classify` key, over the whole matched set — empty without `classify`.
+     *
+     * A caller that decides anything from the KIND of marker it has must decide
+     * it from here: 500 telemetry-only markers ahead of one unprocessed Stop fill
+     * the page entirely, and doctor read `total: 501` while classifying only the
+     * page it got back (#165 post-release review).
+     */
+    classes: Record<string, CaptureGapMarkerClassStat>;
 }
 export declare function captureGapDir(): string;
 export declare function captureGapMarkerPath(event: string, sessionId: string, invocationId: string): string;
@@ -46,12 +61,17 @@ export declare function deleteCaptureGapMarker(file: string | null | undefined):
  * `sessionId` and `event` are also matched on the FILE NAME, which carries
  * both, so the common case never parses a file it cannot want. `match` sees the
  * parsed marker for everything the name cannot answer (`source`, `ts`).
+ *
+ * `classify` tallies the matched set by class BEFORE the cap, for the same
+ * reason: the page is a display budget, never the population a verdict is read
+ * from (#165 post-release review).
  */
 export declare function scanCaptureGapMarkers(options?: {
     sessionId?: string;
     event?: string;
     match?: (marker: CaptureGapMarker) => boolean;
     limit?: number;
+    classify?: (marker: CaptureGapMarker) => string;
 }): CaptureGapMarkerScan;
 /** Oldest-first, capped at `limit` (default 500). See `scanCaptureGapMarkers`. */
 export declare function listCaptureGapMarkers(options?: {

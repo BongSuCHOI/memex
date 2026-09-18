@@ -23,7 +23,11 @@ import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { lastObserved, readHookEventTail, type HookEventRow } from "./observe-hook-event.js";
-import { scanCaptureGapMarkers, type CaptureGapMarker } from "./capture-gap-markers.js";
+import {
+  scanCaptureGapMarkers,
+  type CaptureGapMarker,
+  type LoadedCaptureGapMarker,
+} from "./capture-gap-markers.js";
 import { hookBudgetMs } from "./hook-budget.js";
 import { getDbPath, getMemexHome } from "./paths.js";
 import { resolveLlmSelection } from "./model-settings.js";
@@ -933,54 +937,81 @@ const CAPTURE_MARKER_EVENTS = new Set(["Stop", "Interrupt", "PreCompact", "Sessi
  * continuity tail was pending #163, for thirty days. Three classes, three
  * statements, and only the first two are worth a warning.
  */
-function captureGapMarkerLine(marker: CaptureGapMarker): { text: string; atStake: boolean } {
-  if (CAPTURE_MARKER_EVENTS.has(marker.event)) {
-    // `transcriptBytes` is the transcript size the invocation saw; with no
-    // database reachable at marker time there is no committed boundary to
-    // subtract, so this is the bound on what the skip left uncaptured.
-    return {
-      atStake: true,
-      text: `capture skipped at ${marker.event} ${marker.ts} (${
-        marker.transcriptBytes ?? 0} uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`,
-    };
-  }
+type CaptureGapClass = "capture" | "epoch" | "neutral";
+
+/** The classes a leftover marker is warned about; the rest are recorded only. */
+const CAPTURE_GAP_AT_STAKE_CLASSES: CaptureGapClass[] = ["capture", "epoch"];
+
+function captureGapMarkerClass(marker: CaptureGapMarker): CaptureGapClass {
+  if (CAPTURE_MARKER_EVENTS.has(marker.event)) return "capture";
   if (marker.event === "SessionStart" && (marker.source === "clear" || marker.source === "compact")) {
-    // Not a capture: the epoch advance. It heals itself on the next injection,
-    // which is why this says so instead of quoting the tail statement.
-    return {
-      atStake: true,
-      text: `epoch advance skipped at SessionStart(${marker.source}) ${marker.ts}; ` +
-        "repaired by the next injection",
-    };
+    return "epoch";
   }
-  return {
-    atStake: false,
-    text: `hook did not finish at ${marker.event} ${marker.ts} (no capture at stake)`,
-  };
+  return "neutral";
+}
+
+function captureGapMarkerLine(marker: CaptureGapMarker): string {
+  switch (captureGapMarkerClass(marker)) {
+    case "capture":
+      // `transcriptBytes` is the transcript size the invocation saw; with no
+      // database reachable at marker time there is no committed boundary to
+      // subtract, so this is the bound on what the skip left uncaptured.
+      return `capture skipped at ${marker.event} ${marker.ts} (${
+        marker.transcriptBytes ?? 0} uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`;
+    case "epoch":
+      // Not a capture: the epoch advance. It heals itself on the next injection,
+      // which is why this says so instead of quoting the tail statement.
+      return `epoch advance skipped at SessionStart(${marker.source}) ${marker.ts}; ` +
+        "repaired by the next injection";
+    default:
+      return `hook did not finish at ${marker.event} ${marker.ts} (no capture at stake)`;
+  }
 }
 
 export function captureGapCheck(): Check {
   const name = "capture-gap";
   let scan: ReturnType<typeof scanCaptureGapMarkers>;
   try {
-    // The COUNT and the OLDEST come from the whole matched set, not from the
-    // first page a directory listing happened to return (#162 review 10).
-    scan = scanCaptureGapMarkers();
+    // The COUNT, the OLDEST and the per-class tallies all come from the whole
+    // matched set, not from the first page a directory listing happened to
+    // return (#162 review 10, #165 post-release review).
+    scan = scanCaptureGapMarkers({ classify: captureGapMarkerClass });
   } catch {
     return { name, status: "warn", detail: "unable to read the capture gap markers" };
   }
   if (scan.total === 0) {
     return { name, status: "ok", detail: "no skipped captures recorded" };
   }
-  const classified = scan.markers.map(({ marker }) => captureGapMarkerLine(marker));
-  const lines = classified.slice(0, CAPTURE_GAP_DETAIL_LIMIT).map((entry) => entry.text);
+  // The verdict is read from the tallies, never from the page: 500 telemetry-only
+  // markers older than one unprocessed Stop fill the returned 500 exactly, and
+  // classifying only those reported `501 skipped capture(s)` with `status: ok`.
+  const atStakeClasses = CAPTURE_GAP_AT_STAKE_CLASSES.filter(
+    (cls) => (scan.classes[cls]?.count ?? 0) > 0);
+  // Each at-stake class contributes its oldest marker to the wording first, so
+  // the marker that decided the verdict is named even when it is off the page.
+  const examples: LoadedCaptureGapMarker[] = [];
+  const seen = new Set<string>();
+  for (const cls of atStakeClasses) {
+    const oldest = scan.classes[cls]?.oldest;
+    if (!oldest || seen.has(oldest.file)) continue;
+    seen.add(oldest.file);
+    examples.push(oldest);
+  }
+  for (const entry of scan.markers) {
+    if (examples.length >= CAPTURE_GAP_DETAIL_LIMIT) break;
+    if (seen.has(entry.file)) continue;
+    seen.add(entry.file);
+    examples.push(entry);
+  }
+  const lines = examples
+    .slice(0, CAPTURE_GAP_DETAIL_LIMIT)
+    .map(({ marker }) => captureGapMarkerLine(marker));
   const more = scan.total - lines.length;
-  const atStake = classified.some((entry) => entry.atStake);
   return {
     name,
     // Markers whose hook had nothing durable at stake are recorded, not alarmed
     // about: they expire on their own and no repair is pending.
-    status: atStake ? "warn" : "ok",
+    status: atStakeClasses.length > 0 ? "warn" : "ok",
     detail:
       `${scan.total} skipped capture(s)${scan.truncated ? "+" : ""}, oldest ${
         scan.markers[0].marker.ts} — ` +
@@ -1028,9 +1059,16 @@ function workerLockHolderLine(window: { fromMs: number; toMs: number }): string 
         // The holder has to have been holding WHILE this hook ran. Naming the
         // heaviest row in the log regardless of time pointed at transactions
         // that had finished hours earlier.
-        const startedAt = Date.parse(String(row.ts ?? ""));
-        if (!Number.isFinite(startedAt)) continue;
-        const endedAt = startedAt + held;
+        //
+        // The row is written when the transaction ENDS, so its `ts` is the end
+        // and the held interval is `[ts - held_ms, ts]`. Reading `ts` as the
+        // start was wrong both ways (#165 post-release review): the worker that
+        // was still holding when the hook gave up sits past `toMs` and was
+        // skipped, and one that had already finished looked like it started as
+        // the hook began.
+        const endedAt = Date.parse(String(row.ts ?? ""));
+        if (!Number.isFinite(endedAt)) continue;
+        const startedAt = endedAt - held;
         if (endedAt < window.fromMs - WORKER_OVERLAP_MARGIN_MS) continue;
         if (startedAt > window.toMs + WORKER_OVERLAP_MARGIN_MS) continue;
         if (!top || held > Number(top.held_ms ?? 0)) top = row;
@@ -1471,8 +1509,15 @@ export async function doctor(): Promise<DoctorReport> {
     if (fs.existsSync(logPath)) {
       const last = recent.length ? recent[recent.length - 1] : null;
       if (last) {
+        // Issue #165: `context-only` belongs here. It is the status #32 added
+        // for an emission that carried Capsule/continuity context and zero
+        // facts — a normal retrieval outcome that `injection-yield`
+        // (ZERO_FACT_STATUSES) already owns and `recall-provenance` counts as an
+        // emitted bundle. Missing from this map it fell through to "unknown
+        // status", so a healthy install was reported as `inject-output: warn`.
         const okStatuses: Record<string, true> = {
           injected: true,
+          "context-only": true,
           "no-match": true,
           deduped: true,
           skipped: true,

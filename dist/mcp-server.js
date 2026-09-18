@@ -28782,7 +28782,7 @@ function scanCaptureGapMarkers(options = {}) {
   try {
     entries = fs11.readdirSync(dir);
   } catch {
-    return { markers: [], total: 0, truncated: false };
+    return { markers: [], total: 0, truncated: false, classes: {} };
   }
   const limit = options.limit ?? MARKER_SCAN_LIMIT;
   const wantedSession = options.sessionId ? `-${safeSegment(options.sessionId)}-` : null;
@@ -28807,7 +28807,16 @@ function scanCaptureGapMarkers(options = {}) {
     matched.push({ file, marker });
   }
   matched.sort((a, b2) => a.marker.ts < b2.marker.ts ? -1 : a.marker.ts > b2.marker.ts ? 1 : 0);
-  return { markers: matched.slice(0, limit), total: matched.length, truncated };
+  const classes = {};
+  if (options.classify) {
+    for (const entry of matched) {
+      const key = options.classify(entry.marker);
+      const stat = classes[key];
+      if (stat) stat.count++;
+      else classes[key] = { count: 1, oldest: entry };
+    }
+  }
+  return { markers: matched.slice(0, limit), total: matched.length, truncated, classes };
 }
 function listCaptureGapMarkers(options = {}) {
   return scanCaptureGapMarkers(options).markers;

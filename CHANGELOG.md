@@ -2,6 +2,35 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.25 - 2026-09-18
+
+Three doctor readings that were wrong about a healthy install (#165).
+
+### Doctor
+
+- `inject-output` accepts `context-only`. A last injection that delivered
+  Capsule/continuity context with zero facts was reported
+  `WARN inject-output: context-only via=daemon …` although nothing had failed:
+  the check's ok-status map never learned the status 0.6.0 introduced, so it
+  fell through to "unknown status". `injection-yield` already counts that line
+  as a normal zero-fact retrieval and `recall-provenance` as an emitted bundle —
+  one log line now gets one verdict. A `receipt-failed` line inside the window
+  still warns, and `error`/`receipt-failed` on the last line still fails.
+- `hook-latency` reads the worker transaction row's `ts` as the END of the
+  transaction, because that is when the row is written: the held interval is
+  `[ts - held_ms, ts]`, not `[ts, ts + held_ms]` (the ±250 ms skew margin is
+  unchanged). Both directions were wrong — the worker that was still holding the
+  write lock when the hook gave up sits past the hook's window and was skipped
+  ("no worker transaction overlapped this hook"), while a transaction that had
+  already finished before the hook began was named as the holder.
+- `capture-gap` decides warn/ok from EVERY marker, not from the first 500 the
+  scan returns. 500 old telemetry-only PostCompact markers ahead of one
+  unprocessed Stop reported `501 skipped capture(s)` with `status: ok`: the
+  count was already read from the whole set, the classification was not. The
+  per-class tallies are now computed before the return cap, and the oldest
+  marker of each warning class leads the detail, so the marker that decided the
+  verdict is named even when it is off the returned page.
+
 ## 0.7.24 - 2026-09-17
 
 Fix for `Hook failed — hook timed out after 3s` on a busy write lock (#162).

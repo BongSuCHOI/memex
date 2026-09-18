@@ -151,6 +151,51 @@ describe("doctor capture-gap", () => {
     expect(after.detail).toContain("560 skipped capture(s)");
     expect(after.detail).toContain(`oldest ${fresh}`);
   }, 30_000);
+
+  it("classifies EVERY marker, not the first 500 the page returned (#165 post-release)", () => {
+    // 500 telemetry-only markers older than one unprocessed Stop. The scan
+    // returns the oldest 500, so before the fix the warn/ok decision was made
+    // from a page that could not contain the Stop at all: `total: 501` with
+    // `status: ok`, and a detail that never named the marker that mattered.
+    const base = Date.parse("2026-09-17T08:00:00.000Z");
+    for (let i = 0; i < 500; i++) {
+      writeCaptureGapMarker({
+        invocationId: `inv-telemetry-${i}`, event: "PostCompact", source: "auto",
+        sessionId: "session-doctor-page", cwd: "/project", transcriptPath: null,
+        transcriptBytes: null, turnId: null, ts: new Date(base + i).toISOString(),
+      });
+    }
+    const stopTs = new Date(base + 10 * 60 * 1_000).toISOString();
+    writeCaptureGapMarker({
+      invocationId: "inv-capture-behind-the-page", event: "Stop", source: null,
+      sessionId: "session-doctor-page", cwd: "/project", transcriptPath: "/tmp/rollout.jsonl",
+      transcriptBytes: 8_192, turnId: "turn-1", ts: stopTs,
+    });
+
+    const check = captureGapCheck();
+    expect(check.detail).toContain("501 skipped capture(s)");
+    expect(check.status).toBe("warn");
+    // The at-stake marker is named even though it is off the returned page.
+    expect(check.detail).toContain(
+      `capture skipped at Stop ${stopTs} (8192 uncaptured bytes); ${CAPTURE_GAP_LOSS_STATEMENT}`,
+    );
+  }, 30_000);
+
+  it("stays ok when all 501 markers have nothing at stake (#165 post-release)", () => {
+    const base = Date.parse("2026-09-17T08:00:00.000Z");
+    for (let i = 0; i < 501; i++) {
+      writeCaptureGapMarker({
+        invocationId: `inv-telemetry-${i}`, event: "PostCompact", source: "auto",
+        sessionId: "session-doctor-page-ok", cwd: "/project", transcriptPath: null,
+        transcriptBytes: null, turnId: null, ts: new Date(base + i).toISOString(),
+      });
+    }
+    const check = captureGapCheck();
+    expect(check.detail).toContain("501 skipped capture(s)");
+    expect(check.status).toBe("ok");
+    expect(check.detail).toContain("no capture at stake");
+    expect(check.detail).not.toMatch(/pending #163/);
+  }, 30_000);
 });
 
 describe("doctor hook-latency", () => {
@@ -270,5 +315,74 @@ describe("doctor hook-latency", () => {
     expect(detail).toContain("killed by host");
     expect(detail).toContain("appendSessionEvidence held the write lock for 2500 ms");
     expect(detail).not.toContain("scheduleCapsuleBacklog#1");
+  });
+
+  /**
+   * Post-release P2 (#165) — the worker-transactions row is written when the
+   * transaction ENDS, so its `ts` is the end, and the held interval is
+   * `[ts - held_ms, ts]`. Reading `ts` as the start made doctor wrong in both
+   * directions: the holder that was still holding when the hook gave up sits
+   * beyond `toMs` and was skipped, while a transaction that had already
+   * finished before the hook began looked like it started right then.
+   */
+  it("reads the worker row's ts as the END of the transaction (#165 post-release)", () => {
+    // The offending hook ran 08:00:00.000 -> 08:00:01.000 (duration_ms 1000).
+    writeRows([
+      { ts: "2026-09-17T08:00:00.000Z", event: "Stop", phase: "start", invocation_id: "inv-w", pid: 111 },
+      {
+        ts: "2026-09-17T08:00:01.000Z", event: "Stop", phase: "done", invocation_id: "inv-w",
+        pid: 111, outcome: "busy", duration_ms: 1_000, db_wait_ms: 5_200,
+      },
+    ]);
+    writeWorkerTransactions([
+      // Ended 100 ms after the hook's window began, so it held [07:59:58.100,
+      // 08:00:00.100] — an overlap either way of reading `ts`.
+      { ts: "2026-09-17T08:00:00.100Z", pid: 43, label: "appendSessionEvidence", wait_ms: 5, held_ms: 2_000 },
+      // The real holder: [07:59:58.000, 08:00:03.000] covers the whole hook and
+      // ends 2 s after it. Read as a START this row lands after the window and
+      // was skipped, leaving the lighter row above named instead.
+      { ts: "2026-09-17T08:00:03.000Z", pid: 44, label: "settleTurn", wait_ms: 5, held_ms: 5_000 },
+    ]);
+    const detail = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z")).detail;
+    expect(detail).toContain("hooks waited on the database");
+    expect(detail).toContain("worker transaction settleTurn held the write lock for 5000 ms");
+    expect(detail).not.toContain("no worker transaction overlapped this hook");
+  });
+
+  it("does not name a worker transaction that had already ended (#165 post-release)", () => {
+    writeRows([
+      { ts: "2026-09-17T08:00:00.000Z", event: "Stop", phase: "start", invocation_id: "inv-w", pid: 111 },
+      {
+        ts: "2026-09-17T08:00:01.000Z", event: "Stop", phase: "done", invocation_id: "inv-w",
+        pid: 111, outcome: "busy", duration_ms: 1_000, db_wait_ms: 5_200,
+      },
+    ]);
+    writeWorkerTransactions([
+      // Held [07:59:57.000, 07:59:59.000]: over and done 1 s before the hook
+      // began, which is outside the ±250 ms skew margin. Read as a START it
+      // looked like it ran straight through the hook.
+      { ts: "2026-09-17T07:59:59.000Z", pid: 43, label: "applyWorkCapsulePatch", wait_ms: 5, held_ms: 2_000 },
+    ]);
+    const detail = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z")).detail;
+    expect(detail).toContain("hooks waited on the database");
+    expect(detail).not.toContain("applyWorkCapsulePatch");
+    expect(detail).toContain("no worker transaction overlapped this hook");
+  });
+
+  it("keeps the ±250 ms skew margin around the hook's window (#165 post-release)", () => {
+    writeRows([
+      { ts: "2026-09-17T08:00:00.000Z", event: "Stop", phase: "start", invocation_id: "inv-w", pid: 111 },
+      {
+        ts: "2026-09-17T08:00:01.000Z", event: "Stop", phase: "done", invocation_id: "inv-w",
+        pid: 111, outcome: "busy", duration_ms: 1_000, db_wait_ms: 5_200,
+      },
+    ]);
+    writeWorkerTransactions([
+      // Ended 100 ms BEFORE the window began: two processes, two clocks and a
+      // log written after the fact, so this is still the holder to name.
+      { ts: "2026-09-17T07:59:59.900Z", pid: 43, label: "appendSessionEvidence", wait_ms: 5, held_ms: 2_000 },
+    ]);
+    const detail = hookLatencyCheck(Date.parse("2026-09-17T08:00:05.000Z")).detail;
+    expect(detail).toContain("worker transaction appendSessionEvidence held the write lock for 2000 ms");
   });
 });

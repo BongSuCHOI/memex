@@ -43,6 +43,13 @@ export interface LoadedCaptureGapMarker {
   marker: CaptureGapMarker;
 }
 
+export interface CaptureGapMarkerClassStat {
+  /** Markers of this class in the WHOLE matched set, not in the page. */
+  count: number;
+  /** The oldest marker of this class, available even when it is off the page. */
+  oldest: LoadedCaptureGapMarker;
+}
+
 export interface CaptureGapMarkerScan {
   /** Oldest first, capped at the caller's limit. */
   markers: LoadedCaptureGapMarker[];
@@ -50,6 +57,15 @@ export interface CaptureGapMarkerScan {
   total: number;
   /** The parse bound was reached, so even `total` is an undercount. */
   truncated: boolean;
+  /**
+   * Per `classify` key, over the whole matched set — empty without `classify`.
+   *
+   * A caller that decides anything from the KIND of marker it has must decide
+   * it from here: 500 telemetry-only markers ahead of one unprocessed Stop fill
+   * the page entirely, and doctor read `total: 501` while classifying only the
+   * page it got back (#165 post-release review).
+   */
+  classes: Record<string, CaptureGapMarkerClassStat>;
 }
 
 export function captureGapDir(): string {
@@ -135,6 +151,10 @@ function parseMarker(file: string): CaptureGapMarker | null {
  * `sessionId` and `event` are also matched on the FILE NAME, which carries
  * both, so the common case never parses a file it cannot want. `match` sees the
  * parsed marker for everything the name cannot answer (`source`, `ts`).
+ *
+ * `classify` tallies the matched set by class BEFORE the cap, for the same
+ * reason: the page is a display budget, never the population a verdict is read
+ * from (#165 post-release review).
  */
 export function scanCaptureGapMarkers(
   options: {
@@ -142,6 +162,7 @@ export function scanCaptureGapMarkers(
     event?: string;
     match?: (marker: CaptureGapMarker) => boolean;
     limit?: number;
+    classify?: (marker: CaptureGapMarker) => string;
   } = {},
 ): CaptureGapMarkerScan {
   const dir = captureGapDir();
@@ -149,7 +170,7 @@ export function scanCaptureGapMarkers(
   try {
     entries = fs.readdirSync(dir);
   } catch {
-    return { markers: [], total: 0, truncated: false };
+    return { markers: [], total: 0, truncated: false, classes: {} };
   }
   const limit = options.limit ?? MARKER_SCAN_LIMIT;
   // `<event>-<session>-<invocation>.json`, each segment already sanitized.
@@ -179,7 +200,18 @@ export function scanCaptureGapMarkers(
   // "oldest" and a count that stopped at 500, and how the prune could never see
   // an old marker hiding behind 500 newer ones (#162 review 10).
   matched.sort((a, b) => (a.marker.ts < b.marker.ts ? -1 : a.marker.ts > b.marker.ts ? 1 : 0));
-  return { markers: matched.slice(0, limit), total: matched.length, truncated };
+  // After the sort and before the cap: the count is the whole class and the
+  // example is that class's OLDEST marker, whether or not the page reaches it.
+  const classes: Record<string, CaptureGapMarkerClassStat> = {};
+  if (options.classify) {
+    for (const entry of matched) {
+      const key = options.classify(entry.marker);
+      const stat = classes[key];
+      if (stat) stat.count++;
+      else classes[key] = { count: 1, oldest: entry };
+    }
+  }
+  return { markers: matched.slice(0, limit), total: matched.length, truncated, classes };
 }
 
 /** Oldest-first, capped at `limit` (default 500). See `scanCaptureGapMarkers`. */
