@@ -2220,7 +2220,7 @@ export function handleContinuityHook(payloadValue, options = {}) {
     let finalized = false;
     const ownDb = !options.db;
     let db;
-    const finish = (outcome, error, detail) => {
+    const finish = (outcome, error, extra = {}) => {
         if (finalized)
             return;
         finalized = true;
@@ -2232,7 +2232,8 @@ export function handleContinuityHook(payloadValue, options = {}) {
             durationMs: Date.now() - startedAt,
             dbWaitMs,
             ...(startupMs === null ? {} : { startupMs }),
-            ...(detail ? { detail } : {}),
+            ...(extra.detail ? { detail: extra.detail } : {}),
+            ...(extra.stage ? { stage: extra.stage } : {}),
             ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
         });
     };
@@ -2348,6 +2349,16 @@ export function handleContinuityHook(payloadValue, options = {}) {
         // and no `capture_gaps` row is opened. `MEMEX_STRICT_CAPTURE=1` still throws,
         // because a host that promised a transcript and sent none is a real defect.
         if (error instanceof HookCaptureNoTranscript) {
+            // Strict mode is the opt-in that says a missing transcript is a DEFECT, so
+            // it gets the failure treatment in full: the marker survives and the done row
+            // says `error` (with the stage, so the reason is still readable). Deleting
+            // the marker and writing an ok-class outcome before throwing left the loud
+            // failure with no durable evidence — doctor called the run healthy and the
+            // only trace was a stderr line the host discards (#168 post-fix review).
+            if (strictCapture) {
+                finish("error", error, { stage: "no-transcript" });
+                throw error;
+            }
             deleteCaptureGapMarker(markerFile);
             // One bounded, best-effort repair of the rows the PREVIOUS versions opened
             // for this same situation. They can never be recovered by a later capture,
@@ -2367,9 +2378,7 @@ export function handleContinuityHook(payloadValue, options = {}) {
                         dbWaitMs += Date.now() - repairStartedAt;
                 }
             }
-            finish("no-transcript", undefined, error.message);
-            if (strictCapture)
-                throw error;
+            finish("no-transcript", undefined, { detail: error.message });
             return { stdout: "", warning: error.message };
         }
         const captureFailure = error instanceof HookCaptureFailed;

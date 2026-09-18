@@ -245,8 +245,12 @@ capture 실패는 `outcome: "error"`와 200자로 자른 `error` 문구를 `hook
 세션) 캡처할 것도, 캡처되지 않고 남는 것도 없으므로 `outcome: "no-transcript"`(ok 계열)로 완료하고
 **marker를 삭제**하며 capture gap row도 쓰지 않습니다 — 0.7.24/0.7.25는 이것도 `outcome: "error"` +
 marker 유지로 남겨 doctor가 `codex exec` 리뷰 11건을 "건너뛴 capture(0 uncaptured bytes)"로 30일간
-경고했습니다(0.7.26, #168). `MEMEX_STRICT_CAPTURE=1`은 이 경우에도 예전처럼 throw합니다 —
-transcript를 준다고 하고 주지 않은 호스트는 실제 결함입니다. `db_wait_ms`는 **잠금을 기다린
+경고했습니다(0.7.26, #168). `MEMEX_STRICT_CAPTURE=1`은 이 경우에도 예전처럼 throw하며, **그때는 증거를 남깁니다**:
+marker를 유지하고 done row에 `outcome: "error"` + `stage: "no-transcript"`를 적어
+`hook-latency`가 보고합니다(0.7.26, #168 — ok 계열로 적고 marker를 지운 뒤 throw하면 호스트가
+버리는 stderr 한 줄 말고는 아무 흔적도 남지 않았습니다). `capture-gap`은 strict 여부와 무관하게 ok
+입니다 — 그 체크는 **데이터에 무엇이 걸려 있는지**를 답하며, transcript 없는 세션은 캡처되지 않고
+남은 것이 없습니다. transcript를 준다고 하고 주지 않은 호스트는 실제 결함입니다. `db_wait_ms`는 **잠금을 기다린
 시간만** 셉니다 — 트랜잭션 본문 시작 시각을 알릴 수 있는 국면은 `호출 → 본문 시작`을, 그런 시각이
 없는 국면(autocommit 문장, 연결의 migration pass)은 **막힌 채 끝났을 때만**(SQLITE_BUSY·예산 초과)
 구간 전체를 셉니다. 경합이 없는데 느리기만 한 국면은 0입니다 — 1.2초짜리 migration/marker 스캔을

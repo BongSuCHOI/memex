@@ -62,7 +62,13 @@ Two post-release readings that were wrong about unchanged data (#169, #168).
   every capture failure durable, and `memex doctor` reported eleven ephemeral
   review runs as `capture skipped at Stop … (0 uncaptured bytes); … pending #163`
   for thirty days. `MEMEX_STRICT_CAPTURE=1` still throws — a host that promised a
-  transcript and sent none is a real defect.
+  transcript and sent none is a real defect — and in strict mode the failure keeps
+  its evidence: the marker survives and the done row says `error` with
+  `stage: "no-transcript"`, so `hook-latency` reports it. Recording the ok-class
+  outcome and deleting the marker before throwing left the loud failure with no
+  durable trace but a stderr line the host discards. `capture-gap` deliberately
+  stays ok either way: it answers what is at stake for the DATA, and a session with
+  no transcript still has nothing uncaptured.
 - `capture-gap` classifies a capture marker with no transcript path and no byte
   count as "nothing at stake": named as `no transcript at <event> <ts> (ephemeral
   session; nothing to capture)`, never warned about, so the markers 0.7.24/0.7.25

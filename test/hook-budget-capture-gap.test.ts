@@ -638,11 +638,37 @@ describe("a capture event with no transcript_path (issue #168)", () => {
     expect(open.n).toBe(0);
   });
 
-  it("strict capture still throws", () => {
+  /**
+   * #168 (post-fix review) — strict mode is the opt-in that says "a missing
+   * transcript is a defect, fail loudly". Deleting the marker and recording an
+   * ok-class outcome before throwing left that failure with no durable evidence
+   * at all: doctor's hook-latency counted the run as healthy and capture-gap had
+   * nothing to show, so the only trace was a stderr line the host discards.
+   */
+  it("strict capture keeps its evidence: marker, error row, then throws", () => {
     expect(() =>
       handleContinuityHook(payload2("Stop", { transcript_path: undefined }), {
         db, strictCapture: true,
       })).toThrow(/transcript_path/);
+
+    // The durable record of a failure the operator asked to be told about.
+    expect(markerFiles()).toHaveLength(1);
+    const done = hookEventRows().filter((row) => row.phase === "done");
+    expect(done).toHaveLength(1);
+    expect(done[0].outcome).toBe("error");
+    expect(done[0].stage).toBe("no-transcript");
+    expect(String(done[0].error)).toContain("transcript_path");
+
+    // And doctor reports the failed RUN. Deliberately not `capture-gap`: that
+    // check answers what is at stake for the DATA, and a session with no
+    // transcript still has nothing uncaptured — warning there would re-create the
+    // 30-day "skipped capture" this issue removed. The strict-mode signal is the
+    // error outcome, which `hook-latency` is the check for.
+    expect(captureGapCheck().status).toBe("ok");
+    const latency = hookLatencyCheck(Date.now());
+    expect(latency.status).toBe("warn");
+    expect(latency.detail).toContain("1 skipped (error 1)");
+    expect(latency.detail).toContain("requires transcript_path");
   });
 
   it("the real hook script exits 0 with no marker and no error row", () => {
@@ -671,6 +697,12 @@ describe("a capture event with no transcript_path (issue #168)", () => {
     });
     expect(run.status).toBe(1);
     expect(run.stderr).toContain("transcript_path");
+    // A non-zero exit the host may also discard; the marker and the done row are
+    // what survive it.
+    expect(markerFiles()).toHaveLength(1);
+    const done = hookEventRows().filter((row) => row.phase === "done");
+    expect(done).toHaveLength(1);
+    expect(done[0].outcome).toBe("error");
   });
 
   it("a capture event WITH a transcript still keeps its marker on failure", () => {
