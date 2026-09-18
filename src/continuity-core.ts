@@ -24,6 +24,7 @@ import {
   hookBudgetMs,
   hookIngestBytesPerMs,
   HookCaptureFailed,
+  HookCaptureNoTranscript,
   HookDeadlineExceeded,
   HookOversizeCapture,
   isSqliteBusyError,
@@ -102,6 +103,7 @@ export {
   hookIngestBytesPerMs,
   ingestFitsBudget,
   HookCaptureFailed,
+  HookCaptureNoTranscript,
   HookDeadlineExceeded,
   HookOversizeCapture,
   isSqliteBusyError,
@@ -2873,7 +2875,11 @@ export function handleContinuityHook(
   let finalized = false;
   const ownDb = !options.db;
   let db: Database.Database;
-  const finish = (outcome: "ok" | "busy" | "oversize" | "deadline" | "error", error?: unknown) => {
+  const finish = (
+    outcome: "ok" | "busy" | "oversize" | "deadline" | "error" | "no-transcript",
+    error?: unknown,
+    detail?: string,
+  ) => {
     if (finalized) return;
     finalized = true;
     recordHookDone(payload.hookEventName, {
@@ -2884,6 +2890,7 @@ export function handleContinuityHook(
       durationMs: Date.now() - startedAt,
       dbWaitMs,
       ...(startupMs === null ? {} : { startupMs }),
+      ...(detail ? { detail } : {}),
       ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
     });
   };
@@ -2986,6 +2993,17 @@ export function handleContinuityHook(
     });
     return { ...result, finalize };
   } catch (error) {
+    // #168: a capture event with no transcript at all. Nothing was captured and
+    // nothing was left uncaptured, so this is an ok-class completion: the marker
+    // goes (there is no gap for doctor to report and nothing for #163 to replay)
+    // and no `capture_gaps` row is opened. `MEMEX_STRICT_CAPTURE=1` still throws,
+    // because a host that promised a transcript and sent none is a real defect.
+    if (error instanceof HookCaptureNoTranscript) {
+      deleteCaptureGapMarker(markerFile);
+      finish("no-transcript", undefined, error.message);
+      if (strictCapture) throw error;
+      return { stdout: "", warning: error.message };
+    }
     const captureFailure = error instanceof HookCaptureFailed;
     const cause = captureFailure ? error.cause : error;
     const outcome = boundedSkipOutcome(cause);
@@ -3050,7 +3068,9 @@ function runContinuityHook(
     const kind = captureKind(payload.hookEventName);
     if (kind) {
       if (!payload.transcriptPath) {
-        throw new HookCaptureFailed(new Error("capture hook requires transcript_path"));
+        // #168: nothing to capture and nothing left uncaptured. The caller ends
+        // this as `no-transcript` and deletes the marker; strict mode throws.
+        throw new HookCaptureNoTranscript();
       }
       const transcriptPath = payload.transcriptPath;
       options.enterPhase(true);

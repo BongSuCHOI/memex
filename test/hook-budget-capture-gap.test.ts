@@ -22,7 +22,7 @@ import {
   pruneCaptureGapMarkers,
   writeCaptureGapMarker,
 } from "../src/capture-gap-markers.js";
-import { hookLatencyCheck } from "../src/lifecycle.js";
+import { captureGapCheck, hookLatencyCheck } from "../src/lifecycle.js";
 import {
   busyTimeoutForRemaining,
   hookBudgetMs,
@@ -597,3 +597,91 @@ describe("inject hook observability (issue #162 R5)", () => {
 function payload2(event: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return JSON.parse(payload(event, extra)) as Record<string, unknown>;
 }
+
+/**
+ * Issue #168 — a capture event with no transcript at all.
+ *
+ * `codex exec --ephemeral` sessions have no transcript file, so their
+ * Stop/SessionEnd payload carries no `transcript_path`. Before 0.7.24 that ended
+ * as a quiet `{warning}`; 0.7.24/0.7.25 turned EVERY capture failure into
+ * `outcome: "error"` plus a kept marker, so `memex doctor` reported eleven
+ * ephemeral review runs as skipped captures with "0 uncaptured bytes" for thirty
+ * days. There was nothing to capture: that is not a skipped capture.
+ */
+describe("a capture event with no transcript_path (issue #168)", () => {
+  it("completes as no-transcript, deletes the marker and leaves doctor ok", () => {
+    const result = handleContinuityHook(payload2("Stop", { transcript_path: undefined }), { db });
+    // No capture happened and none was possible; the hook still exits cleanly.
+    expect(result.capture).toBeUndefined();
+    expect(result.stdout).toBe("");
+
+    // The marker is the thing doctor reports for 30 days. Nothing is at stake,
+    // so it must not survive this hook.
+    expect(markerFiles()).toHaveLength(0);
+
+    const done = hookEventRows().filter((row) => row.phase === "done");
+    expect(done).toHaveLength(1);
+    expect(done[0].outcome).toBe("no-transcript");
+
+    expect(captureGapCheck().status).toBe("ok");
+    const latency = hookLatencyCheck(Date.now());
+    expect(latency.status).toBe("ok");
+    expect(latency.detail).not.toContain("skipped");
+    expect(latency.detail).not.toContain("requires transcript_path");
+  });
+
+  it("writes no open capture_gaps row — there is no gap to recover", () => {
+    handleContinuityHook(payload2("SessionEnd", { transcript_path: undefined }), { db });
+    const open = db
+      .prepare("SELECT COUNT(*) AS n FROM capture_gaps WHERE state = 'open'")
+      .get() as { n: number };
+    expect(open.n).toBe(0);
+  });
+
+  it("strict capture still throws", () => {
+    expect(() =>
+      handleContinuityHook(payload2("Stop", { transcript_path: undefined }), {
+        db, strictCapture: true,
+      })).toThrow(/transcript_path/);
+  });
+
+  it("the real hook script exits 0 with no marker and no error row", () => {
+    const run = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({
+        session_id: SESSION, cwd: "/project", hook_event_name: "Stop", turn_id: "turn-1",
+      }),
+      encoding: "utf8",
+      env: childEnv(),
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("");
+    expect(markerFiles()).toHaveLength(0);
+    const done = hookEventRows().filter((row) => row.phase === "done");
+    expect(done).toHaveLength(1);
+    expect(done[0].outcome).toBe("no-transcript");
+  });
+
+  it("the real hook script fails loudly under MEMEX_STRICT_CAPTURE", () => {
+    const run = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({
+        session_id: SESSION, cwd: "/project", hook_event_name: "Stop", turn_id: "turn-1",
+      }),
+      encoding: "utf8",
+      env: childEnv({ MEMEX_STRICT_CAPTURE: "1" }),
+    });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("transcript_path");
+  });
+
+  it("a capture event WITH a transcript still keeps its marker on failure", () => {
+    // The boundary the fix must not cross: a real skipped capture is unchanged.
+    holdWriteLock();
+    const run = spawnSync(process.execPath, [HOOK], {
+      input: payload("Stop"), encoding: "utf8", env: childEnv(),
+    });
+    expect(run.status).toBe(0);
+    expect(markerFiles()).toHaveLength(1);
+    const done = hookEventRows().filter((row) => row.phase === "done");
+    expect(done[0].outcome).toBe("busy");
+  });
+});

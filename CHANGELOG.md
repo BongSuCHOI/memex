@@ -4,7 +4,7 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## 0.7.26 - 2026-09-18
 
-A post-release reading that was wrong about unchanged data (#169).
+Two post-release readings that were wrong about unchanged data (#169, #168).
 
 ### Database
 
@@ -35,6 +35,27 @@ A post-release reading that was wrong about unchanged data (#169).
     column was non-empty, which a hash disagreeing with its own row passed.
     Entries may now carry a `pendingRows` callback for a normalizer SQL cannot
     express — sha256 over a row is not a SQLite function.
+
+### Hooks and doctor
+
+- A capture event whose payload carries no `transcript_path` completes as
+  `outcome: "no-transcript"` (an ok-class outcome) with its intent marker deleted
+  and no `capture_gaps` row, instead of `outcome: "error"` with the marker kept
+  (#168). `codex exec --ephemeral` sessions have no transcript file, so their
+  Stop/SessionEnd payload has no path: nothing was captured and nothing was left
+  uncaptured. Before 0.7.24 this ended as a quiet warning; 0.7.24/0.7.25 made
+  every capture failure durable, and `memex doctor` reported eleven ephemeral
+  review runs as `capture skipped at Stop … (0 uncaptured bytes); … pending #163`
+  for thirty days. `MEMEX_STRICT_CAPTURE=1` still throws — a host that promised a
+  transcript and sent none is a real defect.
+- `capture-gap` classifies a capture marker with no transcript path and no byte
+  count as "nothing at stake": named as `no transcript at <event> <ts> (ephemeral
+  session; nothing to capture)`, never warned about, so the markers 0.7.24/0.7.25
+  already left behind age out silently. A marker that DOES name a transcript stays
+  a capture even when its byte count is unknown — that hook had work to do.
+- `hook-latency` counts `no-transcript` among the healthy outcomes, so it no
+  longer reports `11 skipped (error 11) last error: capture hook requires
+  transcript_path` for a healthy install.
 
 ## 0.7.25 - 2026-09-18
 
