@@ -212,6 +212,54 @@ export function applySchemaMigrations(options = {}) {
         dbPath,
     };
 }
+export const ROW_NORMALIZATION_INVARIANTS = [
+    {
+        name: "facts.semantic_updated_at",
+        repairSql: "UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''",
+    },
+    {
+        name: "facts.lifecycle_updated_at",
+        repairSql: "UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''",
+    },
+    {
+        name: "exchanges.assistant_learnable",
+        repairSql: "UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0",
+    },
+    {
+        name: "facts.generations",
+        pendingSql: "SELECT COUNT(*) AS n FROM facts WHERE semantic_generation < 1 OR lifecycle_generation < 1",
+        note: "the column defaults are 1; a writer that sets 0 would break every CAS",
+    },
+    {
+        name: "exchanges.metadata (continuity refreshExchangeMetadata)",
+        pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE exchange_seq <= 0 OR content_hash IS NULL " +
+            "OR content_hash = '' OR content_generation <= 0",
+    },
+    {
+        name: "exchanges.identity (continuity updateIdentity)",
+        pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE project_id IS NULL AND project <> '' AND project <> 'unknown'",
+    },
+    {
+        name: "facts.needs_consolidation",
+        note: "runs only when the column is ADDED, so it cannot be load-bearing for new rows",
+    },
+    {
+        name: "fact_context_dependencies_p2 rebuild",
+        note: "guarded by the legacy table shape; new rows are written to the current table",
+    },
+    {
+        name: "exchanges_fts rebuild",
+        note: "guarded by the trigger shape / readiness flag; new rows are maintained by triggers",
+    },
+    {
+        name: "ontology case-duplicate merge",
+        note: "a duplicate REPAIR, not row normalization; the unique indexes keep new rows clean",
+    },
+    {
+        name: "continuity evidence replay / memory_jobs reset",
+        note: "guarded by continuity_schema_meta < 7",
+    },
+];
 /** The schema version the FILE carries; 0 for a database this code never wrote. */
 function schemaVersionOf(db) {
     try {
@@ -276,7 +324,6 @@ function runSchemaMigrations(db) {
         db.exec("ALTER TABLE exchanges ADD COLUMN has_memex_recall BOOLEAN NOT NULL DEFAULT 0");
     }
     // Policy v1: agent-generated prose is context, never primary evidence.
-    db.prepare("UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0").run();
     db.exec(`
     CREATE TABLE IF NOT EXISTS recall_events (
       id TEXT PRIMARY KEY,
@@ -504,7 +551,6 @@ function runSchemaMigrations(db) {
     if (!factColumns.has("semantic_updated_at")) {
         db.exec("ALTER TABLE facts ADD COLUMN semantic_updated_at TEXT NOT NULL DEFAULT ''");
     }
-    db.prepare("UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''").run();
     // 재감사 P1-3(protocol v4): 활성 시계. is_active는 의미 state와 독립인
     // lifecycle state다 — deactivate/restore/sync lifecycle import가 generation을
     // 올리고 lifecycle_updated_at을 기록하며, embedding await가 있는 async
@@ -518,7 +564,6 @@ function runSchemaMigrations(db) {
     if (!factColumns.has("lifecycle_updated_at")) {
         db.exec("ALTER TABLE facts ADD COLUMN lifecycle_updated_at TEXT NOT NULL DEFAULT ''");
     }
-    db.prepare("UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''").run();
     // 이슈 #41: "LLM이 Misc를 골랐다"와 "실패해서 파킹됐다"를 스키마로 구분한다.
     // ontology_state = 'parked' 인 행만 실패 파킹이고, ontology_parked_version은
     // 그 파킹이 어떤 (분류 정책, 임베딩 세대)에서 일어났는지를 기록한다 —
@@ -904,6 +949,14 @@ function runSchemaMigrations(db) {
     // Continuity creates memory_jobs because the budget migration adds only
     // nullable correlation columns to that queue.
     ensureModelBudgetSchema(db);
+    // The data-normalizing repairs, executed FROM the exported list so the list and
+    // the pass can never drift apart (#166 gate). Every column they touch exists by
+    // now, and each is a no-op on rows current writers produce — which is the
+    // invariant `test/row-normalization.test.ts` holds them to.
+    for (const invariant of ROW_NORMALIZATION_INVARIANTS) {
+        if (invariant.repairSql)
+            db.prepare(invariant.repairSql).run();
+    }
     return skipped;
 }
 export function insertExchange(db, exchange, embedding, _toolNames) {

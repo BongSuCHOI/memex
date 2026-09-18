@@ -35,6 +35,19 @@ about a healthy install (#166, #165).
 
 ### Database
 
+- `insertFact` sets `lifecycle_updated_at` (and `lifecycle_generation`) itself.
+  It never did: the column default `''` survived the insert and the every-open
+  migration pass repaired it on the NEXT open. With the pass skipped for a current
+  file that latent writer bug became visible — a freshly exported facts.jsonl
+  carried `"lifecycle_updated_at":""` and the importing device rejected the
+  archive with "row failed protocol v4 schema validation", which is how the Web UI
+  import gate failed. The data-normalizing statements of the pass now run from one
+  exported list (`ROW_NORMALIZATION_INVARIANTS`), and a table-driven test holds
+  every one of them to the invariant that makes the fast path safe: a no-op on
+  rows the current writers produce. They stay in the pass for older files.
+  CURRENT_SCHEMA_VERSION is 9, so a database written by an earlier build of this
+  change re-runs the pass once and repairs any row left with an empty clock.
+
 - `initDatabase()` runs the migration list only when the FILE is behind the code,
   gated on `PRAGMA user_version` against `CURRENT_SCHEMA_VERSION`
   (src/schema-version.ts), and records the version inside the same transaction as

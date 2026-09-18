@@ -197,5 +197,5 @@ test('a skipped migration is reported with the recorded version and exit 3 (#166
   const clean = migrate();
   assert.equal(clean.status, 0, clean.stderr);
   assert.match(clean.stdout, /Schema migrated for/);
-  assert.match(migrate().stdout, /Schema already current \(schema v8\)/);
+  assert.match(migrate().stdout, /Schema already current \(schema v\d+\)/);
 });

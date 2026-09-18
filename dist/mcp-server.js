@@ -12796,7 +12796,7 @@ var CURRENT_SCHEMA_VERSION;
 var init_schema_version = __esm({
   "src/schema-version.ts"() {
     "use strict";
-    CURRENT_SCHEMA_VERSION = 8;
+    CURRENT_SCHEMA_VERSION = 9;
   }
 });
 
@@ -12937,9 +12937,6 @@ function runSchemaMigrations(db) {
       "ALTER TABLE exchanges ADD COLUMN has_memex_recall BOOLEAN NOT NULL DEFAULT 0"
     );
   }
-  db.prepare(
-    "UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0"
-  ).run();
   db.exec(`
     CREATE TABLE IF NOT EXISTS recall_events (
       id TEXT PRIMARY KEY,
@@ -13128,9 +13125,6 @@ function runSchemaMigrations(db) {
       "ALTER TABLE facts ADD COLUMN semantic_updated_at TEXT NOT NULL DEFAULT ''"
     );
   }
-  db.prepare(
-    "UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''"
-  ).run();
   if (!factColumns.has("lifecycle_generation")) {
     db.exec(
       "ALTER TABLE facts ADD COLUMN lifecycle_generation INTEGER NOT NULL DEFAULT 1"
@@ -13141,9 +13135,6 @@ function runSchemaMigrations(db) {
       "ALTER TABLE facts ADD COLUMN lifecycle_updated_at TEXT NOT NULL DEFAULT ''"
     );
   }
-  db.prepare(
-    "UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''"
-  ).run();
   if (!factColumns.has("ontology_state")) {
     db.exec("ALTER TABLE facts ADD COLUMN ontology_state TEXT");
   }
@@ -13467,6 +13458,9 @@ function runSchemaMigrations(db) {
   `);
   ensureContinuitySchema(db);
   ensureModelBudgetSchema(db);
+  for (const invariant of ROW_NORMALIZATION_INVARIANTS) {
+    if (invariant.repairSql) db.prepare(invariant.repairSql).run();
+  }
   return skipped;
 }
 function hashRecallPrompt(prompt) {
@@ -13497,7 +13491,7 @@ function recordRecallEvent(db, event) {
   );
   return id;
 }
-var VEC_INT8_SCALE, VEC_TABLES, DEFAULT_BUSY_TIMEOUT_MS;
+var VEC_INT8_SCALE, VEC_TABLES, DEFAULT_BUSY_TIMEOUT_MS, ROW_NORMALIZATION_INVARIANTS;
 var init_db = __esm({
   "src/db.ts"() {
     "use strict";
@@ -13517,6 +13511,53 @@ var init_db = __esm({
       "vec_categories"
     ]);
     DEFAULT_BUSY_TIMEOUT_MS = 5e3;
+    ROW_NORMALIZATION_INVARIANTS = [
+      {
+        name: "facts.semantic_updated_at",
+        repairSql: "UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''"
+      },
+      {
+        name: "facts.lifecycle_updated_at",
+        repairSql: "UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''"
+      },
+      {
+        name: "exchanges.assistant_learnable",
+        repairSql: "UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0"
+      },
+      {
+        name: "facts.generations",
+        pendingSql: "SELECT COUNT(*) AS n FROM facts WHERE semantic_generation < 1 OR lifecycle_generation < 1",
+        note: "the column defaults are 1; a writer that sets 0 would break every CAS"
+      },
+      {
+        name: "exchanges.metadata (continuity refreshExchangeMetadata)",
+        pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE exchange_seq <= 0 OR content_hash IS NULL OR content_hash = '' OR content_generation <= 0"
+      },
+      {
+        name: "exchanges.identity (continuity updateIdentity)",
+        pendingSql: "SELECT COUNT(*) AS n FROM exchanges WHERE project_id IS NULL AND project <> '' AND project <> 'unknown'"
+      },
+      {
+        name: "facts.needs_consolidation",
+        note: "runs only when the column is ADDED, so it cannot be load-bearing for new rows"
+      },
+      {
+        name: "fact_context_dependencies_p2 rebuild",
+        note: "guarded by the legacy table shape; new rows are written to the current table"
+      },
+      {
+        name: "exchanges_fts rebuild",
+        note: "guarded by the trigger shape / readiness flag; new rows are maintained by triggers"
+      },
+      {
+        name: "ontology case-duplicate merge",
+        note: "a duplicate REPAIR, not row normalization; the unique indexes keep new rows clean"
+      },
+      {
+        name: "continuity evidence replay / memory_jobs reset",
+        note: "guarded by continuity_schema_meta < 7"
+      }
+    ];
   }
 });
 
