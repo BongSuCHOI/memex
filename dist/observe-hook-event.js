@@ -66,6 +66,10 @@ export function recordHookEvent(event, info) {
             ...(num(info.durationMs) !== undefined ? { duration_ms: num(info.durationMs) } : {}),
             ...(num(info.dbWaitMs) !== undefined ? { db_wait_ms: num(info.dbWaitMs) } : {}),
             ...(num(info.startupMs) !== undefined ? { startup_ms: num(info.startupMs) } : {}),
+            ...(typeof info.stage === "string" && info.stage ? { stage: info.stage } : {}),
+            ...(typeof info.contextDelivered === "boolean"
+                ? { context_delivered: info.contextDelivered }
+                : {}),
             ...(errorText ? { error: errorText } : {}),
         }) + "\n";
         const file = observationLogPath();

@@ -45,6 +45,17 @@ export declare function recordHookEvent(event: string, info: {
      * budget ran out with `db_wait_ms: 0`. A budget is unreadable without it.
      */
     startupMs?: unknown;
+    /**
+     * Issue #166 (final review) — WHERE an inject failure happened, because
+     * `outcome: "error"` on a UserPromptSubmit row means three different things:
+     * `receipt` (the context was delivered and only its recall receipt stayed
+     * `prepared` — #44's documented fallback), `compute` (retrieval failed, so
+     * nothing reached the user) and `startup` (the imports failed before any of
+     * it). Doctor may not call the last two a delivered injection.
+     */
+    stage?: unknown;
+    /** Whether this invocation actually wrote context to stdout. */
+    contextDelivered?: unknown;
     error?: unknown;
 }): boolean;
 /**
@@ -65,6 +76,8 @@ export declare function recordHookDone(event: string, info: {
     durationMs?: number;
     dbWaitMs?: number;
     startupMs?: number;
+    stage?: string;
+    contextDelivered?: boolean;
     error?: unknown;
     detail?: unknown;
 }): boolean;
@@ -81,6 +94,10 @@ export interface HookEventRow {
     db_wait_ms?: number;
     /** #166: entry -> first database call, the hook's fixed cost on this machine. */
     startup_ms?: number;
+    /** #166: which stage an inject failure happened at — receipt/compute/startup. */
+    stage?: string;
+    /** #166: whether context actually reached stdout on an inject failure. */
+    context_delivered?: boolean;
     error?: string;
 }
 /** Last `limit` parseable rows of hook-events.jsonl, oldest first. */

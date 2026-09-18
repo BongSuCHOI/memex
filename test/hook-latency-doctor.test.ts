@@ -363,7 +363,8 @@ describe("doctor hook-latency", () => {
       {
         ts: "2026-09-18T02:00:01.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-r",
         pid: 31, outcome: "error", duration_ms: 900, db_wait_ms: 0, startup_ms: 200,
-        error: "prepared receipt not found",
+        // #166 final review: the stage is what makes this a DELIVERED injection.
+        stage: "receipt", context_delivered: true, error: "prepared receipt not found",
       },
     ]);
     const check = hookLatencyCheck(Date.parse("2026-09-18T02:01:00.000Z"));
@@ -371,6 +372,48 @@ describe("doctor hook-latency", () => {
     expect(check.detail).toContain("1 receipt failure (context delivered)");
     expect(check.detail).not.toContain("skipped");
     expect(check.detail).toContain("prepared receipt not found");
+  });
+
+  /**
+   * #166 final review — `outcome: "error"` on a UserPromptSubmit row means three
+   * different things. scripts/inject-context.js records it for a receipt that
+   * stayed `prepared` AFTER the context was delivered (#44's fallback), for a
+   * daemon/cold compute failure where nothing reached the user, and for an import
+   * exception before any of it. Calling all three "context delivered" told the
+   * reader an injection had landed when none had, so the row carries the stage.
+   */
+  it("separates a receipt failure from an injection that delivered nothing (#166)", () => {
+    writeRows([
+      ...paired("inv-a", "Stop"),
+      {
+        ts: "2026-09-18T03:00:01.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-r",
+        pid: 41, outcome: "error", duration_ms: 900, db_wait_ms: 0, startup_ms: 200,
+        stage: "receipt", context_delivered: true, error: "prepared receipt not found",
+      },
+      {
+        ts: "2026-09-18T03:00:02.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-c",
+        pid: 42, outcome: "error", duration_ms: 800, db_wait_ms: 0, startup_ms: 200,
+        stage: "compute", context_delivered: false, error: "SQLITE_CANTOPEN: unable to open database file",
+      },
+      {
+        ts: "2026-09-18T03:00:03.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-s",
+        pid: 43, outcome: "error", duration_ms: 300, db_wait_ms: 0,
+        stage: "startup", context_delivered: false, error: "Cannot find package 'better-sqlite3'",
+      },
+      // A pre-0.7.25 row has no stage: it may not be claimed either way.
+      {
+        ts: "2026-09-18T03:00:04.000Z", event: "UserPromptSubmit", phase: "done", invocation_id: "inv-o",
+        pid: 44, outcome: "error", duration_ms: 400, db_wait_ms: 0, error: "legacy row",
+      },
+    ]);
+    const check = hookLatencyCheck(Date.parse("2026-09-18T03:01:00.000Z"));
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("1 receipt failure (context delivered)");
+    expect(check.detail).toContain("2 injection failed (no context delivered)");
+    expect(check.detail).toContain("1 inject error (stage unknown)");
+    // None of them is a skipped capture, and the last error is still quoted.
+    expect(check.detail).not.toContain("skipped");
+    expect(check.detail).toContain("legacy row");
   });
 
   it("keeps ok for outcomes that are not skipped captures (#166)", () => {

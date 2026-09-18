@@ -28746,6 +28746,8 @@ function recordHookEvent(event, info) {
       ...num(info.durationMs) !== void 0 ? { duration_ms: num(info.durationMs) } : {},
       ...num(info.dbWaitMs) !== void 0 ? { db_wait_ms: num(info.dbWaitMs) } : {},
       ...num(info.startupMs) !== void 0 ? { startup_ms: num(info.startupMs) } : {},
+      ...typeof info.stage === "string" && info.stage ? { stage: info.stage } : {},
+      ...typeof info.contextDelivered === "boolean" ? { context_delivered: info.contextDelivered } : {},
       ...errorText ? { error: errorText } : {}
     }) + "\n";
     const file = observationLogPath();

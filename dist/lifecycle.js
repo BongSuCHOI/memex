@@ -923,18 +923,26 @@ const SKIPPED_OUTCOME_ORDER = ["busy", "deadline", "oversize", "error"];
 /**
  * #166 third review — the inject lane's `error` is not a skipped capture.
  *
- * UserPromptSubmit reports `error` when the context was DELIVERED and its
- * durable recall receipt could not be marked emitted (#44's documented
- * fallback: the receipt stays `prepared`). It is worth a warning — the
- * provenance of that emission is broken — but calling it a skipped capture told
- * the reader a turn had been lost, which it had not.
+ * UserPromptSubmit reports `error` for three different things, and the row's
+ * `stage` (#166 final review) is what tells them apart:
+ *
+ *  - `receipt`: the context WAS delivered and only its durable recall receipt
+ *    could not be marked emitted (#44's documented fallback);
+ *  - `compute`: retrieval failed, so nothing reached the user;
+ *  - `startup`: the imports failed before any of it.
+ *
+ * Calling all three "context delivered" said an injection had landed when none
+ * had. A row written before 0.7.25 carries no stage and is not claimed either way.
  */
-const RECEIPT_FAILURE_EVENTS = new Set(["UserPromptSubmit"]);
+const INJECT_LANE_EVENTS = new Set(["UserPromptSubmit"]);
 /** `3 skipped (busy 1, deadline 1, oversize 1) last error: …`, or "". */
 function skippedCaptureLine(rows) {
     const failing = rows.filter((row) => row.phase === "done" && !HEALTHY_HOOK_OUTCOMES.has(String(row.outcome ?? "")));
-    const receiptFailures = failing.filter((row) => RECEIPT_FAILURE_EVENTS.has(row.event));
-    const skipped = failing.filter((row) => !RECEIPT_FAILURE_EVENTS.has(row.event));
+    const injectFailures = failing.filter((row) => INJECT_LANE_EVENTS.has(row.event));
+    const skipped = failing.filter((row) => !INJECT_LANE_EVENTS.has(row.event));
+    const receiptFailures = injectFailures.filter((row) => row.stage === "receipt");
+    const undelivered = injectFailures.filter((row) => row.stage === "compute" || row.stage === "startup");
+    const unknownStage = injectFailures.filter((row) => row.stage !== "receipt" && row.stage !== "compute" && row.stage !== "startup");
     if (failing.length === 0)
         return "";
     const parts = [];
@@ -956,6 +964,13 @@ function skippedCaptureLine(rows) {
     }
     if (receiptFailures.length > 0) {
         parts.push(`${receiptFailures.length} receipt failure${receiptFailures.length === 1 ? "" : "s"} (context delivered)`);
+    }
+    if (undelivered.length > 0) {
+        parts.push(`${undelivered.length} injection failed (no context delivered)`);
+    }
+    if (unknownStage.length > 0) {
+        // A pre-0.7.25 row: neither claim can be made about it.
+        parts.push(`${unknownStage.length} inject error (stage unknown)`);
     }
     const lastError = [...failing].reverse().find((row) => String(row.error ?? "").trim());
     return ` — ${parts.join(", ")}` +

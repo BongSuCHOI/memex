@@ -76,10 +76,16 @@ about a healthy install (#166, #165).
   migrate — `current (v8)`, or a warn with
   `pending migrations: v7 < v8 — will retry on next open or run memex update`.
   `memex update`'s exit 3 pointed at doctor, which until now had nothing to say.
-- `hook-latency` no longer calls a UserPromptSubmit `error` row a skipped capture.
-  That outcome is #44's documented fallback — the context WAS delivered and only
-  its recall receipt stayed `prepared` — so it is counted and worded as
-  `1 receipt failure (context delivered)`, still a warn.
+- `hook-latency` no longer calls a UserPromptSubmit `error` row a skipped capture,
+  and no longer calls all of them delivered. The inject hook's done row now carries
+  `stage` (`receipt`/`compute`/`startup`) and `context_delivered`, because that one
+  outcome covered three different events: #44's documented fallback, where the
+  context WAS delivered and only its recall receipt stayed `prepared`
+  (`1 receipt failure (context delivered)`); a daemon or cold compute failure,
+  where nothing reached the user (`1 injection failed (no context delivered)`); and
+  an import failure before any of it. A row written before 0.7.25 has no stage and
+  is reported as `1 inject error (stage unknown)` rather than claimed either way.
+  All of them warn; none of them is a skipped capture.
 - `hook-latency` correlates a killed hook's lock holder inside the host's own
   timeout (+500 ms of skew), not the budget plus the 10 s kill grace. The grace
   decides "no done row means killed"; using it as the correlation window let a

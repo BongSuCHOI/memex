@@ -566,6 +566,31 @@ describe("inject hook observability (issue #162 R5)", () => {
     expect(done!.outcome).toBe("empty-prompt");
     expect(typeof done!.duration_ms).toBe("number");
   });
+
+  /**
+   * #166 final review — an inject failure BEFORE stdout must not read as a
+   * delivered injection. The done row names the stage it failed at.
+   */
+  it("records the failing stage when the cold path delivers no context (#166)", () => {
+    // A database path that cannot be opened: computeInjectContext logs, returns
+    // "" and nothing is emitted, so this prompt delivered nothing.
+    const blocked = path.join(root, "blocked-db-dir");
+    fs.mkdirSync(blocked, { recursive: true });
+    const run = spawnSync(process.execPath, [path.join(ROOT, "scripts", "inject-context.js")], {
+      input: JSON.stringify({
+        prompt: "Configure the redis session store client", cwd: "/project", session_id: SESSION,
+      }),
+      encoding: "utf8",
+      env: childEnv({ MEMEX_DB_PATH: blocked }),
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("");
+    const done = hookEventRows().find(
+      (row) => row.event === "UserPromptSubmit" && row.phase === "done")!;
+    expect(done.outcome).toBe("error");
+    expect(done.context_delivered).toBe(false);
+    expect(["compute", "startup"]).toContain(done.stage);
+  });
 });
 
 /** The in-process payload shape (the subprocess one is a JSON string). */

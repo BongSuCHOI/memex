@@ -500,7 +500,14 @@ async function main() {
   // Issue #162 (review): `db_wait_ms` is the time this prompt spent BLOCKED on
   // the database — the inject bundle's lock wait, including its retry. On the
   // daemon path the wait happens in the daemon, so the daemon reports it back.
-  const done = (outcome, error, dbWaitMs) => {
+  //
+  // Issue #166 (final review): `outcome: "error"` here means three different
+  // things — a receipt that stayed `prepared` AFTER the context was delivered
+  // (#44's documented fallback), a compute failure where nothing reached the
+  // user, and an import failure before any of it. Doctor reported all three as
+  // "context delivered", so the row now says which stage failed and whether
+  // stdout actually got anything.
+  const done = (outcome, error, dbWaitMs, failure) => {
     if (!observe) return;
     try {
       observe.recordHookDone("UserPromptSubmit", {
@@ -510,6 +517,8 @@ async function main() {
         outcome,
         durationMs: Date.now() - STARTED_AT,
         ...(typeof dbWaitMs === "number" && Number.isFinite(dbWaitMs) ? { dbWaitMs } : {}),
+        ...(outcome === "error" && failure?.stage ? { stage: failure.stage } : {}),
+        ...(outcome === "error" ? { contextDelivered: !!failure?.delivered } : {}),
         ...(error ? { error } : {}),
       });
     } catch {
@@ -526,21 +535,29 @@ async function main() {
   // Totals for the ONE done row this hook writes, after the receipt step.
   let dbWaitMs = 0;
   let injectError = null;
+  // #166: did stdout actually receive context, and where did the failure happen?
+  let delivered = false;
+  let failureStage = null;
   const identity = localIdentity();
   const daemonResult = await askDaemon(prompt, cwd, sessionId, identity);
   if (daemonResult && daemonResult.served) {
     const served = daemonResult.served;
     dbWaitMs += Number(served.dbWaitMs) || 0;
     injectError = served.injectError;
+    // The daemon computed and failed: nothing of this prompt reached the user.
+    if (injectError) failureStage = "compute";
     if (served.context) {
       await emitContext(served.context);
+      delivered = true;
       const receipt = await markRecallEmitted(sessionId, prompt, served.receiptId, "daemon");
       dbWaitMs += receipt.waitMs;
-      if (receipt.error) injectError = receipt.error;
+      // The context IS out; only its provenance is missing (#44's fallback).
+      if (receipt.error) { injectError = receipt.error; failureStage = "receipt"; }
     }
     // A daemon that computed but failed is not a served prompt, and neither is
     // a delivery whose provenance could not be recorded (#162 review 6/9).
-    return done(injectError ? "error" : "daemon", injectError, dbWaitMs);
+    return done(injectError ? "error" : "daemon", injectError, dbWaitMs,
+      { stage: failureStage, delivered });
   }
 
   // COLD FALLBACK — compute locally (heavy imports load only here).
@@ -566,10 +583,14 @@ async function main() {
       }
     : {};
   let matcher = null;
+  // Where this process stands, so the catch below can say what failed: the heavy
+  // imports come first (`startup`), then retrieval (`compute`), then the receipt.
+  let stage = "startup";
   try {
     const { computeInjectContext } = await import(
       path.join(__dirname, "../dist/inject-core.js")
     );
+    stage = "compute";
     // Issue #29: a one-shot user-pattern matcher for this single cold run.
     //
     // Creating the HANDLE costs nothing — the worker is constructed only if the
@@ -594,24 +615,28 @@ async function main() {
       {
         onPreparedReceipt: (id) => { receiptId = id; },
         onDbWaitMs: (ms) => { dbWaitMs += ms; },
-        onError: (message) => { injectError = message; },
+        onError: (message) => { injectError = message; failureStage = "compute"; },
         ...daemonNote,
         ...(matcher ? { matcher } : {}),
       },
     );
     if (context) {
       await emitContext(context);
+      delivered = true;
+      stage = "receipt";
       const receipt = await markRecallEmitted(sessionId, prompt, receiptId, "fallback");
       dbWaitMs += receipt.waitMs;
-      if (receipt.error) injectError = receipt.error;
+      if (receipt.error) { injectError = receipt.error; failureStage = "receipt"; }
     }
     // computeInjectContext never throws — it logs and returns "" so a failure
     // cannot disrupt the prompt — so the done row is the only place a cold run
     // that never reached the database can be seen (#162 review 6).
-    done(injectError ? "error" : "fallback", injectError, dbWaitMs);
+    done(injectError ? "error" : "fallback", injectError, dbWaitMs,
+      { stage: failureStage, delivered });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    done("error", msg, dbWaitMs);
+    // An exception, so the stage is wherever this process had got to.
+    done("error", msg, dbWaitMs, { stage, delivered });
     process.stderr.write(`inject-context: error: ${msg}\n`);
     if (/Cannot find (package|module)|ERR_MODULE_NOT_FOUND/.test(msg)) {
       // Fail loud, never auto-install: missing deps are an explicit setup step.
