@@ -2,6 +2,58 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.27 - 2026-09-18
+
+Two post-release readings of 0.7.26 (#169, #171).
+
+### Database
+
+- The legacy content-hash reconstruction covers `0` and `false` tool inputs
+  (#169). 0.7.26 left them out as values "no transcript parser produces", which
+  was wrong: `safeParseInput` hands back `JSON.parse(raw)`, so an input of `0` or
+  `false` arrives as the scalar and the parser's own type union says
+  `number | boolean`. The pre-0.7.26 writer hashed the scalar raw and stored NULL,
+  so such a row failed the legacy match and still took a spurious
+  `content_generation` bump on the v10 refresh — the one thing that reconstruction
+  exists to prevent. Each stored NULL input is now tried as `null`, `""`, `0` and
+  `false` (a stored NULL result as `null` or `""`, since `tool_result` is always a
+  string by the time it is stored), per column and bounded.
+- That bound is now exhaustive up to six NULL tool columns (`LEGACY_RENDERING_LIMIT`
+  4^6), and past it the LEADING six are still enumerated exhaustively while only the
+  tail shares one rendering (#169 second review). The first version fell back to
+  rendering every NULL with the SAME value, so a row of five mixed scalars —
+  `[0, false, "", 0, false]` — could not be reconstructed at all and took the
+  spurious bump the reconstruction exists to prevent. Seven columns are exact too,
+  because enumerating a one-column tail uniformly IS enumerating it exhaustively.
+  The residual limitation, stated rather than hidden: a row with eight or more NULL
+  columns whose columns past the sixth did not all hold the same value is not
+  reconstructed and takes one bump (then stays stable). Worst case is
+  `LEGACY_RECONSTRUCTION_MAX_HASHES` candidate hashes for a row; measured, a
+  six-column mixed row reconstructs in about 8 ms and the worst shapes in about
+  30 ms.
+
+### Doctor
+
+- `hook-latency` no longer counts the rows 0.7.24/0.7.25 wrote for a capture event
+  with no transcript as skipped captures (#171). Those versions had no
+  `no-transcript` outcome, so they recorded `error` with that message, and 0.7.26
+  writes the new outcome on NEW rows only — a root with eleven ephemeral `codex
+  exec` runs kept reporting `11 skipped (error 11) last error: capture hook
+  requires transcript_path` until the old rows fell out of the 200-row window. A
+  pre-0.7.26 row is recognised by that message plus the ABSENCE of a stage.
+  0.7.26 STRICT mode writes the same outcome and message WITH
+  `stage: "no-transcript"` and is still reported, because #168 made it keep its
+  evidence for exactly that purpose.
+- Those legacy rows are REPORTED, not hidden: `N legacy no-transcript row(s)
+  (pre-0.7.26; strict-mode failures indistinguishable)`. 0.7.24/0.7.25 strict mode
+  wrote a real failure the same way — same outcome, same message, no stage — so a
+  legacy row cannot be proven benign, and dropping it would bury that failure with
+  the harmless ephemeral runs. The bucket is neutral: not a warn on its own, not
+  called a skipped capture, and it never supplies the line's `last error`.
+- `capture-gap`'s OK line counts markers instead of calling them skipped captures:
+  `N marker(s), nothing at stake, oldest …`. The warn wording is unchanged, so a
+  real skipped capture still reads `N skipped capture(s)`.
+
 ## 0.7.26 - 2026-09-18
 
 Two post-release readings that were wrong about unchanged data (#169, #168).

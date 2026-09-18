@@ -28,7 +28,11 @@ import {
   type CaptureGapMarker,
   type LoadedCaptureGapMarker,
 } from "./capture-gap-markers.js";
-import { hookBudgetMs, hookHostTimeoutMs } from "./hook-budget.js";
+import {
+  hookBudgetMs,
+  hookHostTimeoutMs,
+  NO_TRANSCRIPT_CAPTURE_REASON,
+} from "./hook-budget.js";
 import { getDbPath, getMemexHome } from "./paths.js";
 import { CURRENT_SCHEMA_VERSION } from "./schema-version.js";
 import { resolveLlmSelection } from "./model-settings.js";
@@ -1033,13 +1037,18 @@ export function captureGapCheck(): Check {
     .slice(0, CAPTURE_GAP_DETAIL_LIMIT)
     .map(({ marker }) => captureGapMarkerLine(marker));
   const more = scan.total - lines.length;
+  const atStake = atStakeClasses.length > 0;
   return {
     name,
     // Markers whose hook had nothing durable at stake are recorded, not alarmed
     // about: they expire on their own and no repair is pending.
-    status: atStakeClasses.length > 0 ? "warn" : "ok",
+    status: atStake ? "warn" : "ok",
     detail:
-      `${scan.total} skipped capture(s)${scan.truncated ? "+" : ""}, oldest ${
+      // #171: an ok verdict counts MARKERS. Calling them "skipped capture(s)" —
+      // which is what an ok line said for eleven ephemeral `codex exec` runs — puts
+      // the alarming noun on the line that just decided nothing was wrong.
+      `${scan.total} ${atStake ? "skipped capture(s)" : "marker(s)"}${
+        scan.truncated ? "+" : ""}${atStake ? "" : ", nothing at stake"}, oldest ${
         scan.markers[0].marker.ts} — ` +
       lines.join(" | ") + (more > 0 ? ` | +${more} more` : ""),
   };
@@ -1131,10 +1140,51 @@ const SKIPPED_OUTCOME_ORDER = ["busy", "deadline", "oversize", "error"];
  */
 const INJECT_LANE_EVENTS = new Set(["UserPromptSubmit"]);
 
-/** `3 skipped (busy 1, deadline 1, oversize 1) last error: …`, or "". */
-function skippedCaptureLine(rows: HookEventRow[]): string {
-  const failing = rows.filter((row) =>
-    row.phase === "done" && !HEALTHY_HOOK_OUTCOMES.has(String(row.outcome ?? "")));
+/**
+ * Issue #171 — a done row 0.7.24/0.7.25 wrote for a capture event that never had a
+ * transcript.
+ *
+ * Those versions had no `no-transcript` outcome, so they recorded `error` with this
+ * exact message. 0.7.26 writes the new outcome on NEW rows only, which left a root
+ * with eleven ephemeral runs reporting `11 skipped (error 11) last error: capture
+ * hook requires transcript_path` until the old rows fell out of the 200-row window.
+ * Nothing was skipped: there was nothing to capture.
+ *
+ * The ABSENCE of a stage is what dates the row. 0.7.26 STRICT mode writes the same
+ * outcome and message WITH `stage: "no-transcript"`, and #168's post-fix review
+ * made it do that precisely so this check keeps reporting it — a loud opt-in
+ * failure is not an old silent row. (A non-strict 0.7.26 run records
+ * `outcome: "no-transcript"` and never reaches here.) So #171's suggestion to
+ * exclude that stage as well is deliberately NOT followed: it would undo #168.
+ *
+ * These rows are counted in their own NEUTRAL bucket, never dropped. 0.7.24/0.7.25
+ * strict mode wrote a real failure the same way — same outcome, same message, no
+ * stage — so a legacy row cannot be PROVEN benign, and silently hiding it would
+ * bury that failure with the eleven harmless ephemeral runs (#171 second review).
+ * The bucket says so instead of guessing: it is not a warn on its own, and it is
+ * not called a skipped capture.
+ */
+function isLegacyNoTranscriptRow(row: HookEventRow): boolean {
+  return (
+    String(row.outcome ?? "") === "error" &&
+    String(row.error ?? "").trim() === NO_TRANSCRIPT_CAPTURE_REASON &&
+    !row.stage
+  );
+}
+
+/**
+ * `— 3 skipped (busy 1, deadline 1, oversize 1) last error: …`, or "".
+ *
+ * `warn` says whether anything in it is a FAILURE this check must alarm about. The
+ * legacy no-transcript bucket is reported but not alarming, so the two answers are
+ * separate — returning only the text made any reported row a warn (#171).
+ */
+function skippedCaptureLine(rows: HookEventRow[]): { text: string; warn: boolean } {
+  const done = rows.filter((row) => row.phase === "done");
+  const legacyNoTranscript = done.filter(isLegacyNoTranscriptRow);
+  const failing = done.filter((row) =>
+    !HEALTHY_HOOK_OUTCOMES.has(String(row.outcome ?? "")) &&
+    !isLegacyNoTranscriptRow(row));
   const injectFailures = failing.filter((row) => INJECT_LANE_EVENTS.has(row.event));
   const skipped = failing.filter((row) => !INJECT_LANE_EVENTS.has(row.event));
   const receiptFailures = injectFailures.filter((row) => row.stage === "receipt");
@@ -1142,7 +1192,9 @@ function skippedCaptureLine(rows: HookEventRow[]): string {
     row.stage === "compute" || row.stage === "startup");
   const unknownStage = injectFailures.filter((row) =>
     row.stage !== "receipt" && row.stage !== "compute" && row.stage !== "startup");
-  if (failing.length === 0) return "";
+  if (failing.length === 0 && legacyNoTranscript.length === 0) {
+    return { text: "", warn: false };
+  }
   const parts: string[] = [];
   if (skipped.length > 0) {
     const counts = new Map<string, number>();
@@ -1171,9 +1223,22 @@ function skippedCaptureLine(rows: HookEventRow[]): string {
     // A pre-0.7.25 row: neither claim can be made about it.
     parts.push(`${unknownStage.length} inject error (stage unknown)`);
   }
+  // Reported last, and never as a failure: the count is what a reader needs to know
+  // that some of these MIGHT have been strict-mode failures on an old version.
+  if (legacyNoTranscript.length > 0) {
+    parts.push(
+      `${legacyNoTranscript.length} legacy no-transcript row(s) ` +
+        "(pre-0.7.26; strict-mode failures indistinguishable)",
+    );
+  }
+  // From `failing` only: "last error" names a failure this check is asserting, and
+  // a legacy row is exactly the one it is not asserting.
   const lastError = [...failing].reverse().find((row) => String(row.error ?? "").trim());
-  return ` — ${parts.join(", ")}` +
-    (lastError ? ` last error: ${String(lastError.error).slice(0, 120)}` : "");
+  return {
+    text: ` — ${parts.join(", ")}` +
+      (lastError ? ` last error: ${String(lastError.error).slice(0, 120)}` : ""),
+    warn: failing.length > 0,
+  };
 }
 
 interface WorkerTransactionRow {
@@ -1274,6 +1339,7 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
   // #166: a skipped capture has a done row, so it is never a reason to stop
   // reporting a kill or a lock wait — it is added to whichever verdict applies.
   const skipped = skippedCaptureLine(rows);
+  const skippedText = skipped.text;
   if (killed.length > 0) {
     const markers = (() => {
       try {
@@ -1297,7 +1363,7 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
       status: "warn",
       detail:
         `${killed.length} hook run(s) started and never finished — killed by host ` +
-        `(latest ${worst.event} ${worst.ts}); ${markers} capture gap marker(s)` + holder + skipped,
+        `(latest ${worst.event} ${worst.ts}); ${markers} capture gap marker(s)` + holder + skippedText,
     };
   }
   if (waited.length > 0) {
@@ -1315,7 +1381,7 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
       detail:
         `hooks waited on the database — ${waited.length}/${paired} runs over ` +
         `${HOOK_DB_WAIT_WARN_MS} ms (worst ${worst.event} ${
-          Math.round(Number(worst.db_wait_ms))} ms, ${worst.ts})` + holder + skipped,
+          Math.round(Number(worst.db_wait_ms))} ms, ${worst.ts})` + holder + skippedText,
     };
   }
   // Nothing went wrong, so there is no hook to correlate a holder with: naming
@@ -1323,11 +1389,13 @@ export function hookLatencyCheck(now: number = Date.now()): Check {
   return {
     name,
     // A completed run that captured nothing is not ok, however fast it was (#166).
-    status: skipped ? "warn" : "ok",
+    // A reported-but-neutral bucket is not that, so the verdict reads `warn`, not
+    // the presence of text (#171).
+    status: skipped.warn ? "warn" : "ok",
     detail: `${paired} hook run(s) completed, max ${maxDuration} ms` +
       // #166: the fixed cost before the first database call, per machine. This
       // is the number that decides whether a budget is generous or already gone.
-      (maxStartup === null ? "" : `, max startup ${maxStartup} ms`) + skipped,
+      (maxStartup === null ? "" : `, max startup ${maxStartup} ms`) + skippedText,
   };
 }
 

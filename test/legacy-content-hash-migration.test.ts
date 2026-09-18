@@ -6,7 +6,12 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 
 import { initDatabase, insertExchange } from "../src/db.js";
-import { refreshExchangeMetadata } from "../src/continuity-store.js";
+import {
+  countStaleExchangeContentHashes,
+  legacyContentHashes,
+  LEGACY_RECONSTRUCTION_MAX_HASHES,
+  refreshExchangeMetadata,
+} from "../src/continuity-store.js";
 import type { ToolCall } from "../src/types.js";
 
 /**
@@ -124,6 +129,20 @@ function stampLegacyHash(id: string, hash: string): void {
   db.prepare("UPDATE exchanges SET content_hash = ? WHERE id = ?").run(hash, id);
 }
 
+/**
+ * The 0.7.25 writer stored `tool_input = NULL` for ANY falsy input — `""` but also
+ * the `0` and `false` the rollout parser really produces (`safeParseInput` returns
+ * `JSON.parse("0")` / `JSON.parse("false")`, and its own type union says
+ * `number | boolean`). The 0.7.26 writer stores `"0"` / `"false"` instead, so a
+ * fixture for those rows has to put the NULL back by hand.
+ */
+function nullStoredToolInput(toolId: string): void {
+  const changes = db
+    .prepare("UPDATE tool_calls SET tool_input = NULL WHERE id = ?")
+    .run(toolId).changes;
+  expect(changes).toBe(1);
+}
+
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-legacy-hash-"));
   dbPath = path.join(root, "memex.sqlite");
@@ -143,7 +162,12 @@ afterEach(() => {
 });
 
 describe("a 0.7.25 content hash is a format change, not a content change (#169)", () => {
-  const cases: Array<{ name: string; tools: (id: string) => ToolCall[] }> = [
+  const cases: Array<{
+    name: string;
+    tools: (id: string) => ToolCall[];
+    /** Restore the 0.7.25 stored shape when the 0.7.26 writer keeps the value. */
+    legacyStore?: (id: string) => void;
+  }> = [
     {
       name: "an empty tool_result the old writer hashed as \"\"",
       tools: (id) => [toolCall(id, { id: `${id}-t1`, toolInput: { command: "ls" }, toolResult: "" })],
@@ -175,41 +199,150 @@ describe("a 0.7.25 content hash is a format change, not a content change (#169)"
         toolCall(id, { id: `${id}-t2`, toolInput: { command: "pwd" }, toolResult: undefined }),
       ],
     },
+    {
+      // Issue #169 (post-release review): these were excluded from the first
+      // reconstruction as values "no transcript parser produces". The rollout
+      // parser produces them — `safeParseInput` hands back `JSON.parse("0")`.
+      name: "a tool_input of 0, which the old writer hashed as 0 and stored as NULL",
+      tools: (id) => [toolCall(id, { id: `${id}-t1`, toolInput: 0, toolResult: "ok" })],
+      legacyStore: (id) => nullStoredToolInput(`${id}-t1`),
+    },
+    {
+      name: "a tool_input of false, hashed as false and stored as NULL",
+      tools: (id) => [toolCall(id, { id: `${id}-t1`, toolInput: false, toolResult: "ok" })],
+      legacyStore: (id) => nullStoredToolInput(`${id}-t1`),
+    },
+    {
+      name: "a scalar input AND an empty result on the same tool",
+      tools: (id) => [toolCall(id, { id: `${id}-t1`, toolInput: 0, toolResult: "" })],
+      legacyStore: (id) => nullStoredToolInput(`${id}-t1`),
+    },
+    {
+      // Issue #169 (second post-release review): the >limit fallback rendered
+      // EVERY NULL with the same value, so a row whose legacy scalars differed
+      // could not be reconstructed at all and took the bump anyway.
+      name: "five NULL inputs with mixed legacy scalars",
+      tools: (id) =>
+        [0, false, "", 0, false].map((input, index) =>
+          toolCall(id, { id: `${id}-t${index}`, toolInput: input, toolResult: "ok" })),
+      legacyStore: (id) => {
+        for (let index = 0; index < 5; index++) nullStoredToolInput(`${id}-t${index}`);
+      },
+    },
+    {
+      name: "seven NULL inputs with mixed legacy scalars",
+      // Past the exhaustive product, so the tail is enumerated uniformly — with a
+      // single tail column that is still exact.
+      tools: (id) =>
+        [0, false, "", 0, false, 0, false].map((input, index) =>
+          toolCall(id, { id: `${id}-t${index}`, toolInput: input, toolResult: "ok" })),
+      legacyStore: (id) => {
+        for (let index = 0; index < 7; index++) nullStoredToolInput(`${id}-t${index}`);
+      },
+    },
+    {
+      name: "two tools with DIFFERENT falsy scalars — 0 on one, false on the other",
+      // Per-column again: no single uniform rendering of the row's NULLs matches.
+      tools: (id) => [
+        toolCall(id, { id: `${id}-t1`, toolInput: 0, toolResult: "ok" }),
+        toolCall(id, { id: `${id}-t2`, toolInput: false, toolResult: "ok" }),
+      ],
+      legacyStore: (id) => {
+        nullStoredToolInput(`${id}-t1`);
+        nullStoredToolInput(`${id}-t2`);
+      },
+    },
   ];
 
-  for (const { name, tools } of cases) {
+  for (const { name, tools, legacyStore } of cases) {
     it(`rewrites the hash and leaves the generation alone — ${name}`, () => {
       const id = `ex-${name.replace(/[^a-z]+/gi, "-").slice(0, 40)}`;
       const toolCalls = tools(id);
       insert(id, toolCalls);
-      const canonical = metadataOf(id);
-      expect(canonical.content_generation).toBe(1);
+      // A `legacyStore` case rewrites the STORED columns, so the hash
+      // `insertExchange` just wrote no longer describes the row — which is exactly
+      // the 0.7.25 state. Only a case that leaves the columns alone can compare
+      // against it.
+      const canonicalHash = legacyStore ? null : metadataOf(id).content_hash;
+      legacyStore?.(id);
+      expect(metadataOf(id).content_generation).toBe(1);
       const evidenceBefore = countEvidence();
 
-      const legacy = legacyInsertHash({ ...BASE, toolCalls });
-      // The fixture is only meaningful if the old algorithm really disagreed.
-      expect(legacy).not.toBe(canonical.content_hash);
-      stampLegacyHash(id, legacy);
+      stampLegacyHash(id, legacyInsertHash({ ...BASE, toolCalls }));
+      // The fixture is only meaningful if the stored hash really disagrees with
+      // the stored row. Asked of production's own read-only check, so the guard
+      // cannot drift from the thing it is guarding.
+      expect(countStaleExchangeContentHashes(db)).toBe(1);
 
       refreshExchangeMetadata(db);
 
-      expect(metadataOf(id)).toEqual({
-        content_hash: canonical.content_hash,
-        content_generation: 1,
-      });
+      const after = metadataOf(id);
+      // The whole point: the hash moved, the generation did not.
+      expect(after.content_generation).toBe(1);
+      // And it moved to the CANONICAL value — the same check, now satisfied.
+      expect(countStaleExchangeContentHashes(db)).toBe(0);
+      if (canonicalHash) expect(after.content_hash).toBe(canonicalHash);
       // Nothing downstream may be re-opened by a format migration.
       expect(countEvidence()).toBe(evidenceBefore);
 
       // Idempotent, and the second pass has nothing left to migrate.
       refreshExchangeMetadata(db);
       refreshExchangeMetadata(db);
-      expect(metadataOf(id)).toEqual({
-        content_hash: canonical.content_hash,
-        content_generation: 1,
-      });
+      expect(metadataOf(id)).toEqual(after);
       expect(countEvidence()).toBe(evidenceBefore);
     });
   }
+
+  it("stays bounded, and states the limit it stops being exact at", () => {
+    // The bound is a property of the reconstruction, so ask it directly rather
+    // than inferring it from a refresh.
+    const nullInputTools = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        id: `t${index}`,
+        toolName: "Bash",
+        toolInput: null as string | null,
+        toolResult: "ok" as string | null,
+        isError: false,
+      }));
+
+    for (const count of [6, 7, 8, 12]) {
+      const hashes = legacyContentHashes({ ...BASE, tools: nullInputTools(count) });
+      expect(hashes.size).toBeLessThanOrEqual(LEGACY_RECONSTRUCTION_MAX_HASHES);
+      expect(hashes.size).toBeGreaterThan(0);
+    }
+
+    // What a six-column mixed row costs, measured rather than assumed.
+    const started = Date.now();
+    legacyContentHashes({ ...BASE, tools: nullInputTools(6) });
+    const elapsedMs = Date.now() - started;
+    // Generous: the assertion is that it is bounded work, not a benchmark.
+    expect(elapsedMs).toBeLessThan(5_000);
+    console.error(`[measure] six mixed NULL columns reconstructed in ${elapsedMs} ms`);
+  });
+
+  it("documents the residual limitation: a 2+ column tail with DIFFERENT values", () => {
+    // Eight NULL inputs, and the two past the exhaustive head disagree. The tail
+    // is rendered uniformly, so this row is NOT reconstructed and takes one bump —
+    // the pre-fix behaviour, once, for a shape no real transcript produces.
+    const id = "ex-eight-mixed-tail";
+    const values: unknown[] = [0, false, "", 0, false, 0, false, 0];
+    const toolCalls = values.map((input, index) =>
+      toolCall(id, { id: `${id}-t${index}`, toolInput: input, toolResult: "ok" }));
+    insert(id, toolCalls);
+    for (let index = 0; index < values.length; index++) {
+      nullStoredToolInput(`${id}-t${index}`);
+    }
+    stampLegacyHash(id, legacyInsertHash({ ...BASE, toolCalls }));
+    expect(countStaleExchangeContentHashes(db)).toBe(1);
+
+    refreshExchangeMetadata(db);
+
+    // Bumped once, then stable: the row is not re-processed again and again.
+    expect(metadataOf(id).content_generation).toBe(2);
+    expect(countStaleExchangeContentHashes(db)).toBe(0);
+    refreshExchangeMetadata(db);
+    expect(metadataOf(id).content_generation).toBe(2);
+  });
 
   it("still bumps the generation for a hash that is no legacy variant", () => {
     const id = "ex-real-change";
