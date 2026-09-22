@@ -378,6 +378,9 @@ it("the worker completes a twelve-item answer without spending an attempt", asyn
   expect(JSON.parse(row.truncated_fields_json)).toEqual({
     fields: ["touchedAreas"],
     itemCaps: { touchedAreas: { kept: 8, dropped: 4 } },
+    // Issue #178: the same record carries the scalar clamps; this answer's
+    // scalars were inside the 500-character bound, so the map is empty.
+    scalarClamps: {},
     overBudget: false,
   });
 
@@ -437,4 +440,66 @@ it("ordinary oversized text keeps the existing truncation priority and report", 
   expect(truncation.truncatedFields).not.toContain("objective");
   expect(patch.objective).toBe("o".repeat(500));
   expect(patch.currentState.length).toBe(240);
+});
+
+/**
+ * Issue #178 — the 500-character scalar bound killed the job instead of clamping.
+ *
+ * Observed on the primary Mac after 0.7.28: `capsule_update` dead at 5/5 with
+ * `last_error: currentState must be text of at most 500 characters`, the
+ * checkpoint failed-visible and the evidence frontier advanced past the page
+ * (`skipped evidence seq 199`). A retry cannot shorten a length violation, so
+ * the job was doomed the moment the model overran — over a bound the patch could
+ * simply satisfy. This is the end-to-end half: the worker now converges.
+ */
+it("the worker completes a 700-character currentState by clamping it and records the clamp", async () => {
+  put("session-A", "source");
+  capture("session-A");
+  const long = Array.from({ length: 90 }, (_, i) => `state${i}`).join(" ");
+  expect(long.length).toBeGreaterThan(500);
+  const answer = {
+    objective: "Converge the capsule job",
+    currentState: long,
+    verifiedProgress: [{ text: "Observed the dead job", sourceExchangeIds: ["source"] }],
+    hypotheses: [], blockers: [], openQuestions: [], nextActions: [], touchedAreas: [],
+    carryFactRevisions: [], sourceExchangeIds: ["source"],
+  };
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+  let result;
+  try {
+    result = await runContinuityWorker(db, {
+      maxJobs: 1, model: async () => JSON.stringify(answer),
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  expect(result[0].state).toBe("completed");
+  const job = db.prepare(
+    "SELECT state, attempts, last_error FROM memory_jobs WHERE kind = 'capsule_update'",
+  ).get() as { state: string; attempts: number; last_error: string | null };
+  expect(job.state).toBe("completed");
+  expect(job.attempts).toBe(1);
+  expect(job.last_error).toBe(null);
+
+  const capsule = readWorkCapsule(db, workstream);
+  expect(capsule?.generation).toBe(1);
+  expect(capsule?.currentState.length).toBeLessThanOrEqual(500);
+  // Word boundary, and a prefix of what the model actually wrote.
+  expect(long.startsWith(capsule!.currentState)).toBe(true);
+  expect(long[capsule!.currentState.length]).toMatch(/\s/);
+  expect(capsule?.truncated).toBe(true);
+  expect(capsule?.scalarClamps).toEqual({ currentState: long.length });
+
+  // Durable, on the same record `itemCaps` uses — not a new channel.
+  const row = db.prepare("SELECT truncated_fields_json FROM work_capsules WHERE workstream_id = ?")
+    .get(workstream) as { truncated_fields_json: string };
+  expect(JSON.parse(row.truncated_fields_json).scalarClamps).toEqual({ currentState: long.length });
+
+  // And the WARN line explains the shorter text instead of leaving it unaccounted.
+  const warned = warnings.filter((line) => line.includes("capsule patch truncated"));
+  expect(warned.length).toBe(1);
+  expect(warned[0]).toContain(`clamped=currentState(${long.length})`);
 });

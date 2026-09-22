@@ -2421,19 +2421,35 @@ function countPendingModelWork(
   const counts: PendingModelWorkCounts = { pending: 0, reserved: 0, unbound: 0 };
   const derivedFactQueue = hasDerivedFactQueue(db);
   if (tableExists(db, "memory_jobs") && columnNames(db, "memory_jobs").has("budget_id")) {
+    // 🚨 이슈 #177 항목 2 — **hold 중인 job 은 남은 일감이 아니다.**
+    //
+    // `holdMemoryJob` 은 job 을 `state='pending'`, 리스 해제, attempts 환불,
+    // `hold_reason` 설정 상태로 되돌린다(hold 는 실패도 backoff 도 아니다). 그래서
+    // hold_reason 을 보지 않으면 그 행이 그대로 pending 으로 집계되고, 드레인된
+    // `completed` 자동 예산이 **매 wake 마다** 새 run 을 열었다 — 그 run 의 모델
+    // 레인 전부를 바로 그 hold 가 건너뛰므로 아무도 쓸 수 없는 run 이다(시간당 4개).
+    // 호출자의 `lanePending: false` 로는 막을 수 없는, 술어 자체의 결함이다.
+    //
+    // 같은 판정이 이미 `rolloverSpentWaveBudgets` / `rebindSpentQueueJobsToBudget`
+    // 의 `movable` 에 있다(`AND j.hold_reason IS NULL`). hold 가 풀리면 그 행은
+    // 다시 평범한 큐 작업이 되고 다음 wake 가 run 을 연다 — 손실 없음.
+    // 컬럼이 없는 구버전 스키마에서는 예전 술어로 정확히 되돌아간다.
+    const holdClause = columnNames(db, "memory_jobs").has("hold_reason")
+      ? "AND hold_reason IS NULL"
+      : "";
     const scope = budgetId ? "AND budget_id = ?" : "";
     const params = budgetId ? [budgetId] : [];
     const row = db.prepare(`
       SELECT COUNT(*) AS pending
       FROM memory_jobs
-      WHERE state IN ('pending','retry','running') ${scope}
+      WHERE state IN ('pending','retry','running') ${holdClause} ${scope}
     `).get(...params) as { pending: number };
     counts.pending += Number(row?.pending ?? 0);
     if (!budgetId) {
       const unbound = db.prepare(`
         SELECT COUNT(*) AS unbound
         FROM memory_jobs
-        WHERE budget_id IS NULL AND state IN ('pending','retry','running')
+        WHERE budget_id IS NULL AND state IN ('pending','retry','running') ${holdClause}
       `).get() as { unbound: number };
       counts.unbound += Number(unbound?.unbound ?? 0);
     }
@@ -2731,6 +2747,25 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
         });
     db.prepare("UPDATE model_work_budgets SET automatic = 1, state = ? WHERE budget_id = ?")
       .run(window.remaining === 0 ? "exhausted" : "active", next.budgetId);
+    // 🚨 이슈 #177 라운드 2 — completed 분기도 job 을 데려간다.
+    //
+    // `exhausted` 분기는 `startNewModelWorkRunForBudget` 안에서 큐 job 을 새 run 으로
+    // 재바인딩하지만, `completed` 분기는 `insertModelWorkBudget` 로 바로 갔기 때문에
+    // 은퇴한 run 에 묶인 job 이 그대로 남았다. hold 가 풀린 job 이 정확히 그 상태다
+    // (hold 중에는 위의 `!pending` 블록이 먼저 돌아가므로 여기 오지 않는다). 남으면
+    // 데드라인 전에는 `completed` 예산에 모델 호출이 과금되고, 데드라인 후에는
+    // claim 이 `deadline` 으로 거절되어 그 job 은 영구히 멈춘다.
+    //
+    // 술어·쓰기 모두 `rolloverSpentWaveBudgets` 와 같은 단일 소스이므로 `hold_reason`
+    // 이 남아 있는 job 은 여기서도 움직이지 않는다 — 해제된 뒤에만 옮겨진다.
+    if (latest && latest.state !== "exhausted") {
+      rebindMovableWaveJobs(db, {
+        fromBudgetId: latest.budgetId,
+        toBudgetId: next.budgetId,
+        toParentWaveId: next.parentWaveId,
+        nowIso,
+      });
+    }
     return readBudgetById(db, next.budgetId)!;
   });
   return maintain.immediate();
@@ -2827,6 +2862,62 @@ function getOrCreateWaveModelBudget(
  */
 const AUTO_CONTINUED_WAVE_PREFIXES = ["continuity:"];
 
+/**
+ * Issue #140/#146: which queue jobs a wave rollover may move — `pending`/`retry`
+ * only, lease-free, and hold-free.
+ *
+ * 🚨 이슈 #177 라운드 2: 이 술어와 아래의 이동 쓰기는 **단일 소스**다. 예전에는
+ * `rolloverSpentWaveBudgets` 안에만 있었고, 자동 유지보수 wave 의 completed
+ * 분기는 아무 재바인딩도 하지 않았다. hold 가 풀린 job 이 은퇴한 run 에 묶인 채
+ * 남아, 데드라인 전에는 `completed` 예산에 모델 호출이 과금되고 데드라인 후에는
+ * claim 이 `deadline` 으로 거절되어 **영구히 멈췄다**.
+ *
+ * `hold_reason IS NULL` 은 유지한다 — hold 중인 job 은 옮기지 않고, 해제된 뒤에만
+ * 옮긴다. 파라미터 1개(nowIso)를 소비한다(별칭 `j`).
+ */
+function movableWaveJobSql(db: Database.Database): string {
+  const holdClause =
+    tableExists(db, "memory_jobs") && columnNames(db, "memory_jobs").has("hold_reason")
+      ? "AND j.hold_reason IS NULL"
+      : "";
+  return `j.state IN ('pending','retry') AND (j.lease_until IS NULL OR j.lease_until <= ?) ${holdClause}`;
+}
+
+/**
+ * Move every movable job off `fromBudgetId` onto `toBudgetId`, returning the ids.
+ *
+ * `available_at` is reset because the backoff on these rows was recorded for a
+ * budget stop, not for anything the job did wrong (#146). Runs INSIDE the
+ * caller's transaction — it opens none of its own — so a rollover stays atomic.
+ */
+function rebindMovableWaveJobs(
+  db: Database.Database,
+  input: { fromBudgetId: string; toBudgetId: string; toParentWaveId: string; nowIso: string },
+): string[] {
+  if (!tableExists(db, "memory_jobs")) return [];
+  if (!columnNames(db, "memory_jobs").has("budget_id")) return [];
+  if (input.fromBudgetId === input.toBudgetId) return [];
+  const jobs = db.prepare(`
+    SELECT j.job_id AS job_id FROM memory_jobs j
+    WHERE j.budget_id = ? AND ${movableWaveJobSql(db)} ORDER BY j.rowid
+  `).all(input.fromBudgetId, input.nowIso) as Array<{ job_id: string }>;
+  const move = db.prepare(`
+    UPDATE memory_jobs
+    SET budget_id = ?, maintenance_wave_id = ?, state = 'pending', available_at = ?,
+        lease_owner = NULL, lease_until = NULL, updated_at = ?
+    WHERE job_id = ? AND budget_id = ?
+  `);
+  const rebound: string[] = [];
+  for (const job of jobs) {
+    const changed = move.run(
+      input.toBudgetId, input.toParentWaveId, input.nowIso, input.nowIso,
+      job.job_id, input.fromBudgetId,
+    ).changes;
+    if (changed === 1) rebound.push(job.job_id);
+  }
+  return rebound;
+}
+
 export interface SpentWaveRollover {
   budgetId: string;
   nextBudgetId: string;
@@ -2868,8 +2959,7 @@ export function rolloverSpentWaveBudgets(
   // An absolute deadline already in the past would make every new run spent at
   // birth and this function would open one per worker run for ever.
   if (limits.deadlineAt && Date.parse(limits.deadlineAt) <= now.getTime()) return [];
-  const holdClause = columnNames(db, "memory_jobs").has("hold_reason") ? "AND j.hold_reason IS NULL" : "";
-  const movable = `j.state IN ('pending','retry') AND (j.lease_until IS NULL OR j.lease_until <= ?) ${holdClause}`;
+  const movable = movableWaveJobSql(db);
   const prefixClause = AUTO_CONTINUED_WAVE_PREFIXES.map(() => "b.root_wave_id LIKE ?").join(" OR ");
   const prefixParams = AUTO_CONTINUED_WAVE_PREFIXES.map((prefix) => `${prefix}%`);
   const tx = db.transaction((): SpentWaveRollover[] => {
@@ -2903,10 +2993,13 @@ export function rolloverSpentWaveBudgets(
       const reason = resolveBudgetExhaustion(db, budget, now);
       if (reason) markModelBudgetExhausted(db, budget.budgetId, reason, nowIso);
     }
+    // 🚨 이슈 #177 라운드 2: `completed` 도 출처 상태다. `getOrCreateWaveModelBudget`
+    // 의 retire 분기는 유휴 run 을 `completed` 로 쓴다 — hold 가 풀린 job 이 그 run 에
+    // 묶여 있으면 'exhausted' 만 보던 이 선택은 그 job 을 영원히 두고 갔다.
     const candidates = db.prepare(`
       SELECT b.budget_id AS budget_id
       FROM model_work_budgets b
-      WHERE b.automatic = 0 AND b.state = 'exhausted'
+      WHERE b.automatic = 0 AND b.state IN ('exhausted','completed')
         AND b.deadline_at IS NOT NULL AND b.deadline_at <= ?
         AND (${prefixClause})
         AND EXISTS (SELECT 1 FROM memory_jobs j WHERE j.budget_id = b.budget_id AND ${movable})
@@ -2938,21 +3031,12 @@ export function rolloverSpentWaveBudgets(
         limits,
         now,
       });
-      const jobs = db.prepare(`
-        SELECT j.job_id AS job_id FROM memory_jobs j WHERE j.budget_id = ? AND ${movable} ORDER BY j.rowid
-      `).all(previous.budgetId, nowIso) as Array<{ job_id: string }>;
-      const move = db.prepare(`
-        UPDATE memory_jobs
-        SET budget_id = ?, maintenance_wave_id = ?, state = 'pending', available_at = ?,
-            lease_owner = NULL, lease_until = NULL, updated_at = ?
-        WHERE job_id = ? AND budget_id = ?
-      `);
-      const rebound: string[] = [];
-      for (const job of jobs) {
-        if (move.run(next.budgetId, next.parentWaveId, nowIso, nowIso, job.job_id, previous.budgetId).changes === 1) {
-          rebound.push(job.job_id);
-        }
-      }
+      const rebound = rebindMovableWaveJobs(db, {
+        fromBudgetId: previous.budgetId,
+        toBudgetId: next.budgetId,
+        toParentWaveId: next.parentWaveId,
+        nowIso,
+      });
       out.push({ budgetId: previous.budgetId, nextBudgetId: next.budgetId, parentWaveId: next.parentWaveId, reboundJobIds: rebound });
     }
     return out;
@@ -3029,7 +3113,7 @@ export function rebindSpentQueueJobsToBudget(
       SELECT j.job_id AS job_id, j.budget_id AS budget_id
       FROM memory_jobs j
       JOIN model_work_budgets b ON b.budget_id = j.budget_id
-      WHERE ${movable} AND b.state IN ('exhausted','cancelled')
+      WHERE ${movable} AND b.state IN ('exhausted','completed','cancelled')
       ORDER BY j.rowid
     `).all(input.kind, target.budgetId, nowIso) as Array<{ job_id: string; budget_id: string }>;
     // `available_at` is reset because the backoff on these rows was recorded

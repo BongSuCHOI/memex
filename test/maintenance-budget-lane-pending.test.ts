@@ -12,8 +12,12 @@ import {
   AUTOMATIC_MAINTENANCE_COOLDOWN_MS,
   ensureModelBudgetSchema,
   exhaustModelBudget,
+  findExhaustedModelBudgetForClaim,
   finishModelAttempt,
   getOrCreateAutomaticMaintenanceModelBudget,
+  holdMemoryJob,
+  peekResolvedModelBudget,
+  releaseHeldJobs,
   reserveModelAttempt,
 } from "../src/model-budget.js";
 
@@ -47,6 +51,39 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
 
   const budgetCount = () =>
     (db.prepare("SELECT COUNT(*) AS n FROM model_work_budgets").get() as { n: number }).n;
+
+  /** A claimed job bound to `budgetId`, with a live lease `holdMemoryJob` can CAS. */
+  const claimedBoundJob = (jobId: string, budgetId: string, waveId: string) => {
+    db.prepare(`
+      INSERT INTO memory_jobs
+        (job_id, kind, partition_key, policy_version, state, available_at,
+         lease_owner, lease_until, lease_generation, attempts, idempotency_key,
+         created_at, updated_at, budget_id, maintenance_wave_id)
+      VALUES (?, 'capsule_update', ?, 'test', 'running', ?, 'owner-1', ?, 1, 1, ?, ?, ?, ?, ?)
+    `).run(
+      jobId, `session:${jobId}`, T0.toISOString(), at(30 * 60_000).toISOString(),
+      jobId, T0.toISOString(), T0.toISOString(), budgetId, waveId,
+    );
+  };
+
+  const jobRow = (jobId: string) =>
+    db.prepare("SELECT budget_id, state, hold_reason FROM memory_jobs WHERE job_id = ?").get(jobId) as
+      { budget_id: string | null; state: string; hold_reason: string | null };
+
+  /**
+   * Exactly the row `holdMemoryJob` leaves behind: unbound, `state='pending'`,
+   * no lease, attempts refunded, `hold_reason` set (src/model-budget.ts
+   * `holdJobStatement`). Written directly so the fixture does not need a whole
+   * claimed Continuity job to reach one durable state.
+   */
+  const holdUnboundJob = (jobId: string) => {
+    db.prepare(`
+      INSERT INTO memory_jobs
+        (job_id, kind, partition_key, policy_version, state, available_at,
+         attempts, idempotency_key, created_at, updated_at, hold_reason)
+      VALUES (?, 'capsule_update', ?, 'test', 'pending', ?, 0, ?, ?, ?, 'model_config_rejected')
+    `).run(jobId, `session:${jobId}`, T0.toISOString(), jobId, T0.toISOString(), T0.toISOString());
+  };
 
   /**
    * The exact durable state from the issue: the latest automatic maintenance
@@ -291,6 +328,157 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
     expect(rolled.state).toBe("active");
   });
 
+  /**
+   * Issue #177 item 2, Codex follow-up — `lanePending: false` alone is not the
+   * whole fix.
+   *
+   * `countPendingModelWork` counted every unbound `memory_jobs` row in
+   * `pending`/`retry`, and `holdMemoryJob` parks a held job in exactly that
+   * state (`state='pending'`, lease cleared, attempts refunded, `hold_reason`
+   * set). So a drained `completed` run plus ONE held job reopened run 2 on every
+   * wake past the deadline, no matter what the caller passed — and the same hold
+   * then skipped every model lane the run was minted for. A held job is by
+   * definition not runnable work, which is why `rolloverSpentWaveBudgets` and
+   * `rebindSpentQueueJobsToBudget` already exclude it from `movable`.
+   */
+  it("an unbound HELD job is not pending work: a drained run stays completed", () => {
+    const drained = drainedToCompleted();
+    holdUnboundJob("job-held-1");
+
+    const wake = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(2 * 60_000),
+      lanePending: false,
+    });
+    expect(
+      wake.budgetId,
+      "a held job must not mint a run that the same hold will skip every lane of",
+    ).toBe(drained.budgetId);
+    expect(wake.state).toBe("completed");
+    expect(budgetCount()).toBe(1);
+
+    // Releasing the hold turns it back into ordinary queued work, and the very
+    // next wake opens the run that will actually drain it.
+    expect(releaseHeldJobs(db, "model_config_rejected")).toBe(1);
+    const reopened = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(3 * 60_000),
+      lanePending: false,
+    });
+    expect(
+      reopened.state,
+      "once the hold is lifted the job is real work again and must reopen the wave",
+    ).toBe("active");
+    expect(reopened.budgetId).not.toBe(drained.budgetId);
+    expect(reopened.runSeq).toBe(2);
+    expect(budgetCount()).toBe(2);
+  });
+
+  /**
+   * Issue #177, Codex round 2 — the hold_reason exclusion stranded a BOUND job.
+   *
+   * Excluding held jobs from `countPendingModelWork` is right, but it also means
+   * wave selection retires the run they are bound to as `completed`. When the
+   * hold is released the job is ordinary work again — and it is still bound to a
+   * `completed` run that no rollover path adopted: `rolloverSpentWaveBudgets`
+   * and the automatic rollover only rebound jobs off an `exhausted` budget, and
+   * the `completed` branch went straight to `insertModelWorkBudget` with no
+   * rebind at all. Codex reproduced both halves of the consequence: before the
+   * retired run's deadline the model call is charged to a `completed` budget,
+   * and after it the claim is refused with `deadline` — forever.
+   */
+  it("a released held job bound to a retired run joins the wave's next run", () => {
+    const first = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: T0,
+    });
+    expect(first.state).toBe("active");
+    claimedBoundJob("job-bound-1", first.budgetId, first.parentWaveId);
+    expect(
+      holdMemoryJob(db, {
+        jobId: "job-bound-1",
+        owner: "owner-1",
+        leaseGeneration: 1,
+        reason: "model_config_rejected",
+        detail: "models.json names a model the provider rejected",
+        now: T0,
+      }),
+      "the hold CAS must match the claim the fixture wrote",
+    ).toBe(true);
+    expect(jobRow("job-bound-1")).toEqual({
+      budget_id: first.budgetId,
+      state: "pending",
+      hold_reason: "model_config_rejected",
+    });
+
+    // The wake sees no runnable work (the only job is held) and retires run 1.
+    const retired = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(60_000),
+      lanePending: false,
+    });
+    expect(retired.budgetId).toBe(first.budgetId);
+    expect(retired.state).toBe("completed");
+    expect(budgetCount()).toBe(1);
+
+    // STILL HELD: nothing moves, nothing is minted, the hold is intact.
+    const stillHeld = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(2 * 60_000),
+      lanePending: false,
+    });
+    expect(stillHeld.budgetId).toBe(first.budgetId);
+    expect(stillHeld.state).toBe("completed");
+    expect(budgetCount()).toBe(1);
+    expect(
+      jobRow("job-bound-1"),
+      "a job that is still held must not be moved off its run",
+    ).toEqual({
+      budget_id: first.budgetId,
+      state: "pending",
+      hold_reason: "model_config_rejected",
+    });
+
+    // The operator fixes the setting.
+    expect(releaseHeldJobs(db, "model_config_rejected")).toBe(1);
+    const reopened = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(3 * 60_000),
+      lanePending: false,
+    });
+    expect(reopened.state, "the released job is real work and must open run 2").toBe("active");
+    expect(reopened.budgetId).not.toBe(first.budgetId);
+    expect(reopened.runSeq).toBe(2);
+    expect(budgetCount()).toBe(2);
+    expect(
+      jobRow("job-bound-1"),
+      "a released job left on the retired run can never be claimed again",
+    ).toEqual({
+      budget_id: reopened.budgetId,
+      state: "pending",
+      hold_reason: null,
+    });
+
+    // And the claim path agrees: the job resolves to the LIVE run, not the
+    // retired one, so the model call is charged to run 2 and is not refused.
+    const peeked = peekResolvedModelBudget(db, { jobId: "job-bound-1" });
+    expect("budget" in peeked && peeked.budget.budgetId).toBe(reopened.budgetId);
+    expect(
+      findExhaustedModelBudgetForClaim(db, {
+        jobId: "job-bound-1",
+        parentWaveId: "maintenance",
+        now: at(4 * 60_000),
+      }),
+      "a job on the live run must not be refused",
+    ).toBeNull();
+  });
+
   it("an active run with lane work is returned unchanged", () => {
     const first = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
@@ -331,7 +519,12 @@ describe("issue #175 — session-start-maintenance spawns the extract lane", () 
     for (const dir of roots) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  const fixture = (sessionPending: boolean) => {
+  /**
+   * `configHold` stubs `currentModelConfigHold` to a live hold (issue #177
+   * item 2). An explicit local export wins over `export *` for the same name,
+   * so the rest of the real module is untouched.
+   */
+  const fixture = (sessionPending: boolean, configHold = false) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-lane-slice-"));
     roots.push(root);
     const scripts = path.join(root, "scripts");
@@ -352,7 +545,11 @@ describe("issue #175 — session-start-maintenance spawns the extract lane", () 
     const budgetModule = pathToFileURL(path.resolve("dist/model-budget.js")).href;
     fs.writeFileSync(
       path.join(dist, "model-budget.js"),
-      `export * from ${JSON.stringify(budgetModule)};`,
+      `export * from ${JSON.stringify(budgetModule)};${
+        configHold
+          ? `\nexport function currentModelConfigHold(){return{model:'held-fixture-model'};}`
+          : ""
+      }`,
     );
     fs.writeFileSync(
       path.join(dist, "db.js"),
@@ -521,6 +718,43 @@ describe("issue #175 — session-start-maintenance spawns the extract lane", () 
     const check = new Database(f.dbFile);
     try {
       expect(check.prepare("SELECT COUNT(*) AS n FROM model_work_budgets").get()).toEqual({ n: 1 });
+    } finally {
+      check.close();
+    }
+  });
+
+  /**
+   * Issue #177 item 2 — a model-config hold must not mint a run either.
+   *
+   * The hold was read AFTER the mint, so a drained `completed` automatic budget
+   * plus one pending session opened a brand-new run on every wake past the
+   * 15-minute deadline (4/hour, 96/day) that no worker would ever use: the same
+   * hold then skipped every model lane the run existed for. The hold already
+   * stops the model lanes, so the wave must not be held open for them.
+   */
+  it("a model-config hold mints no run for lane work, and spawns no worker", async () => {
+    const f = fixture(true, true);
+    await runHook(f);
+    const spawns = spawnedScripts(f);
+    // The instrument's positive control: this run WAS being recorded.
+    expect(spawns, "the ledger must prove it was recording").toContain("sync-export-hook.js");
+    expect(
+      spawns,
+      "a held model lane must not spawn the extract worker",
+    ).not.toContain("backfill-extract-worker.js");
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+    expect(fs.existsSync(f.spawned)).toBe(false);
+    const check = new Database(f.dbFile);
+    try {
+      expect(
+        check.prepare("SELECT COUNT(*) AS n FROM model_work_budgets").get(),
+        "a held wave must not mint a run no worker can use",
+      ).toEqual({ n: 1 });
+      expect(
+        check
+          .prepare("SELECT state, run_seq FROM model_work_budgets ORDER BY run_seq DESC LIMIT 1")
+          .get(),
+      ).toEqual({ state: "completed", run_seq: 1 });
     } finally {
       check.close();
     }

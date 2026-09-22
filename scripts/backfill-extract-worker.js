@@ -395,8 +395,9 @@ async function main() {
           } else if (result.skipped === "excluded_project") {
             // 정상 흐름이다 — 영구 마커가 써졌고 재시도 대상이 아니다. 이걸 transient+
             // escalate 로 세면 "다음 run 재시도"·"INTERNAL failures" 가 둘 다 거짓이
-            // 된다(R19 MEDIUM). SQL 필터는 exact, isExcludedProject 는 prefix 라
-            // 형제 경로(memex-x vs memex)에서 실제로 도달한다.
+            // 된다(R19 MEDIUM). 이슈 #177 이후 SQL 필터도 같은 경계 술어를 쓰므로
+            // 이 분기는 SQL 게이트를 통과하지 않는 진입점(SessionEnd 훅 경로)과
+            // 선정→처리 사이에 제외 목록이 바뀐 경우를 위한 안전망이다.
             log(
               `session ${next.sid}: skip (excluded_project) — 자기참조 repo, 정상 제외`,
             );

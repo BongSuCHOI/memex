@@ -28,6 +28,7 @@ import {
   recordResidentFactRevisions,
   validateTranscriptPath,
   validateWorkCapsulePatch,
+  validateWorkCapsulePatchWithTruncation,
 } from "../src/continuity-core.js";
 import { runContinuityWorker } from "../src/continuity-worker.js";
 import { purgeConversationFromIndex } from "../src/conversation-policy.js";
@@ -396,7 +397,15 @@ describe("epoch, residency, rehydration, and Capsule", () => {
       .toThrow(/exact required fields/);
     const { blockers: _omitted, ...missingField } = patch;
     expect(() => validateWorkCapsulePatch(missingField)).toThrow(/exact required fields/);
-    expect(() => validateWorkCapsulePatch({ ...patch, objective: "x".repeat(501) }))
+    // Issue #178: the 500-character scalar bound is STORAGE, not correctness —
+    // an overrun is clamped and recorded instead of killing the job (a retry
+    // cannot shorten a length violation, so all five attempts died on it). The
+    // bound is still enforced; only the remedy changed.
+    const clamped = validateWorkCapsulePatchWithTruncation({ ...patch, objective: "x".repeat(501) });
+    expect(clamped.patch.objective).toHaveLength(500);
+    expect(clamped.truncation.scalarClamps).toEqual({ objective: 501 });
+    // A non-string is a correctness failure and still throws on the same message.
+    expect(() => validateWorkCapsulePatch({ ...patch, objective: 501 }))
       .toThrow(/at most 500/);
     expect(() => validateWorkCapsulePatch({
       ...patch,

@@ -32,6 +32,7 @@ import {
 } from "./paths.js";
 import {
   EXTRACTION_STATE,
+  excludedCwdBoundarySql,
   freshClaimPredicate,
   getExtractionConfig,
   pendingExtractionCoreQuery,
@@ -449,13 +450,16 @@ export function getPipelineStatus(
       // Mirrors pendingExtractionCoreQuery's gate (including its any-exchange
       // cwd pollution check) so pending means exactly "work the pipeline will
       // actually do" — excluded sessions stay visible under their own name.
-      const exTerms: string[] = extractionGate.excludeProjects;
       // llmWorkdirCwdSql keeps status's pollution shape identical to the
       // worker's (pendingExtractionCoreQuery) — basename + mkdtemp suffix form.
+      // 🚨 이슈 #177: 제외 프로젝트도 **같은 경계 술어**를 공유한다. exact 매칭이면
+      // 하위 경로 세션이 `excludedProject` 대신 `pending` 으로 잡혀, 같은 status
+      // 출력 안에서 pending 과 excluded 가 서로 모순된다(합계가 total 을 넘는다).
+      const exclusion = excludedCwdBoundarySql("x.cwd", extractionGate.excludeProjects);
+      // 항당 3개로 확장된 바인딩. 이름이 말하듯 "항"이 아니라 "파라미터"다.
+      const exParams: string[] = exclusion.params;
       const pollutionClause = `${llmWorkdirCwdSql("x.cwd")}${
-        exTerms.length
-          ? " OR " + exTerms.map(() => "x.cwd = ?").join(" OR ")
-          : ""
+        exclusion.clause ? " OR " + exclusion.clause : ""
       }`;
       const gateRow = db
         .prepare(
@@ -492,7 +496,7 @@ export function getPipelineStatus(
           HAVING COUNT(*) < ? OR polluted = 1
         ) g`,
         )
-        .get(...exTerms, extractionGate.minExchanges) as {
+        .get(...exParams, extractionGate.minExchanges) as {
         c: number;
         byProject: number;
         belowMin: number;

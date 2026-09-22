@@ -81,6 +81,18 @@ const CAPPED_LIST_FIELDS = [
 ] as const;
 /** Floor for the last-resort scalar halving in `fitCapsulePatch` (issue #74). */
 const SCALAR_TRUNCATION_FLOOR = 60;
+/**
+ * Storage bound on `objective` / `currentState`, in UTF-16 CODE UNITS — the unit
+ * `String.length` uses, which is what this bound has always been measured in
+ * (issue #178: an overrun is clamped, not thrown).
+ */
+const MAX_CAPSULE_SCALAR_CHARS = 500;
+/**
+ * Issue #178: below this offset a word boundary is not worth honouring — cutting
+ * back to it would throw away more of the answer than the bound asks for, so the
+ * bound itself becomes the cut.
+ */
+const SCALAR_CLAMP_WORD_FLOOR = 300;
 
 /** `MEMEX_CAPSULE_MAX_CHARS` override, parsed like the model-budget env caps. */
 export function capsuleMaxChars(): number {
@@ -226,6 +238,11 @@ export interface WorkCapsule extends WorkCapsulePatch {
   truncatedFields: string[];
   /** Issue #85: per-field item counts a bound removed (`{kept, dropped}`). */
   itemCaps: Record<string, CapsuleItemCap>;
+  /**
+   * Issue #178: `{field: originalLength}` for each scalar the 500-character
+   * storage bound clamped. Absent field = the model stayed inside the bound.
+   */
+  scalarClamps: Record<string, number>;
   /** Issue #74: the stored projection is still above `MEMEX_CAPSULE_MAX_CHARS`. */
   overBudget: boolean;
   /** Character length of the model's patch before priority truncation. */
@@ -1452,10 +1469,12 @@ export interface CapsuleItemCap {
 interface TruncationLedger {
   fields: string[];
   itemCaps: Record<string, CapsuleItemCap>;
+  /** Issue #178: original length of each scalar the 500-char bound clamped. */
+  scalarClamps: Record<string, number>;
 }
 
 function newTruncationLedger(): TruncationLedger {
-  return { fields: [], itemCaps: {} };
+  return { fields: [], itemCaps: {}, scalarClamps: {} };
 }
 
 function noteTruncated(ledger: TruncationLedger, field: string): void {
@@ -1468,6 +1487,19 @@ function noteTruncated(ledger: TruncationLedger, field: string): void {
  * Called once per shortening step, so a list capped at validation and shortened
  * again for size reports the surviving count with the total it lost.
  */
+/**
+ * Record that the 500-character storage bound clamped `field`, which held
+ * `originalLength` characters (issue #178).
+ *
+ * A clamp is a truncation exactly as an item cap is (issue #85): the stored
+ * projection is not the model's whole answer, so `truncated` has to say so or
+ * the shorter text reads as what the model actually produced.
+ */
+function noteScalarClamp(ledger: TruncationLedger, field: string, originalLength: number): void {
+  noteTruncated(ledger, field);
+  ledger.scalarClamps[field] = originalLength;
+}
+
 function noteItemCap(ledger: TruncationLedger, field: string, kept: number, dropped: number): void {
   if (dropped <= 0) return;
   noteTruncated(ledger, field);
@@ -1571,6 +1603,13 @@ export interface CapsuleTruncation {
    * size-driven pass.
    */
   itemCaps: Record<string, CapsuleItemCap>;
+  /**
+   * Issue #178: `{field: originalLength}` for each of `objective` /
+   * `currentState` the 500-character storage bound clamped. An overrun is a
+   * storage fact, not a correctness one, so it is recorded here instead of
+   * killing the job — but it is never silent.
+   */
+  scalarClamps: Record<string, number>;
   originalChars: number;
   finalChars: number;
   maxChars: number;
@@ -1607,6 +1646,7 @@ function fitCapsulePatch(
     truncated: ledger.fields.length > 0,
     truncatedFields: ledger.fields,
     itemCaps: ledger.itemCaps,
+    scalarClamps: ledger.scalarClamps,
     originalChars,
     finalChars,
     maxChars: max,
@@ -1708,6 +1748,8 @@ function fitCapsulePatch(
 interface TruncationRecord {
   fields: string[];
   itemCaps: Record<string, CapsuleItemCap>;
+  /** Issue #178: original length of each scalar the 500-char bound clamped. */
+  scalarClamps: Record<string, number>;
   overBudget: boolean;
 }
 
@@ -1716,13 +1758,14 @@ function serializeTruncationRecord(truncation: CapsuleTruncation): string {
   const record: TruncationRecord = {
     fields: truncation.truncatedFields,
     itemCaps: truncation.itemCaps,
+    scalarClamps: truncation.scalarClamps,
     overBudget: truncation.overBudget,
   };
   return JSON.stringify(record);
 }
 
 function parseTruncationRecord(raw: unknown): TruncationRecord {
-  const empty: TruncationRecord = { fields: [], itemCaps: {}, overBudget: false };
+  const empty: TruncationRecord = { fields: [], itemCaps: {}, scalarClamps: {}, overBudget: false };
   if (typeof raw !== "string" || !raw.trim()) return empty;
   let parsed: unknown;
   try {
@@ -1748,7 +1791,14 @@ function parseTruncationRecord(raw: unknown): TruncationRecord {
       itemCaps[field] = { kept: cap.kept, dropped: cap.dropped };
     }
   }
-  return { fields, itemCaps, overBudget: record.overBudget === true };
+  // Rows written before the clamp existed (#178) carry no `scalarClamps` key.
+  const scalarClamps: Record<string, number> = {};
+  if (record.scalarClamps && typeof record.scalarClamps === "object" && !Array.isArray(record.scalarClamps)) {
+    for (const [field, value] of Object.entries(record.scalarClamps as Record<string, unknown>)) {
+      if (typeof value === "number" && Number.isFinite(value)) scalarClamps[field] = value;
+    }
+  }
+  return { fields, itemCaps, scalarClamps, overBudget: record.overBudget === true };
 }
 
 export function validateWorkCapsulePatch(value: unknown): WorkCapsulePatch {
@@ -1775,6 +1825,62 @@ interface ParsedWorkCapsulePatch {
   patch: WorkCapsulePatch;
   /** Item-cap drops counted while parsing, recorded against the final patch. */
   itemCapDrops: Record<string, number>;
+  /**
+   * Issue #178: original length of each scalar the 500-character bound clamped
+   * while parsing, recorded against the final patch beside `itemCapDrops`.
+   */
+  scalarClamps: Record<string, number>;
+}
+
+/**
+ * Slice `text` to at most `end` UTF-16 code units, never through a code point.
+ *
+ * 🚨 `String.prototype.slice` counts CODE UNITS, so a cut whose last kept unit is
+ * a high surrogate keeps half of an astral code point (emoji, rare CJK, many
+ * scripts) and produces a malformed string — `isWellFormed() === false` — in the
+ * Capsule row, in its JSON serialization and in every surface that renders it.
+ * A clamp is a storage concession; corrupting text is not part of the deal, so
+ * the orphaned half is dropped and the result is one unit shorter.
+ */
+function codePointSafeSlice(text: string, end: number): string {
+  let cut = Math.min(Math.max(end, 0), text.length);
+  if (cut > 0 && cut < text.length) {
+    const last = text.charCodeAt(cut - 1);
+    // High surrogate (0xD800–0xDBFF) as the last kept unit: its low half is on
+    // the other side of the cut, so drop the whole code point.
+    if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+  }
+  return text.slice(0, cut);
+}
+
+/**
+ * Issue #178: clamp an over-long capsule scalar at a word boundary.
+ *
+ * Cuts back to the last whitespace inside the bound so no half word is stored as
+ * the model's state, and falls back to the bound itself when that boundary sits
+ * before `SCALAR_CLAMP_WORD_FLOOR` (a 500-unit token has no boundary worth
+ * honouring). Nothing is appended — an ellipsis would be content the model never
+ * wrote, and the length is recorded as telemetry instead.
+ *
+ * 🚨 UNIT: `MAX_CAPSULE_SCALAR_CHARS`, the caller's `raw.length <= …` check and
+ * the recorded `scalarClamps` value are all UTF-16 CODE UNITS — the same unit
+ * `String.length` and the storage bound have always used — so the telemetry and
+ * the bound can never disagree. Both cuts below additionally land on a code
+ * POINT boundary, which is why a clamped value can come out one unit under the
+ * bound.
+ */
+function clampCapsuleScalar(raw: string): string {
+  const head = codePointSafeSlice(raw, MAX_CAPSULE_SCALAR_CHARS);
+  let boundary = -1;
+  for (let i = head.length - 1; i >= 0; i--) {
+    if (/\s/.test(head[i])) { boundary = i; break; }
+  }
+  // Whitespace is always BMP, so `head[boundary]` never splits a pair — but the
+  // slice is taken through the same helper so neither cut can drift.
+  const cut = boundary >= SCALAR_CLAMP_WORD_FLOOR
+    ? codePointSafeSlice(head, boundary)
+    : head;
+  return cut.trim();
 }
 
 function parseWorkCapsulePatchStructure(value: unknown): ParsedWorkCapsulePatch {
@@ -1802,12 +1908,25 @@ function parseWorkCapsulePatchStructure(value: unknown): ParsedWorkCapsulePatch 
     throw new Error("sourceExchangeIds contains invalid sources");
   }
   const sources = [...new Set(input.sourceExchangeIds as string[])];
+  const scalarClamps: Record<string, number> = {};
+  /**
+   * Issue #178: the 500-character bound is STORAGE, so an overrun is clamped and
+   * recorded. It used to throw, and a retry cannot shorten a length violation —
+   * all five attempts failed identically, the `capsule_update` job died, the
+   * checkpoint went failed-visible and the evidence frontier advanced past the
+   * page, losing a whole page of session evidence over a bound the patch could
+   * simply satisfy. A non-string is still a correctness failure and still throws.
+   */
   const strictScalar = (field: "objective" | "currentState"): string => {
     const raw = input[field];
-    if (typeof raw !== "string" || raw.length > 500) {
-      throw new Error(`${field} must be text of at most 500 characters`);
+    if (typeof raw !== "string") {
+      throw new Error(`${field} must be text of at most ${MAX_CAPSULE_SCALAR_CHARS} characters`);
     }
-    return raw.trim();
+    // Both the check and the recorded original length are UTF-16 code units,
+    // the same unit as the bound itself (see MAX_CAPSULE_SCALAR_CHARS).
+    if (raw.length <= MAX_CAPSULE_SCALAR_CHARS) return raw.trim();
+    scalarClamps[field] = raw.length;
+    return clampCapsuleScalar(raw);
   };
   const itemCapDrops: Record<string, number> = {};
   const patch: WorkCapsulePatch = {
@@ -1822,7 +1941,7 @@ function parseWorkCapsulePatchStructure(value: unknown): ParsedWorkCapsulePatch 
     carryFactRevisions: carry.slice(0, 64),
     sourceExchangeIds: sources,
   };
-  return { patch, itemCapDrops };
+  return { patch, itemCapDrops, scalarClamps };
 }
 
 /**
@@ -1854,6 +1973,12 @@ function finishWorkCapsulePatch(
     hypotheses: capEvidence(parsed.patch.hypotheses, "hypotheses"),
   };
   const ledger = newTruncationLedger();
+  // Issue #178: the scalar clamps were applied while parsing (the bound is per
+  // field, not per serialized patch), so they are recorded here beside the
+  // item caps — the same two-step as issue #85.
+  for (const [field, originalLength] of Object.entries(parsed.scalarClamps)) {
+    noteScalarClamp(ledger, field, originalLength);
+  }
   for (const field of CAPPED_LIST_FIELDS) {
     // Issue #85 counted the string-list drops while parsing, the evidence-list
     // drops just above; `kept` is the surviving length either way.
@@ -2042,6 +2167,7 @@ export function applyWorkCapsulePatch(
           input.evidencePage,
         ),
         itemCapDrops: parsed.itemCapDrops,
+        scalarClamps: parsed.scalarClamps,
       }
       : parsed;
     const finished = finishWorkCapsulePatch(normalized);
@@ -2180,11 +2306,17 @@ export function applyWorkCapsulePatch(
     const caps = Object.entries(truncation.itemCaps)
       .map(([field, cap]) => `${field}(kept=${cap.kept},dropped=${cap.dropped})`)
       .join(",");
+    // Issue #178: name the clamped scalars and what they came in at, so the log
+    // explains a shorter `currentState` instead of leaving it unaccounted for.
+    const clamps = Object.entries(truncation.scalarClamps)
+      .map(([field, originalLength]) => `${field}(${originalLength})`)
+      .join(",");
     console.warn(
       `[memex] WARN capsule patch truncated for workstream ${input.workstreamId}: ` +
         `${truncation.originalChars} -> ${truncation.finalChars} chars ` +
         `(max=${truncation.maxChars}, MEMEX_CAPSULE_MAX_CHARS) fields=${truncation.truncatedFields.join(",") || "none"}` +
         (caps ? ` items=${caps}` : "") +
+        (clamps ? ` clamped=${clamps}` : "") +
         (truncation.overBudget ? " overBudget=true" : ""),
     );
   }
@@ -2276,6 +2408,7 @@ export function readWorkCapsule(
     truncated: Number(row.truncated ?? 0) === 1,
     truncatedFields: truncationRecord.fields,
     itemCaps: truncationRecord.itemCaps,
+    scalarClamps: truncationRecord.scalarClamps,
     overBudget: truncationRecord.overBudget,
     originalChars: row.original_chars == null ? null : Number(row.original_chars),
   };

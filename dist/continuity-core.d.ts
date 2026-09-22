@@ -181,6 +181,11 @@ export interface WorkCapsule extends WorkCapsulePatch {
     truncatedFields: string[];
     /** Issue #85: per-field item counts a bound removed (`{kept, dropped}`). */
     itemCaps: Record<string, CapsuleItemCap>;
+    /**
+     * Issue #178: `{field: originalLength}` for each scalar the 500-character
+     * storage bound clamped. Absent field = the model stayed inside the bound.
+     */
+    scalarClamps: Record<string, number>;
     /** Issue #74: the stored projection is still above `MEMEX_CAPSULE_MAX_CHARS`. */
     overBudget: boolean;
     /** Character length of the model's patch before priority truncation. */
@@ -352,6 +357,13 @@ export interface CapsuleTruncation {
      * size-driven pass.
      */
     itemCaps: Record<string, CapsuleItemCap>;
+    /**
+     * Issue #178: `{field: originalLength}` for each of `objective` /
+     * `currentState` the 500-character storage bound clamped. An overrun is a
+     * storage fact, not a correctness one, so it is recorded here instead of
+     * killing the job — but it is never silent.
+     */
+    scalarClamps: Record<string, number>;
     originalChars: number;
     finalChars: number;
     maxChars: number;

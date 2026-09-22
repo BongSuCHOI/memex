@@ -361,6 +361,75 @@ describe("durable model work budget", () => {
     db.close();
   });
 
+  /**
+   * Issue #177, Codex round 2 — `completed` is a spent source state too.
+   *
+   * Excluding held jobs from `countPendingModelWork` made wave selection retire
+   * the run a held job is bound to as `completed` (not `exhausted`). Both
+   * rollover paths only looked at `exhausted`, so once the hold was released the
+   * job stayed bound to a run nothing would ever adopt: before that run's
+   * deadline the model call is charged to it, after the deadline every claim is
+   * refused with `deadline`. `hold_reason IS NULL` still gates the move — a job
+   * that is STILL held never travels.
+   */
+  it("a released job stranded on a COMPLETED run is adopted by both rollover paths (#177)", () => {
+    const db = new Database(":memory:");
+    db.exec(MEMORY_JOBS_DDL);
+    ensureModelBudgetSchema(db);
+    const now = new Date("2026-09-22T05:00:00.000Z");
+    const past = new Date(now.getTime() - 60 * 60_000).toISOString();
+    const future = new Date(now.getTime() + 60 * 60_000).toISOString();
+    const wave = (parentWaveId: string, state: string, deadlineAt: string | null) => {
+      const budget = getOrCreateModelWorkBudget(db, { parentWaveId, limits: { maxAttempts: 3, deadlineAt } });
+      db.prepare("UPDATE model_work_budgets SET state = ?, automatic = 0 WHERE budget_id = ?")
+        .run(state, budget.budgetId);
+      return budget.budgetId;
+    };
+    const job = (id: string, budgetId: string, hold: string | null) => {
+      db.prepare(`INSERT INTO memory_jobs (job_id, kind, state, available_at, attempts, hold_reason, updated_at, budget_id)
+        VALUES (?, 'capsule_update', 'retry', ?, 1, ?, ?, ?)`).run(id, past, hold, past, budgetId);
+    };
+    const row = (id: string) =>
+      db.prepare("SELECT state, budget_id FROM memory_jobs WHERE job_id = ?").get(id) as
+        { state: string; budget_id: string };
+
+    // Path 1: the automatic continuity-wave rollover.
+    const retired = wave("continuity:ws-177", "completed", past);
+    job("ws177-held", retired, "model_config_rejected");
+    // Still held: a `completed` run with nothing runnable on it stays closed.
+    expect(
+      rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } }),
+      "a held job must not open a run it cannot use",
+    ).toEqual([]);
+    expect(row("ws177-held")).toMatchObject({ budget_id: retired });
+
+    db.prepare("UPDATE memory_jobs SET hold_reason = NULL WHERE job_id = 'ws177-held'").run();
+    const rolled = rolloverSpentWaveBudgets(db, { now, limits: { maxAttempts: 3, deadlineAt: future } });
+    expect(rolled).toHaveLength(1);
+    expect(rolled[0]).toMatchObject({ budgetId: retired, reboundJobIds: ["ws177-held"] });
+    expect(getModelWorkBudget(db, rolled[0].nextBudgetId)).toMatchObject({ state: "active", runSeq: 2 });
+    expect(row("ws177-held")).toMatchObject({ state: "pending", budget_id: rolled[0].nextBudgetId });
+    // The claim path now resolves to the live run instead of the retired one.
+    expect(peekResolvedModelBudget(db, { jobId: "ws177-held" })).toMatchObject({
+      budget: { budgetId: rolled[0].nextBudgetId },
+    });
+
+    // Path 2: the foreground operator run (`memex backfill <stage>`).
+    const retiredFg = wave("continuity:ws-177b", "completed", past);
+    job("ws177b-held", retiredFg, "model_config_rejected");
+    const target = wave("backfill", "active", future);
+    expect(
+      rebindSpentQueueJobsToBudget(db, { budgetId: target, kind: "capsule_update", now }),
+      "a held job must not be dragged onto the foreground run either",
+    ).toEqual([]);
+    db.prepare("UPDATE memory_jobs SET hold_reason = NULL WHERE job_id = 'ws177b-held'").run();
+    expect(
+      rebindSpentQueueJobsToBudget(db, { budgetId: target, kind: "capsule_update", now }),
+    ).toEqual(["ws177b-held"]);
+    expect(row("ws177b-held")).toMatchObject({ state: "pending", budget_id: target });
+    db.close();
+  });
+
   it("budgetStopApplies: only this run's budget (or an unknown one) stops a foreground run (post-release #146)", () => {
     expect(budgetStopApplies("run-1", "run-1")).toBe(true);
     expect(budgetStopApplies("run-1", null)).toBe(true);

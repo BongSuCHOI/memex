@@ -124,6 +124,31 @@ async function main() {
       );
     } catch { /* non-fatal: ontology backfill resumes on a later session */ }
 
+    // Issue #31 — one lookup, used to gate the MODEL lanes only.
+    //
+    // A rejected model selection must stop model work and nothing else. So this
+    // gates the three derived model workers below, and deliberately does NOT
+    // gate sync-export, the re-embed worker, reconcileFactTiers, or the
+    // Continuity worker: none of those spend a model call, and the Continuity
+    // worker also drains P0 conversation capture (it gates its own capsule lane
+    // internally instead).
+    //
+    // 🚨 이슈 #177 항목 2 — 이 조회는 예산 발행 **이전**이어야 한다. 이전에는 발행
+    // 뒤에 읽었기 때문에, 지속적인 hold 아래에서도 pending 레인이 있으면 매 wake 가
+    // 15분 데드라인을 넘긴 run 을 새로 열었다(시간당 4개, 하루 96개). 그 run 을 쓸
+    // 워커는 없다 — 바로 이 hold 가 아래 모델 레인 전부를 건너뛰기 때문이다.
+    let configHeld = null;
+    try {
+      const { currentModelConfigHold } = await import('../dist/model-budget.js');
+      configHeld = currentModelConfigHold(db);
+    } catch { /* non-fatal: a pre-0.7.0 database has no hold table */ }
+    const skipForConfigHold = (script) => {
+      console.error(
+        `session-start-maintenance: skipping ${script} — model work is held on a model ` +
+          `setting ("${configHeld.model}"). Fix it and it resumes automatically: memex models show`,
+      );
+    };
+
     // One named maintenance wave is shared by detached sibling workers. The
     // durable row survives restarts. Conditional rollover preserves its ledger
     // and is limited by a cooldown plus the shared rolling attempt cap.
@@ -138,7 +163,21 @@ async function main() {
       // `countPendingModelWork` skips unbound ontology work when it is off: a
       // disabled lane is an intentional local backlog nothing will ever drain,
       // and it must not hold the shared maintenance wave open forever.
-      lanePending: Boolean(pendingExtract || (pendingOnto && isAutomaticOntologyEnabled())),
+      //
+      // #177 item 2: while a model-config hold is live the wave is NOT held
+      // open for the lanes. The hold already stops every model lane below
+      // (`skipForConfigHold`), so a run minted for them is a run nothing can
+      // ever use — and the rollover would repeat on every wake past the
+      // deadline. The lanes stay pending and reopen the wave once the hold is
+      // cleared, which is the state the operator has to fix anyway.
+      //
+      // This flag covers the LANE half only. The queue half lives one level
+      // down, in `countPendingModelWork`, which no longer counts a `memory_jobs`
+      // row carrying a `hold_reason` — otherwise a single held job reopened the
+      // run here no matter what this caller passed (Codex review of #177).
+      lanePending: configHeld
+        ? false
+        : Boolean(pendingExtract || (pendingOnto && isAutomaticOntologyEnabled())),
     });
     const childEnv = {
       ...process.env,
@@ -150,26 +189,6 @@ async function main() {
       // path — it carried automatic = 0).
       MEMEX_MAINTENANCE_WAVE_ID: maintenanceBudget.rootWaveId ?? maintenanceBudget.parentWaveId,
       MEMEX_MODEL_BUDGET_ID: maintenanceBudget.budgetId,
-    };
-
-    // Issue #31 — one lookup, used to gate the MODEL lanes only.
-    //
-    // A rejected model selection must stop model work and nothing else. So this
-    // gates the three derived model workers below, and deliberately does NOT
-    // gate sync-export, the re-embed worker, reconcileFactTiers, or the
-    // Continuity worker: none of those spend a model call, and the Continuity
-    // worker also drains P0 conversation capture (it gates its own capsule lane
-    // internally instead).
-    let configHeld = null;
-    try {
-      const { currentModelConfigHold } = await import('../dist/model-budget.js');
-      configHeld = currentModelConfigHold(db);
-    } catch { /* non-fatal: a pre-0.7.0 database has no hold table */ }
-    const skipForConfigHold = (script) => {
-      console.error(
-        `session-start-maintenance: skipping ${script} — model work is held on a model ` +
-          `setting ("${configHeld.model}"). Fix it and it resumes automatically: memex models show`,
-      );
     };
 
     const spawnDetached = (script, args = []) => {

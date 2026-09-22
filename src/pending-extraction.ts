@@ -182,6 +182,39 @@ export function failureMarkerUpsertSql(): string {
 }
 
 /**
+ * SQL twin of fact-extractor's `isExcludedProject` boundary rule, for one cwd
+ * column: `cwd === p || cwd.startsWith(p + '/')`.
+ *
+ * 🚨 이슈 #177. 이전 형태는 `cwd = ?` 하나뿐이었다 — 제외 프로젝트의 **하위
+ * 디렉터리** 세션이 선정된 뒤 추출기 안에서만 걸러지고, 추출기는 continuity
+ * 모드 쿼리가 읽는 마커를 남기지 않으므로 그 세션은 영원히 pending 이었다.
+ * #175 이후에는 그 영구 pending 레인이 매 wake 마다 자동 예산을 다시 열어
+ * (모델 호출 0 → 24h 캡도 안 걸림) 워커를 헛돌리고 LIMIT 40 페이지를 잠식한다.
+ *
+ * raw prefix (`cwd LIKE p || '%'`) 는 반대 방향 결함이다 — `/pother` 처럼
+ * 접두사만 같은 **형제 프로젝트**를 함께 배제한다. 그래서 경계('/')를 명시한다.
+ * LIKE 를 쓰지 않는 이유는 제외 경로에 `%`/`_` 가 들어와도 이스케이프가 필요
+ * 없게 하기 위한 것이다(경로에 둘 다 합법이다).
+ *
+ * 항당 파라미터 **3개**(`= ?`, `length(?)`, `? || '/'`)를 돌려준다. 호출자는
+ * 이 배열을 그대로 펼쳐야 한다.
+ */
+export function excludedCwdBoundarySql(
+   column: string,
+   terms: string[],
+): { clause: string; params: string[] } {
+   return {
+      clause: terms
+         .map(
+            () =>
+               `(${column} = ? OR substr(${column}, 1, length(?) + 1) = ? || '/')`,
+         )
+         .join(" OR "),
+      params: terms.flatMap((term) => [term, term, term]),
+   };
+}
+
+/**
  * Core SELECT over pending-extraction sessions, through GROUP BY / HAVING but
  * WITHOUT any ORDER BY / LIMIT — callers wrap it:
  *   worker: `${sql} ORDER BY ts DESC LIMIT ?`   (params + limit)
@@ -195,14 +228,17 @@ export function pendingExtractionCoreQuery(
    sql: string;
    params: string[];
 } {
-   const exTerms = cfg.excludeProjects;
+   // 경계 매칭 — 추출기(isExcludedProject)와 **동일 술어**. 항당 3 파라미터.
+   const ex = excludedCwdBoundarySql("x.cwd", cfg.excludeProjects);
    // `x.session_id IS NOT NULL` is load-bearing: one NULL inside NOT IN makes the
    // whole predicate NULL (3-valued logic) → zero pending sessions → silent drain.
+   // A NULL `x.cwd` makes every term below NULL, so such a row never enters the
+   // subquery at all — an exclusion cannot swallow a cwd-less session.
    const exClause = `AND e.session_id NOT IN (
       SELECT DISTINCT x.session_id FROM exchanges x
       WHERE x.session_id IS NOT NULL
         AND (${llmWorkdirCwdSql("x.cwd")}
-      ${exTerms.length ? "OR " + exTerms.map(() => "x.cwd = ?").join(" OR ") : ""})
+      ${ex.clause ? "OR " + ex.clause : ""})
     )`;
    if (mode === "legacy") {
       const sql = `
@@ -224,7 +260,7 @@ export function pendingExtractionCoreQuery(
       ${exClause}
     GROUP BY e.session_id
     HAVING COUNT(*) >= ${cfg.minExchanges}`;
-      return { sql, params: exTerms };
+      return { sql, params: ex.params };
    }
 
    // Continuity completion is exact per exchange generation. Legacy SEED,
@@ -252,5 +288,5 @@ export function pendingExtractionCoreQuery(
       ${exClause}
     GROUP BY e.session_id
     HAVING COUNT(*) >= ${cfg.minExchanges}`;
-   return { sql, params: exTerms };
+   return { sql, params: ex.params };
 }
