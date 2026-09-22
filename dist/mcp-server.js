@@ -29049,13 +29049,13 @@ var ABBREVIATIONS = /* @__PURE__ */ new Set([
   "st"
 ]);
 var WORD_BEFORE_TERMINATOR = /([A-Za-z][A-Za-z.]*)$/;
-var LIST_MARKER_ONLY = /^[([]?(\d+|[A-Za-z])[)\]]?$/;
+var ENDS_IN_LIST_MARKER = /(?:^|[\s:])[([]?\d+[)\]]?$|(?:^|:\s*)[([]?[A-Za-z][)\]]?$/;
 function isSentenceEnd(flat, terminatorAt, stop, segmentStart) {
   const next = flat[stop];
   if (next !== void 0 && !/\s/.test(next)) return false;
   const rest = flat.slice(stop).trimStart();
   if (/^[a-z]/.test(rest)) return false;
-  if (LIST_MARKER_ONLY.test(flat.slice(segmentStart, terminatorAt).trim())) return false;
+  if (ENDS_IN_LIST_MARKER.test(flat.slice(segmentStart, terminatorAt).trim())) return false;
   const before = WORD_BEFORE_TERMINATOR.exec(flat.slice(0, terminatorAt));
   if (!before) return true;
   return !ABBREVIATIONS.has(before[1].toLowerCase());

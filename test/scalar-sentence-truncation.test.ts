@@ -121,6 +121,19 @@ describe("issue #182 — scalar model text is cut at a sentence boundary", () =>
     expect(truncateAtSentenceBoundary(text, 26)).toBe("The API (v2) is stable.…");
   });
 
+  it("does not treat a marker at the end of a segment as a sentence end (#185 round 2)", () => {
+    // `Next steps: 1.` — the segment is `Next steps: 1`, not just `1`.
+    const text = "Next steps: 1. Verify migration before deployment and confirm all tests pass before merging.";
+    const rendered = truncateAtSentenceBoundary(text, 34);
+    expect(rendered).not.toBe("Next steps: 1.…");
+    expect(rendered.startsWith("Next steps: 1. Verify")).toBe(true);
+    // A single letter after a colon is a marker; after an ordinary word it is not.
+    expect(truncateAtSentenceBoundary("Steps: A. Verify the gate before merging the release.", 24)).not.toBe("Steps: A.…");
+    expect(truncateAtSentenceBoundary("Use option A. Deployment is approved only after sign-off.", 37)).toBe("Use option A.…");
+    // A sentence ending in a number is the accepted cost: it falls back to whitespace.
+    expect(truncateAtSentenceBoundary("Bump to version 2. Then verify the gate again.", 30).endsWith("…")).toBe(true);
+  });
+
   it("keeps a single-letter word as a real sentence end (external review round 2)", () => {
     // `option A.` ends a sentence; rejecting it as an initial dropped the
     // condition that followed and re-created the #182 inversion.

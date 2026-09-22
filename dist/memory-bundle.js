@@ -70,11 +70,18 @@ const ABBREVIATIONS = new Set([
 /** The word immediately before a terminator, dots included (`e.g`, `paths.ts`). */
 const WORD_BEFORE_TERMINATOR = /([A-Za-z][A-Za-z.]*)$/;
 /**
- * A bare list marker: `1`, `12`, `A`, and the bracketed forms `(1)`, `[a]`.
- * Matched against the whole segment since the previous accepted boundary, so
- * `Use option A` (a real sentence ending on a single letter) is NOT a marker.
+ * A segment that ENDS in a list marker, so the terminator after it belongs to
+ * the marker and not to a sentence (external review, round 2 of #185: the
+ * whole-segment form missed `Next steps: 1. Verify …`, whose segment is
+ * `Next steps: 1`). Two shapes:
+ *   - a numeric token as the last word — `1`, `12`, `(3)`, `Next steps: 1`,
+ *     `steps 1` — a number rarely ends a sentence, and a numbered instruction
+ *     losing its body is the worse mistake;
+ *   - a single Latin letter that is the whole segment or follows a colon —
+ *     `A`, `(a)`, `Steps: A` — while `Use option A` (a letter after an ordinary
+ *     word) stays a real sentence end, the round-2 case of v0.7.30.
  */
-const LIST_MARKER_ONLY = /^[([]?(\d+|[A-Za-z])[)\]]?$/;
+const ENDS_IN_LIST_MARKER = /(?:^|[\s:])[([]?\d+[)\]]?$|(?:^|:\s*)[([]?[A-Za-z][)\]]?$/;
 /**
  * 🚨 #182, external review: is the terminator at `terminatorAt` (whose match,
  * closers included, ends at `stop`) really the end of a sentence?
@@ -114,9 +121,10 @@ function isSentenceEnd(flat, terminatorAt, stop, segmentStart) {
     // The witness is the segment since the last accepted boundary: when all it
     // holds is the marker itself there is no sentence to keep, so the cut falls
     // through to the whitespace rule and the reader keeps the instruction.
-    // `Use option A.` survives — its segment is `Use option A`, not `A` (the
-    // round-2 case that also forbids putting single letters in ABBREVIATIONS).
-    if (LIST_MARKER_ONLY.test(flat.slice(segmentStart, terminatorAt).trim()))
+    // `Use option A.` survives — a single letter counts as a marker only when it
+    // is the whole segment or follows a colon (the v0.7.30 round-2 case that
+    // also forbids putting single letters in ABBREVIATIONS).
+    if (ENDS_IN_LIST_MARKER.test(flat.slice(segmentStart, terminatorAt).trim()))
         return false;
     // (3) An abbreviation is not a sentence end.
     const before = WORD_BEFORE_TERMINATOR.exec(flat.slice(0, terminatorAt));
