@@ -575,11 +575,27 @@ export declare function claimMaintenanceWake(db: Database.Database, now?: Date):
  * SessionStart continuation. Selection, rollover and target moves are one
  * write transaction; simultaneous sessions cannot mint independent budgets.
  * Explicit worker/operator budgets retain their existing resume contract.
+ *
+ * 🚨 Issue #175 — LANE pending and JOB pending are different questions.
+ * `countPendingModelWork` reads the queue (`memory_jobs`, `model_work_targets`),
+ * but a `fact_extract` job is only ever CREATED by the extraction worker, and
+ * that worker only spawns while this budget is `active`. So a queue-only answer
+ * deadlocks the moment the queue drains: the wake retires the run to
+ * `completed`, the worker never spawns, no job is ever created, and the next
+ * wake sees the same empty queue (observed: seven sessions pending for five
+ * days behind three `completed` runs with an empty 24h window). The caller
+ * therefore passes `lanePending` — whether a LANE has work one level above the
+ * queue (a pending extraction session, a pending ontology fact) — and lane work
+ * counts as pending: it blocks the `completed` transition and reopens a
+ * retired run. A `completed` run spent nothing abnormally, so reopening it is a
+ * clock-only stop (no 60-minute cooldown); the rolling 24h cap still applies.
  */
 export declare function getOrCreateAutomaticMaintenanceModelBudget(db: Database.Database, input?: {
     parentWaveId?: string;
     limits?: Partial<ModelBudgetLimits>;
     now?: Date;
+    /** #175: a lane has work the queue cannot show yet. Default `false`. */
+    lanePending?: boolean;
 }): ModelWorkBudget;
 export interface SpentWaveRollover {
     budgetId: string;

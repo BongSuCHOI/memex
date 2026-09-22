@@ -2,6 +2,38 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.28 - 2026-09-22
+
+Automatic fact extraction stalled on the work Mac for four days (#175).
+
+### Maintenance
+
+- The automatic maintenance budget no longer closes itself against work it
+  cannot see (#175). `getOrCreateAutomaticMaintenanceModelBudget` decided "is
+  there pending work?" from `memory_jobs` and `model_work_targets` only, but a
+  `fact_extract` job is created by the extraction worker itself — and the
+  SessionStart hook spawns that worker only while the budget is `active`. Once a
+  root's queue had fully drained (the work Mac reached "all YES" on 2026-09-18 for
+  the first time), every later wake found no jobs, retired the budget as
+  `completed`, and therefore never spawned the worker that would have registered
+  the seven sessions waiting at the session level. The hook now computes the lane
+  predicates (pending extraction sessions; pending ontology facts while automatic
+  ontology is enabled) before minting the budget and passes `lanePending`, and a
+  retired run with lane work reopens as the next run of the same lineage.
+- A retired run skips the 60-minute cooldown only when its ledger shows no spend:
+  `exhausted_reason` NULL or `deadline` and attempts used below the cap (Codex
+  review). A run that spent its cap and was then retired because the queue was
+  empty still serves the cooldown; the rolling 24-hour cap applies either way.
+- Regression tests pin the live shape (a `completed` latest automatic budget, a
+  pending session with no `memory_jobs` row), the cooldown witnesses, and the hook
+  slice end to end with the child's spawn calls recorded rather than timed.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change. Roots that are already
+stalled recover on the next session start; `memex backfill extract` in a terminal
+drains them immediately.
+
 ## 0.7.27 - 2026-09-18
 
 Two post-release readings of 0.7.26 (#169, #171).
