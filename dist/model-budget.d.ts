@@ -596,6 +596,12 @@ export declare function getOrCreateAutomaticMaintenanceModelBudget(db: Database.
     now?: Date;
     /** #175: a lane has work the queue cannot show yet. Default `false`. */
     lanePending?: boolean;
+    /**
+     * #184: a model-config hold is live, so every model lane this wave exists
+     * for is being skipped. Default `false`. While it is true the wave is
+     * frozen — see the guard at the top of the transaction.
+     */
+    holdActive?: boolean;
 }): ModelWorkBudget;
 export interface SpentWaveRollover {
     budgetId: string;

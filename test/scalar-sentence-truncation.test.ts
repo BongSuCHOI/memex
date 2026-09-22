@@ -160,6 +160,54 @@ describe("issue #182 — scalar model text is cut at a sentence boundary", () =>
     expect(truncateAtSentenceBoundary(text, 40)).toBe("Read src/paths.ts before the gate.…");
   });
 
+  /**
+   * 🚨 이슈 #185 — 목록 표지(`1.`, `A.`, `(1)`)가 문장 끝으로 받아들여졌다.
+   *
+   * 앞 단어 검사는 라틴 단어만 보므로 `1. Verify migration before deployment …`
+   * 의 `1.` 이 세 조건을 모두 통과했다(뒤가 공백, 다음 글자가 대문자, 약어 아님).
+   * 라인이 예산을 넘으면 `[WORK NOW]` 와 재수화 capsule 이 `1.…` 을 렌더한다 —
+   * 지시문 전체가 사라진다. 그래서 네 번째 조건: 직전에 **승인된** 경계(없으면
+   * 텍스트 시작)부터 종결자까지의 구간이 표지 하나뿐이면 경계가 아니다.
+   */
+  it("never cuts at a bare numbered-list marker", () => {
+    const numbered =
+      "1. Verify migration before deployment and confirm all tests pass before merging the release.";
+    const rendered = truncateAtSentenceBoundary(numbered, 30);
+    expect(rendered, "a list marker must never swallow the instruction").not.toBe("1.…");
+    expect(rendered).toBe("1. Verify migration before…");
+    expect(rendered.length).toBeLessThanOrEqual(30);
+  });
+
+  it("never cuts at a bare lettered-list marker", () => {
+    const lettered =
+      "A. Verify migration before deployment and confirm all tests pass before merging the release.";
+    const rendered = truncateAtSentenceBoundary(lettered, 30);
+    expect(rendered).not.toBe("A.…");
+    expect(rendered).toBe("A. Verify migration before…");
+  });
+
+  it("cuts after the last complete list ITEM, not after its marker", () => {
+    const list = "1. Do X. 2. Do Y. 3. Do Z.";
+    // 예산이 두 항목까지 닿는다: `2.` 가 아니라 `Do Y.` 뒤에서 끊는다.
+    expect(truncateAtSentenceBoundary(list, 22)).toBe("1. Do X. 2. Do Y.…");
+    // 한 항목만 닿으면 첫 항목 뒤에서 끊는다.
+    expect(truncateAtSentenceBoundary(list, 12)).toBe("1. Do X.…");
+  });
+
+  it("keeps a real sentence that happens to end on a single letter", () => {
+    // v0.7.30 라운드 2 케이스: 구간이 `Use option A` 이므로 표지가 아니다.
+    const text = "Use option A. Deployment is approved only after sign-off.";
+    expect(truncateAtSentenceBoundary(text, 37)).toBe("Use option A.…");
+  });
+
+  it("cuts a Korean numbered list after the item, not after the marker", () => {
+    const first = "1. 마이그레이션을 확인한다.";
+    const korean = `${first} 2. 테스트를 돌린다.`;
+    const rendered = truncateAtSentenceBoundary(korean, first.length + 3);
+    expect(rendered).toBe(`${first}…`);
+    expect(rendered).not.toBe("1.…");
+  });
+
   it("never exceeds the budget, whatever the budget is", () => {
     for (const cap of [0, 1, 2, 3, 10, 57, 58, 80, 200]) {
       expect(truncateAtSentenceBoundary(observed, cap).length, `cap=${cap}`)

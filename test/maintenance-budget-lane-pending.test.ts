@@ -14,9 +14,11 @@ import {
   exhaustModelBudget,
   findExhaustedModelBudgetForClaim,
   finishModelAttempt,
+  getModelWorkTargets,
   getOrCreateAutomaticMaintenanceModelBudget,
   holdMemoryJob,
   peekResolvedModelBudget,
+  registerModelWorkTargets,
   releaseHeldJobs,
   reserveModelAttempt,
 } from "../src/model-budget.js";
@@ -683,6 +685,122 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
     ).toBe(1);
   });
 
+  /**
+   * 🚨 이슈 #184 — hold 중에도 pending `model_work_targets` 가 run 을 찍어냈다.
+   *
+   * hold 중인 `memory_jobs` 는 #177 부터 제외되지만, `model_work_targets` 의
+   * `pending` 행(ontology/consolidation/relation)에는 hold 표시가 없어서 계속
+   * `jobsPending` 으로 집계됐다. 그래서 provider 가 모델 설정을 거절해 hold 가
+   * 걸린 상태에서도 15분 데드라인마다 run 이 새로 열렸다 — target 만 끌고 다니는
+   * run 이 시간당 4개, 하루 96개, 모델 호출은 0회(#177/#180 이 job 에 대해 닫은
+   * churn 이 target 으로 되돌아온 것).
+   *
+   * hold 는 아래 모델 레인 전부를 건너뛰므로, hold 중에는 wave 자체가 움직이지
+   * 않아야 한다: 은퇴도, 재개방도, 롤오버도, 입양도 없이 `latest` 그대로.
+   */
+  const pendingConsolidationFact = (factId: string) => {
+    db.prepare(`
+      INSERT INTO facts
+        (id, fact, category, scope_type, scope_project, source_exchange_ids,
+         created_at, updated_at, needs_consolidation)
+      VALUES (?, 'a fact the consolidation lane still owes work on', 'knowledge',
+              'project', '/project', '[]', ?, ?, 1)
+    `).run(factId, T0.toISOString(), T0.toISOString());
+  };
+
+  it("a model-config hold freezes the wave: a pending target cannot mint a run", () => {
+    // run 1: 10분 데드라인 — hold 중 wake 가 이 창을 넘긴다.
+    const runOne = { maxAttempts: 8, deadlineAt: at(10 * 60_000).toISOString() };
+    const first = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits: runOne,
+      now: T0,
+    });
+    expect(first.state).toBe("active");
+    // 온톨로지/통합 워커가 등록해 둔 파생 작업. hold 표시를 가질 수 없는 행이다.
+    pendingConsolidationFact("fact-held-1");
+    expect(
+      registerModelWorkTargets(db, {
+        budgetId: first.budgetId,
+        stage: "consolidation",
+        targetIds: ["fact-held-1"],
+        now: T0,
+      }),
+    ).toBe(1);
+
+    // 데드라인이 지난 뒤의 wake — hold 가 살아 있다.
+    const held = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(11 * 60_000),
+      lanePending: false,
+      holdActive: true,
+    });
+    expect(
+      held.budgetId,
+      "a held wave must not mint a run that the same hold skips every lane of",
+    ).toBe(first.budgetId);
+    expect(budgetCount()).toBe(1);
+
+    // 15분 뒤의 다음 wake도 마찬가지다 — 시간당 4개가 아니라 0개.
+    const heldAgain = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(26 * 60_000),
+      lanePending: false,
+      holdActive: true,
+    });
+    expect(heldAgain.budgetId).toBe(first.budgetId);
+    expect(budgetCount()).toBe(1);
+    // target 은 원래 run 에 그대로 남는다(입양도 없다).
+    expect(getModelWorkTargets(db, { budgetId: first.budgetId }).map((t) => t.targetId))
+      .toEqual(["fact-held-1"]);
+
+    // 운영자가 설정을 고친다 — 기존 롤오버가 그대로 run 2 를 열고 target 을 데려간다.
+    const rolled = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(27 * 60_000),
+      lanePending: false,
+      holdActive: false,
+    });
+    expect(rolled.budgetId).not.toBe(first.budgetId);
+    expect(rolled.state).toBe("active");
+    expect(rolled.runSeq).toBe(2);
+    expect(budgetCount()).toBe(2);
+    expect(
+      getModelWorkTargets(db, { budgetId: rolled.budgetId }).map((t) => t.targetId),
+      "the released hold must hand the target to the run that can drain it",
+    ).toEqual(["fact-held-1"]);
+  });
+
+  it("a hold still mints the FIRST run, because the hook needs a budget id", () => {
+    // 훅은 maintenanceBudget.budgetId 를 childEnv 로 넘긴다(scripts/session-start-
+    // maintenance.js). 계보에 아무 run 도 없을 때는 hold 중에도 그 한 개는 열린다.
+    const first = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: T0,
+      lanePending: false,
+      holdActive: true,
+    });
+    expect(first.budgetId).toBeTruthy();
+    expect(first.state).toBe("active");
+    expect(first.runSeq).toBe(1);
+    expect(budgetCount()).toBe(1);
+    // 그 다음부터는 얼어붙는다.
+    const held = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(60_000),
+      lanePending: false,
+      holdActive: true,
+    });
+    expect(held.budgetId).toBe(first.budgetId);
+    expect(held.state, "a held wave is not even retired").toBe("active");
+    expect(budgetCount()).toBe(1);
+  });
+
   it("an active run with lane work is returned unchanged", () => {
     const first = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
@@ -728,7 +846,7 @@ describe("issue #175 — session-start-maintenance spawns the extract lane", () 
    * item 2). An explicit local export wins over `export *` for the same name,
    * so the rest of the real module is untouched.
    */
-  const fixture = (sessionPending: boolean, configHold = false) => {
+  const fixture = (sessionPending: boolean, configHold = false, pendingTarget = false) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-lane-slice-"));
     roots.push(root);
     const scripts = path.join(root, "scripts");
@@ -828,6 +946,26 @@ describe("issue #175 — session-start-maintenance spawns the extract lane", () 
       seed
         .prepare("UPDATE model_work_budgets SET state = 'completed', automatic = 1 WHERE budget_id = ?")
         .run(first.budgetId);
+      // 이슈 #184: 파생 target 하나가 예산에 매달린, 데드라인이 지난 run.
+      // hold 표시를 가질 수 없는 행이므로 예전 코드에서는 매 wake 마다 run 이
+      // 새로 열렸다(시간당 4개).
+      if (pendingTarget) {
+        seed.exec(`
+          CREATE TABLE IF NOT EXISTS facts (
+            id TEXT PRIMARY KEY, is_active INTEGER NOT NULL DEFAULT 1,
+            ontology_category_id TEXT, needs_consolidation INTEGER NOT NULL DEFAULT 1
+          );
+          INSERT INTO facts(id) VALUES ('fact-held-slice');
+        `);
+        registerModelWorkTargets(seed, {
+          budgetId: first.budgetId,
+          stage: "consolidation",
+          targetIds: ["fact-held-slice"],
+        });
+        seed
+          .prepare("UPDATE model_work_budgets SET deadline_at = ? WHERE budget_id = ?")
+          .run(new Date(Date.now() - 60 * 60_000).toISOString(), first.budgetId);
+      }
     } finally {
       seed.close();
     }
@@ -928,6 +1066,57 @@ describe("issue #175 — session-start-maintenance spawns the extract lane", () 
     } finally {
       check.close();
     }
+  });
+
+  /**
+   * 🚨 이슈 #184 — hold 아래에서 파생 target 이 run 을 찍어내는 것을 훅에서 막는다.
+   *
+   * 훅은 이미 mint 전에 `currentModelConfigHold` 를 읽는다(#177 항목 2). 그 결과를
+   * `lanePending: false` 로만 넘기면 큐 쪽 절반이 남는다: `model_work_targets` 의
+   * pending 행에는 hold 표시가 없으므로, 데드라인이 지난 run 은 wake 마다 롤오버해
+   * target 만 새 run 으로 끌고 다녔다(시간당 4개, 모델 호출 0회). 그래서 훅은
+   * `holdActive` 도 넘기고, hold 동안 wave 는 얼어붙는다.
+   *
+   * wake 게이트(`claimMaintenanceWake`)는 3분에 한 번만 통과시키므로, 두 번째
+   * wake 를 만들려면 그 행을 과거로 되돌린다 — 훅을 두 번 돌리고 행이 하나인지 본다.
+   */
+  it("a held wave mints no run for a pending derived target, wake after wake", async () => {
+    const f = fixture(false, true, true);
+    await runHook(f);
+    // 두 번째 wake: 3분 합치기 게이트를 과거로 되돌린다.
+    const reset = new Database(f.dbFile);
+    try {
+      reset.prepare("UPDATE model_maintenance_wake SET wake_after = ?")
+        .run(new Date(Date.now() - 60 * 60_000).toISOString());
+    } finally {
+      reset.close();
+    }
+    await runHook(f);
+
+    const check = new Database(f.dbFile);
+    try {
+      expect(
+        check.prepare("SELECT COUNT(*) AS n FROM model_work_budgets").get(),
+        "a pending target under a live hold must not open a single run",
+      ).toEqual({ n: 1 });
+      expect(
+        check
+          .prepare("SELECT state, run_seq FROM model_work_budgets ORDER BY run_seq DESC LIMIT 1")
+          .get(),
+        "the frozen run is not even retired or reopened",
+      ).toEqual({ state: "completed", run_seq: 1 });
+      // target 은 원래 run 에 그대로 남아, hold 가 풀린 첫 wake 를 기다린다.
+      expect(
+        check.prepare("SELECT COUNT(*) AS n FROM model_work_targets WHERE state = 'pending'").get(),
+      ).toEqual({ n: 1 });
+    } finally {
+      check.close();
+    }
+    // 그리고 아무 모델 워커도 뜨지 않는다.
+    const spawns = spawnedScripts(f);
+    expect(spawns, "the ledger must prove it was recording").toContain("sync-export-hook.js");
+    expect(spawns).not.toContain("backfill-ontology-worker.js");
+    expect(spawns).not.toContain("fact-consolidate-worker.js");
   });
 
   /**
