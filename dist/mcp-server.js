@@ -11947,19 +11947,20 @@ function countPendingModelWork(db, budgetId) {
   const counts = { pending: 0, reserved: 0, unbound: 0 };
   const derivedFactQueue = hasDerivedFactQueue(db);
   if (tableExists2(db, "memory_jobs") && columnNames2(db, "memory_jobs").has("budget_id")) {
+    const holdClause = columnNames2(db, "memory_jobs").has("hold_reason") ? "AND hold_reason IS NULL" : "";
     const scope = budgetId ? "AND budget_id = ?" : "";
     const params = budgetId ? [budgetId] : [];
     const row = db.prepare(`
       SELECT COUNT(*) AS pending
       FROM memory_jobs
-      WHERE state IN ('pending','retry','running') ${scope}
+      WHERE state IN ('pending','retry','running') ${holdClause} ${scope}
     `).get(...params);
     counts.pending += Number(row?.pending ?? 0);
     if (!budgetId) {
       const unbound = db.prepare(`
         SELECT COUNT(*) AS unbound
         FROM memory_jobs
-        WHERE budget_id IS NULL AND state IN ('pending','retry','running')
+        WHERE budget_id IS NULL AND state IN ('pending','retry','running') ${holdClause}
       `).get();
       counts.unbound += Number(unbound?.unbound ?? 0);
     }
@@ -12145,6 +12146,14 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
       now
     });
     db.prepare("UPDATE model_work_budgets SET automatic = 1, state = ? WHERE budget_id = ?").run(window.remaining === 0 ? "exhausted" : "active", next.budgetId);
+    if (latest && latest.state !== "exhausted") {
+      rebindMovableWaveJobs(db, {
+        fromBudgetId: latest.budgetId,
+        toBudgetId: next.budgetId,
+        toParentWaveId: next.parentWaveId,
+        nowIso: nowIso2
+      });
+    }
     return readBudgetById(db, next.budgetId);
   });
   return maintain.immediate();
@@ -12192,6 +12201,38 @@ function getOrCreateWaveModelBudget(db, input) {
   });
   return maintain.immediate();
 }
+function movableWaveJobSql(db) {
+  const holdClause = tableExists2(db, "memory_jobs") && columnNames2(db, "memory_jobs").has("hold_reason") ? "AND j.hold_reason IS NULL" : "";
+  return `j.state IN ('pending','retry') AND (j.lease_until IS NULL OR j.lease_until <= ?) ${holdClause}`;
+}
+function rebindMovableWaveJobs(db, input) {
+  if (!tableExists2(db, "memory_jobs")) return [];
+  if (!columnNames2(db, "memory_jobs").has("budget_id")) return [];
+  if (input.fromBudgetId === input.toBudgetId) return [];
+  const jobs = db.prepare(`
+    SELECT j.job_id AS job_id FROM memory_jobs j
+    WHERE j.budget_id = ? AND ${movableWaveJobSql(db)} ORDER BY j.rowid
+  `).all(input.fromBudgetId, input.nowIso);
+  const move = db.prepare(`
+    UPDATE memory_jobs
+    SET budget_id = ?, maintenance_wave_id = ?, state = 'pending', available_at = ?,
+        lease_owner = NULL, lease_until = NULL, updated_at = ?
+    WHERE job_id = ? AND budget_id = ?
+  `);
+  const rebound = [];
+  for (const job of jobs) {
+    const changed = move.run(
+      input.toBudgetId,
+      input.toParentWaveId,
+      input.nowIso,
+      input.nowIso,
+      job.job_id,
+      input.fromBudgetId
+    ).changes;
+    if (changed === 1) rebound.push(job.job_id);
+  }
+  return rebound;
+}
 function rolloverSpentWaveBudgets(db, input = {}) {
   ensureModelBudgetSchema(db);
   if (!tableExists2(db, "memory_jobs")) return [];
@@ -12199,8 +12240,7 @@ function rolloverSpentWaveBudgets(db, input = {}) {
   const nowIso2 = now.toISOString();
   const limits = { ...modelBudgetLimitsFromEnv(now.getTime()), ...input.limits };
   if (limits.deadlineAt && Date.parse(limits.deadlineAt) <= now.getTime()) return [];
-  const holdClause = columnNames2(db, "memory_jobs").has("hold_reason") ? "AND j.hold_reason IS NULL" : "";
-  const movable = `j.state IN ('pending','retry') AND (j.lease_until IS NULL OR j.lease_until <= ?) ${holdClause}`;
+  const movable = movableWaveJobSql(db);
   const prefixClause = AUTO_CONTINUED_WAVE_PREFIXES.map(() => "b.root_wave_id LIKE ?").join(" OR ");
   const prefixParams = AUTO_CONTINUED_WAVE_PREFIXES.map((prefix) => `${prefix}%`);
   const tx = db.transaction(() => {
@@ -12221,7 +12261,7 @@ function rolloverSpentWaveBudgets(db, input = {}) {
     const candidates = db.prepare(`
       SELECT b.budget_id AS budget_id
       FROM model_work_budgets b
-      WHERE b.automatic = 0 AND b.state = 'exhausted'
+      WHERE b.automatic = 0 AND b.state IN ('exhausted','completed')
         AND b.deadline_at IS NOT NULL AND b.deadline_at <= ?
         AND (${prefixClause})
         AND EXISTS (SELECT 1 FROM memory_jobs j WHERE j.budget_id = b.budget_id AND ${movable})
@@ -12243,21 +12283,12 @@ function rolloverSpentWaveBudgets(db, input = {}) {
         limits,
         now
       });
-      const jobs = db.prepare(`
-        SELECT j.job_id AS job_id FROM memory_jobs j WHERE j.budget_id = ? AND ${movable} ORDER BY j.rowid
-      `).all(previous.budgetId, nowIso2);
-      const move = db.prepare(`
-        UPDATE memory_jobs
-        SET budget_id = ?, maintenance_wave_id = ?, state = 'pending', available_at = ?,
-            lease_owner = NULL, lease_until = NULL, updated_at = ?
-        WHERE job_id = ? AND budget_id = ?
-      `);
-      const rebound = [];
-      for (const job of jobs) {
-        if (move.run(next.budgetId, next.parentWaveId, nowIso2, nowIso2, job.job_id, previous.budgetId).changes === 1) {
-          rebound.push(job.job_id);
-        }
-      }
+      const rebound = rebindMovableWaveJobs(db, {
+        fromBudgetId: previous.budgetId,
+        toBudgetId: next.budgetId,
+        toParentWaveId: next.parentWaveId,
+        nowIso: nowIso2
+      });
       out.push({ budgetId: previous.budgetId, nextBudgetId: next.budgetId, parentWaveId: next.parentWaveId, reboundJobIds: rebound });
     }
     return out;
@@ -12300,7 +12331,7 @@ function rebindSpentQueueJobsToBudget(db, input) {
       SELECT j.job_id AS job_id, j.budget_id AS budget_id
       FROM memory_jobs j
       JOIN model_work_budgets b ON b.budget_id = j.budget_id
-      WHERE ${movable} AND b.state IN ('exhausted','cancelled')
+      WHERE ${movable} AND b.state IN ('exhausted','completed','cancelled')
       ORDER BY j.rowid
     `).all(input.kind, target.budgetId, nowIso2);
     const move = db.prepare(`
@@ -29346,7 +29377,7 @@ function readResidentRevisionCorrections(db, sessionId) {
   return corrections;
 }
 function parseTruncationRecord(raw) {
-  const empty = { fields: [], itemCaps: {}, overBudget: false };
+  const empty = { fields: [], itemCaps: {}, scalarClamps: {}, overBudget: false };
   if (typeof raw !== "string" || !raw.trim()) return empty;
   let parsed;
   try {
@@ -29369,7 +29400,13 @@ function parseTruncationRecord(raw) {
       itemCaps[field] = { kept: cap.kept, dropped: cap.dropped };
     }
   }
-  return { fields, itemCaps, overBudget: record2.overBudget === true };
+  const scalarClamps = {};
+  if (record2.scalarClamps && typeof record2.scalarClamps === "object" && !Array.isArray(record2.scalarClamps)) {
+    for (const [field, value] of Object.entries(record2.scalarClamps)) {
+      if (typeof value === "number" && Number.isFinite(value)) scalarClamps[field] = value;
+    }
+  }
+  return { fields, itemCaps, scalarClamps, overBudget: record2.overBudget === true };
 }
 function readWorkCapsule(db, workstreamId) {
   const row = db.prepare(`
@@ -29400,6 +29437,7 @@ function readWorkCapsule(db, workstreamId) {
     truncated: Number(row.truncated ?? 0) === 1,
     truncatedFields: truncationRecord.fields,
     itemCaps: truncationRecord.itemCaps,
+    scalarClamps: truncationRecord.scalarClamps,
     overBudget: truncationRecord.overBudget,
     originalChars: row.original_chars == null ? null : Number(row.original_chars)
   };
@@ -33789,7 +33827,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.28"
+    version: "0.7.29"
   },
   {
     capabilities: {

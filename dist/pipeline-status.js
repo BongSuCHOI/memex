@@ -14,7 +14,7 @@ import { countFactsWithoutLocalEvidence, hasEvidenceSchema, } from "./evidence-b
 import { heldJobSummary } from "./model-budget.js";
 import { buildOntologyParkedClause, buildOntologyParkedRetryClause, } from "./ontology-selector.js";
 import { getDbPath, getArchiveDir, getMemexHome, llmWorkdirCwdSql, } from "./paths.js";
-import { EXTRACTION_STATE, freshClaimPredicate, getExtractionConfig, pendingExtractionCoreQuery, } from "./pending-extraction.js";
+import { EXTRACTION_STATE, excludedCwdBoundarySql, freshClaimPredicate, getExtractionConfig, pendingExtractionCoreQuery, } from "./pending-extraction.js";
 function tableExists(db, name) {
     return (db
         .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
@@ -214,12 +214,15 @@ export function getPipelineStatus(opts = {}) {
             // Mirrors pendingExtractionCoreQuery's gate (including its any-exchange
             // cwd pollution check) so pending means exactly "work the pipeline will
             // actually do" — excluded sessions stay visible under their own name.
-            const exTerms = extractionGate.excludeProjects;
             // llmWorkdirCwdSql keeps status's pollution shape identical to the
             // worker's (pendingExtractionCoreQuery) — basename + mkdtemp suffix form.
-            const pollutionClause = `${llmWorkdirCwdSql("x.cwd")}${exTerms.length
-                ? " OR " + exTerms.map(() => "x.cwd = ?").join(" OR ")
-                : ""}`;
+            // 🚨 이슈 #177: 제외 프로젝트도 **같은 경계 술어**를 공유한다. exact 매칭이면
+            // 하위 경로 세션이 `excludedProject` 대신 `pending` 으로 잡혀, 같은 status
+            // 출력 안에서 pending 과 excluded 가 서로 모순된다(합계가 total 을 넘는다).
+            const exclusion = excludedCwdBoundarySql("x.cwd", extractionGate.excludeProjects);
+            // 항당 3개로 확장된 바인딩. 이름이 말하듯 "항"이 아니라 "파라미터"다.
+            const exParams = exclusion.params;
+            const pollutionClause = `${llmWorkdirCwdSql("x.cwd")}${exclusion.clause ? " OR " + exclusion.clause : ""}`;
             const gateRow = db
                 .prepare(`
         SELECT COUNT(*) AS c,
@@ -253,7 +256,7 @@ export function getPipelineStatus(opts = {}) {
           GROUP BY e.session_id
           HAVING COUNT(*) < ? OR polluted = 1
         ) g`)
-                .get(...exTerms, extractionGate.minExchanges);
+                .get(...exParams, extractionGate.minExchanges);
             const excludedSessions = Number(gateRow.c);
             // Legacy SEED/PERMANENT markers are not exact completion/failure evidence.
             // Only a Continuity target with an exact failed-visible range may defer.
