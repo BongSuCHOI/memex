@@ -73,6 +73,83 @@ describe("issue #182 — scalar model text is cut at a sentence boundary", () =>
     expect(rendered).toBe("Release 0.7.29 shipped the maintenance lane.…");
   });
 
+  /**
+   * 🚨 #182 외부 리뷰(P2) — 약어의 마침표가 문장 끝으로 받아들여졌다.
+   *
+   * `e.g.` 의 마침표도 공백이 뒤따르므로 경계로 인정됐고, 예산이 그 뒤에서 끝나면
+   * `Deployment may proceed in e.g.…` 가 렌더됐다 — `only after operator approval`
+   * 조건이 사라진, #182 가 막으려던 바로 그 뒤집힘이다. 반-예산 가드는 문장 후보를
+   * 거치지 않으므로 이것을 잡지 못한다.
+   *
+   * 그래서 종결자가 문장 끝이 되려면 세 조건이 모두 필요하다: 뒤가 공백/끝이고,
+   * 다음 비공백 문자가 소문자 라틴 글자가 아니며(문장은 소문자로 시작하지 않는다),
+   * 종결자 앞 단어가 알려진 약어나 한 글자 이니셜이 아니다.
+   */
+  const conditional =
+    "Deployment may proceed in e.g. staging only after operator approval. Rollback is ready.";
+  const firstConditionalSentence =
+    "Deployment may proceed in e.g. staging only after operator approval.";
+
+  it("keeps the whole conditional sentence instead of cutting at `e.g.`", () => {
+    const rendered = truncateAtSentenceBoundary(conditional, firstConditionalSentence.length + 4);
+    expect(rendered).toBe(`${firstConditionalSentence}…`);
+    expect(rendered).not.toBe("Deployment may proceed in e.g.…");
+  });
+
+  it("falls back to the last whitespace when only an abbreviation period fits", () => {
+    // 예산이 첫 문장에 닿지 않는다: `e.g.` 는 경계가 아니므로 공백 경계로 물러난다.
+    const rendered = truncateAtSentenceBoundary(conditional, 40);
+    expect(
+      rendered,
+      "an abbreviation period must never drop the condition that follows it",
+    ).not.toBe("Deployment may proceed in e.g.…");
+    expect(rendered).toBe("Deployment may proceed in e.g. staging…");
+    expect(rendered.length).toBeLessThanOrEqual(40);
+  });
+
+  it("cuts after the real sentence, not after `Fig.`", () => {
+    const text = "See Fig. 3 for details. Next step follows.";
+    expect(truncateAtSentenceBoundary(text, 30)).toBe("See Fig. 3 for details.…");
+    // 첫 문장조차 들어가지 않으면 `Fig.` 가 아니라 공백에서 끊는다.
+    const tight = truncateAtSentenceBoundary(text, 20);
+    expect(tight).not.toBe("See Fig.…");
+    expect(tight).toBe("See Fig. 3 for…");
+  });
+
+  it("still cuts after an ordinary sentence that ends beside parentheses", () => {
+    const text = "The API (v2) is stable. Use it.";
+    expect(truncateAtSentenceBoundary(text, 26)).toBe("The API (v2) is stable.…");
+  });
+
+  it("treats no listed abbreviation or initial as a sentence end", () => {
+    const abbreviations = [
+      "e.g.", "i.e.", "etc.", "vs.", "cf.", "Mr.", "Mrs.", "Ms.", "Dr.", "Prof.",
+      "No.", "Fig.", "approx.", "incl.", "Jr.", "Sr.", "St.", "A.",
+    ];
+    for (const abbreviation of abbreviations) {
+      const head = `Ask ${abbreviation}`;
+      const text = `${head} the owner about the staged rollout before merging.`;
+      // 예산은 약어 뒤 몇 단어까지만 닿는다 — 진짜 문장 끝은 예산 밖이다.
+      const rendered = truncateAtSentenceBoundary(text, head.length + 16);
+      expect(rendered.endsWith("…"), abbreviation).toBe(true);
+      expect(rendered, abbreviation).not.toBe(`${head}…`);
+      expect(rendered.length, abbreviation).toBeLessThanOrEqual(head.length + 16);
+    }
+  });
+
+  it("does not cut where the next sentence would start with a lowercase letter", () => {
+    // 소문자로 이어지는 조각은 새 문장이 아니다 — 확신이 없으면 끊지 않는다.
+    const text = "Upgrade to 0.7.29. then verify the maintenance gate before merging.";
+    const rendered = truncateAtSentenceBoundary(text, 30);
+    expect(rendered).not.toBe("Upgrade to 0.7.29.…");
+    expect(rendered.endsWith("…")).toBe(true);
+  });
+
+  it("keeps a path and a version out of the boundary set", () => {
+    const text = "Read src/paths.ts before the gate. Then run the workdir table.";
+    expect(truncateAtSentenceBoundary(text, 40)).toBe("Read src/paths.ts before the gate.…");
+  });
+
   it("never exceeds the budget, whatever the budget is", () => {
     for (const cap of [0, 1, 2, 3, 10, 57, 58, 80, 200]) {
       expect(truncateAtSentenceBoundary(observed, cap).length, `cap=${cap}`)

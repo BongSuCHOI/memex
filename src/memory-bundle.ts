@@ -118,6 +118,48 @@ function normalizeLine(text: string, cap: number): string {
 const SENTENCE_END = /[.!?。！？]+["'”’»）)\]]*/g;
 
 /**
+ * Words whose period ends an abbreviation, not a sentence (compared in lower
+ * case, without the period). A single Latin letter — an initial, `Ask A. Smith`
+ * — is rejected by the same rule, by length.
+ */
+const ABBREVIATIONS = new Set([
+  "e.g", "i.e", "etc", "vs", "cf", "mr", "mrs", "ms", "dr", "prof",
+  "no", "fig", "approx", "incl", "jr", "sr", "st",
+]);
+
+/** The word immediately before a terminator, dots included (`e.g`, `paths.ts`). */
+const WORD_BEFORE_TERMINATOR = /([A-Za-z][A-Za-z.]*)$/;
+
+/**
+ * 🚨 #182, external review: is the terminator at `terminatorAt` (whose match,
+ * closers included, ends at `stop`) really the end of a sentence?
+ *
+ * Three conditions, because "followed by whitespace" alone accepted
+ * `Deployment may proceed in e.g. staging only after operator approval.` as
+ * ending at `e.g.` and injected `Deployment may proceed in e.g.…` — the
+ * condition dropped, which is the very inversion class #182 exists to prevent
+ * (and the half-budget guard cannot catch it: a sentence candidate never
+ * reaches the word-boundary fallback).
+ */
+function isSentenceEnd(flat: string, terminatorAt: number, stop: number): boolean {
+  // (1) A sentence ends at whitespace or at the end of the text. This is also
+  //     what keeps `0.7.29` and `src/paths.ts` out of the boundary set.
+  const next = flat[stop];
+  if (next !== undefined && !/\s/.test(next)) return false;
+  // (2) A sentence does not START with a lowercase Latin letter. Korean, CJK,
+  //     digits, quotes and capitals are all fine; a lowercase continuation
+  //     means the period was inside the clause, so the cut is not taken.
+  const rest = flat.slice(stop).trimStart();
+  if (/^[a-z]/.test(rest)) return false;
+  // (3) An abbreviation or an initial is not a sentence end.
+  const before = WORD_BEFORE_TERMINATOR.exec(flat.slice(0, terminatorAt));
+  if (!before) return true;
+  const word = before[1];
+  if (word.length === 1) return false;
+  return !ABBREVIATIONS.has(word.toLowerCase());
+}
+
+/**
  * 🚨 Issue #182 — a scalar rendered from model text must never be cut inside a
  * clause while a complete sentence fits.
  *
@@ -127,10 +169,10 @@ const SENTENCE_END = /[.!?。！？]+["'”’»）)\]]*/g;
  * CONDITIONAL for a fact. The cut is what inverted the meaning, not the
  * budget — the sentence before it was intact and shorter than the budget.
  *
- * So the cut is made at the LAST sentence boundary inside the budget (a
- * terminator followed by whitespace or the end of the text, which is also what
- * keeps `0.7.29` and `src/paths.ts` from counting as boundaries), falling back
- * to the last whitespace, and only then to a hard cut for one unbroken token.
+ * So the cut is made at the LAST sentence boundary inside the budget — see
+ * `isSentenceEnd` for what counts as one, which is where `0.7.29`, `e.g.` and
+ * `Fig.` are kept out — falling back to the last whitespace, and only then to
+ * a hard cut for one unbroken token.
  * The ellipsis is kept in every case, so the reader still knows text was
  * dropped. Dropping the tail of a sentence is deliberate: a shorter complete
  * statement is worth more to the reader than a longer inverted one.
@@ -151,11 +193,12 @@ export function truncateAtSentenceBoundary(
   const head = flat.slice(0, budget);
   let sentenceEnd = 0;
   for (const match of head.matchAll(SENTENCE_END)) {
-    const stop = (match.index ?? 0) + match[0].length;
-    // The whitespace that proves it is a sentence end may be the very
-    // character the cut removes, so it is read from the FULL text.
-    const next = flat[stop];
-    if (next === undefined || /\s/.test(next)) sentenceEnd = stop;
+    const terminatorAt = match.index ?? 0;
+    const stop = terminatorAt + match[0].length;
+    // What proves a sentence end — the whitespace, and the letter that starts
+    // the next sentence — may be the very characters the cut removes, so the
+    // predicate reads the FULL text, not `head`.
+    if (isSentenceEnd(flat, terminatorAt, stop)) sentenceEnd = stop;
   }
   if (sentenceEnd > 0) return flat.slice(0, sentenceEnd) + ellipsis;
   // The budget already ends on a word boundary: keep the whole last word.

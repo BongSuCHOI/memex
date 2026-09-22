@@ -63,10 +63,10 @@ export interface RenderedBundle<T = unknown> {
  * CONDITIONAL for a fact. The cut is what inverted the meaning, not the
  * budget — the sentence before it was intact and shorter than the budget.
  *
- * So the cut is made at the LAST sentence boundary inside the budget (a
- * terminator followed by whitespace or the end of the text, which is also what
- * keeps `0.7.29` and `src/paths.ts` from counting as boundaries), falling back
- * to the last whitespace, and only then to a hard cut for one unbroken token.
+ * So the cut is made at the LAST sentence boundary inside the budget — see
+ * `isSentenceEnd` for what counts as one, which is where `0.7.29`, `e.g.` and
+ * `Fig.` are kept out — falling back to the last whitespace, and only then to
+ * a hard cut for one unbroken token.
  * The ellipsis is kept in every case, so the reader still knows text was
  * dropped. Dropping the tail of a sentence is deliberate: a shorter complete
  * statement is worth more to the reader than a longer inverted one.

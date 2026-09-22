@@ -29028,6 +29028,37 @@ function normalizeLine(text, cap) {
   return flat.length > cap ? flat.slice(0, cap - 1) + "\u2026" : flat;
 }
 var SENTENCE_END = /[.!?。！？]+["'”’»）)\]]*/g;
+var ABBREVIATIONS = /* @__PURE__ */ new Set([
+  "e.g",
+  "i.e",
+  "etc",
+  "vs",
+  "cf",
+  "mr",
+  "mrs",
+  "ms",
+  "dr",
+  "prof",
+  "no",
+  "fig",
+  "approx",
+  "incl",
+  "jr",
+  "sr",
+  "st"
+]);
+var WORD_BEFORE_TERMINATOR = /([A-Za-z][A-Za-z.]*)$/;
+function isSentenceEnd(flat, terminatorAt, stop) {
+  const next = flat[stop];
+  if (next !== void 0 && !/\s/.test(next)) return false;
+  const rest = flat.slice(stop).trimStart();
+  if (/^[a-z]/.test(rest)) return false;
+  const before = WORD_BEFORE_TERMINATOR.exec(flat.slice(0, terminatorAt));
+  if (!before) return true;
+  const word = before[1];
+  if (word.length === 1) return false;
+  return !ABBREVIATIONS.has(word.toLowerCase());
+}
 function truncateAtSentenceBoundary(text, maxChars, options = {}) {
   const ellipsis = options.ellipsis ?? "\u2026";
   const flat = text.replace(/\s+/g, " ").trim();
@@ -29037,9 +29068,9 @@ function truncateAtSentenceBoundary(text, maxChars, options = {}) {
   const head = flat.slice(0, budget);
   let sentenceEnd = 0;
   for (const match of head.matchAll(SENTENCE_END)) {
-    const stop = (match.index ?? 0) + match[0].length;
-    const next = flat[stop];
-    if (next === void 0 || /\s/.test(next)) sentenceEnd = stop;
+    const terminatorAt = match.index ?? 0;
+    const stop = terminatorAt + match[0].length;
+    if (isSentenceEnd(flat, terminatorAt, stop)) sentenceEnd = stop;
   }
   if (sentenceEnd > 0) return flat.slice(0, sentenceEnd) + ellipsis;
   if (/\s/.test(flat[budget] ?? "")) return head.trimEnd() + ellipsis;
