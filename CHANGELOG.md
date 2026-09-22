@@ -2,6 +2,31 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.31 - 2026-09-22
+
+Post-release review of 0.7.30 (#184, #185).
+
+### Maintenance
+
+- While a model-config hold is active the automatic wave neither mints,
+  reopens nor rolls over a run (#184). Pending `model_work_targets` carry no
+  hold marker, so under a hold a deadline-exhausted run rolled over every
+  fifteen minutes carrying only its targets, with no model call to stop it.
+
+### Injection
+
+- A segment that ends in a list marker (`1.`, `Next steps: 1.`, `A.`,
+  `Steps: A.`) is not a sentence end (#185). A numbered instruction that
+  exceeded the line budget rendered as `1.…` in `[WORK NOW]` and the
+  rehydration capsule; it now falls back to the whitespace cut. `Use option A.`
+  still ends a sentence; a sentence that ends in a bare number, and a lettered
+  heading such as `Option A.`, are the accepted costs (the first takes the
+  whitespace cut, the second may render as `Option A.…`, visibly truncated).
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.30 - 2026-09-22
 
 Post-release review of 0.7.29 (#180, #181, #182).
