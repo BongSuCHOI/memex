@@ -2,6 +2,47 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.29 - 2026-09-22
+
+Post-release review of 0.7.28 (#177) and a dead capsule job seen on the primary
+Mac (#178).
+
+### Maintenance
+
+- The pending-extraction query excludes projects on the same path boundary as
+  the extractor (#177). The SQL matched an excluded project by exact `cwd` only,
+  while `isExcludedProject` also excludes every subdirectory, so a session under
+  an excluded project was selected by the hook and the worker and then skipped
+  inside the extractor, staying pending forever. Before 0.7.28 that was merely
+  silent; with #175 a permanently pending lane reopened the automatic budget on
+  every wake (no model calls, so the 24-hour cap never tripped) and could crowd
+  older eligible sessions out of the worker's page. The exclusion is now
+  `cwd = p OR cwd starts with p + "/"` in both query modes and in the
+  `memex status` extraction counters; siblings such as `/pother` stay eligible.
+- A model-config hold is read before the automatic budget is minted, and while
+  it is active the hook passes no lane work and held jobs do not count as
+  pending, so a hold no longer mints a run every fifteen minutes that no worker
+  will use (#177).
+- A job released from a hold while bound to a run that was retired as `completed`
+  is adopted by the next run (automatic wave, continuity wave and foreground
+  `memex backfill` run alike) instead of being stranded on a budget nothing will
+  ever claim against again (Codex review).
+
+### Continuity
+
+- A capsule patch whose `objective` or `currentState` exceeds 500 characters is
+  clamped at a word boundary (on a code-point boundary, never inside a surrogate
+  pair) and the original length is recorded as `scalarClamps` in the capsule's
+  truncation record and warning line (#178). It used to throw, and a retry cannot
+  shorten a length violation: all five attempts failed identically, the job
+  died, the checkpoint went failed-visible and a whole page of session evidence
+  was skipped over a storage bound. Non-string values still fail validation.
+  `memex recover --all-dead` reprocesses a job that died this way.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.28 - 2026-09-22
 
 Automatic fact extraction stalled on the work Mac for four days (#175).
