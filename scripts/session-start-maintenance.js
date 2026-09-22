@@ -81,11 +81,64 @@ async function main() {
     // Shared across sessions and both entry points. A failed/crashed launch
     // becomes eligible again after three minutes; it never refunds model budget.
     if (!claimMaintenanceWake(db)) return;
+
+    // 🚨 Issue #175 — the LANE predicates are read BEFORE the budget is minted.
+    //
+    // The budget used to answer "is there pending work?" from the job queue
+    // alone, but a `fact_extract` job is only ever created by the extraction
+    // worker, and that worker only spawns while the budget is `active`. So once
+    // the queue drained the wave was retired to `completed`, the worker never
+    // spawned, nothing refilled the queue, and session-level pending extraction
+    // stopped forever (seven sessions pending for five days on the work Mac).
+    //
+    // These two predicates sit one level ABOVE the queue, so they are computed
+    // here, handed to the budget as `lanePending`, and reused by the lanes
+    // below instead of being asked twice. Each is non-fatal on its own, exactly
+    // as it was inside its lane.
+    let pendingExtract = false;
+    try {
+      // The extraction worker's own pending predicate — never spawns for
+      // phantom sessions it could not clear.
+      const { sql: exSql, params: exParams } = pendingExtractionCoreQuery(
+        getExtractionConfig(),
+        'continuity',
+      );
+      pendingExtract = Boolean(db.prepare(`SELECT 1 FROM (${exSql}) LIMIT 1`).get(...exParams));
+    } catch { /* non-fatal: extraction resumes on a later session */ }
+    let pendingOnto = false;
+    try {
+      // Issue #41: a fact parked in General/Misc after bounded failures keeps
+      // a category id, so the old `IS NULL` probe could never re-spawn the
+      // worker for it. The shared selector reopens each parked fact exactly
+      // once per (classifier policy, embedding generation) token.
+      const { buildOntologyPendingClause, MAX_CLASSIFY_ATTEMPTS } = await import('../dist/ontology-selector.js');
+      const { EMBEDDING_VERSION: ontologyEmbeddingVersion } = await import('../dist/embeddings.js');
+      const ontoSelector = buildOntologyPendingClause({
+        embeddingVersion: ontologyEmbeddingVersion,
+        maxAttempts: MAX_CLASSIFY_ATTEMPTS,
+        alias: 'f',
+      });
+      pendingOnto = Boolean(
+        db.prepare(`SELECT 1 FROM facts f WHERE ${ontoSelector.clause} LIMIT 1`)
+          .get(...ontoSelector.params),
+      );
+    } catch { /* non-fatal: ontology backfill resumes on a later session */ }
+
     // One named maintenance wave is shared by detached sibling workers. The
     // durable row survives restarts. Conditional rollover preserves its ledger
     // and is limited by a cooldown plus the shared rolling attempt cap.
     const maintenanceBudget = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || 'maintenance',
+      // #175: the relation predicate is deliberately NOT part of this. It is
+      // scoped to a budget id that does not exist yet, and a pending relation
+      // target already lives in the queue the budget reads itself — so it is
+      // both impossible to ask here and redundant if it were.
+      //
+      // The ontology lane counts only while it is enabled, for the same reason
+      // `countPendingModelWork` skips unbound ontology work when it is off: a
+      // disabled lane is an intentional local backlog nothing will ever drain,
+      // and it must not hold the shared maintenance wave open forever.
+      lanePending: Boolean(pendingExtract || (pendingOnto && isAutomaticOntologyEnabled())),
     });
     const childEnv = {
       ...process.env,
@@ -244,22 +297,10 @@ async function main() {
       // Non-fatal: re-embedding resumes on a later session
     }
 
-    // 3. Auto-resume ontology classification backfill.
+    // 3. Auto-resume ontology classification backfill. `pendingOnto` was read
+    // before the budget was minted (#175); only the budget-scoped relation
+    // probe below has to wait until the budget exists.
     try {
-      // Issue #41: a fact parked in General/Misc after bounded failures keeps
-      // a category id, so the old `IS NULL` probe could never re-spawn the
-      // worker for it. The shared selector reopens each parked fact exactly
-      // once per (classifier policy, embedding generation) token.
-      const { buildOntologyPendingClause, MAX_CLASSIFY_ATTEMPTS } = await import('../dist/ontology-selector.js');
-      const { EMBEDDING_VERSION: ontologyEmbeddingVersion } = await import('../dist/embeddings.js');
-      const ontoSelector = buildOntologyPendingClause({
-        embeddingVersion: ontologyEmbeddingVersion,
-        maxAttempts: MAX_CLASSIFY_ATTEMPTS,
-        alias: 'f',
-      });
-      const pendingOnto = db.prepare(
-        `SELECT 1 FROM facts f WHERE ${ontoSelector.clause} LIMIT 1`
-      ).get(...ontoSelector.params);
       // Existing relation memberships are durable pending work. The
       // BACKFILL_RELATIONS switch controls creating new relation probes while
       // classifying an ontology page; it must not hide already queued work.
@@ -277,14 +318,10 @@ async function main() {
       }
     } catch { /* non-fatal */ }
 
-    // 4. Auto-resume cross-project extraction backfill (worker's own pending
-    // predicate — never spawns for phantom sessions it could not clear).
+    // 4. Auto-resume cross-project extraction backfill. `pendingExtract` is the
+    // same session-level predicate that was handed to the budget as
+    // `lanePending` (#175), so the gate below can now actually open.
     try {
-      const { sql: exSql, params: exParams } = pendingExtractionCoreQuery(
-        getExtractionConfig(),
-        'continuity',
-      );
-      const pendingExtract = db.prepare(`SELECT 1 FROM (${exSql}) LIMIT 1`).get(...exParams);
       if (pendingExtract && maintenanceBudget.state === 'active') {
         if (configHeld) skipForConfigHold('backfill-extract-worker.js');
         else spawnDetached('backfill-extract-worker.js');

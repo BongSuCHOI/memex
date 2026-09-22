@@ -2597,10 +2597,30 @@ export function claimMaintenanceWake(db: Database.Database, now = new Date()): b
  * SessionStart continuation. Selection, rollover and target moves are one
  * write transaction; simultaneous sessions cannot mint independent budgets.
  * Explicit worker/operator budgets retain their existing resume contract.
+ *
+ * 🚨 Issue #175 — LANE pending and JOB pending are different questions.
+ * `countPendingModelWork` reads the queue (`memory_jobs`, `model_work_targets`),
+ * but a `fact_extract` job is only ever CREATED by the extraction worker, and
+ * that worker only spawns while this budget is `active`. So a queue-only answer
+ * deadlocks the moment the queue drains: the wake retires the run to
+ * `completed`, the worker never spawns, no job is ever created, and the next
+ * wake sees the same empty queue (observed: seven sessions pending for five
+ * days behind three `completed` runs with an empty 24h window). The caller
+ * therefore passes `lanePending` — whether a LANE has work one level above the
+ * queue (a pending extraction session, a pending ontology fact) — and lane work
+ * counts as pending: it blocks the `completed` transition and reopens a
+ * retired run. A `completed` run spent nothing abnormally, so reopening it is a
+ * clock-only stop (no 60-minute cooldown); the rolling 24h cap still applies.
  */
 export function getOrCreateAutomaticMaintenanceModelBudget(
   db: Database.Database,
-  input: { parentWaveId?: string; limits?: Partial<ModelBudgetLimits>; now?: Date } = {},
+  input: {
+    parentWaveId?: string;
+    limits?: Partial<ModelBudgetLimits>;
+    now?: Date;
+    /** #175: a lane has work the queue cannot show yet. Default `false`. */
+    lanePending?: boolean;
+  } = {},
 ): ModelWorkBudget {
   ensureModelBudgetSchema(db);
   const parentWaveId = input.parentWaveId?.trim() || "maintenance";
@@ -2650,7 +2670,12 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
           error_class = 'expired_reservation' WHERE budget_id = ? AND state = 'reserved'`)
           .run(nowIso, latest.budgetId);
       }
-      const pending = countPendingModelWork(db, latest.budgetId).pending > 0 || countPendingModelWork(db).unbound > 0;
+      // #175: the queue is only half the answer. Lane work that has not been
+      // enqueued yet must keep this wave open, or the lane's own worker — the
+      // only thing that can enqueue it — is never spawned again.
+      const jobsPending = countPendingModelWork(db, latest.budgetId).pending > 0
+        || countPendingModelWork(db).unbound > 0;
+      const pending = jobsPending || input.lanePending === true;
       if (!pending) {
         db.prepare("UPDATE model_work_budgets SET state = 'completed', updated_at = ? WHERE budget_id = ? AND state != 'completed'")
           .run(nowIso, latest.budgetId);
@@ -2668,7 +2693,27 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
       // Every other stop keeps the cooldown: `attempts` and `window` really
       // were spent, and a NULL reason is a pre-0.7.16 row we cannot vouch for.
       // The rolling 24h cap (`window.remaining`) is unconditional either way.
-      const clockOnlyStop = latest.exhaustedReason === "deadline";
+      //
+      // #175: a run that retired because its queue was empty is the same kind
+      // of stop — nothing failed, it never even reached an exhaustion reason —
+      // so reopening it for lane work that arrived afterwards must not wait out
+      // a cooldown nobody earned.
+      //
+      // 🚨 But `completed` alone does not prove that. The `!pending` block above
+      // rewrites ANY non-completed row to `completed` (the status/UI attention
+      // counter reads `state = 'exhausted'`, so a drained run has to stop being
+      // reported), which means a run that spent its last attempt and then found
+      // an empty queue also reads `completed`. Trusting the state alone let a
+      // cap-exhausted run reopen two minutes later and skip the hour it had
+      // genuinely earned. So the spend ledger is what decides, on both
+      // witnesses the row keeps: the FIRST exhaustion reason (#146 — `attempts`
+      // and `window` were spent, and a NULL reason on a pre-0.7.16 row cannot
+      // be vouched for either way) and the attempt counter `memex jobs list`
+      // prints as `attempts=N/M`, which is what `budgetExhaustion` itself reads.
+      const spentReason = latest.exhaustedReason !== null && latest.exhaustedReason !== "deadline";
+      const spentAttempts = latest.reservedAttempts >= latest.maxAttempts;
+      const drainedUnspent = latest.state === "completed" && !spentReason && !spentAttempts;
+      const clockOnlyStop = latest.exhaustedReason === "deadline" || drainedUnspent;
       if (window.remaining === 0 || (!clockOnlyStop && now.getTime() < retryAt)) return latest;
     }
     // 이슈 #42: rollover는 접미사 누적이 아니라 run 번호 증가다.

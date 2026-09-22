@@ -12119,13 +12119,17 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
         db.prepare(`UPDATE model_work_attempts SET state = 'unknown', finished_at = ?,
           error_class = 'expired_reservation' WHERE budget_id = ? AND state = 'reserved'`).run(nowIso2, latest.budgetId);
       }
-      const pending = countPendingModelWork(db, latest.budgetId).pending > 0 || countPendingModelWork(db).unbound > 0;
+      const jobsPending = countPendingModelWork(db, latest.budgetId).pending > 0 || countPendingModelWork(db).unbound > 0;
+      const pending = jobsPending || input.lanePending === true;
       if (!pending) {
         db.prepare("UPDATE model_work_budgets SET state = 'completed', updated_at = ? WHERE budget_id = ? AND state != 'completed'").run(nowIso2, latest.budgetId);
         return readBudgetById(db, latest.budgetId);
       }
       if (latest.state === "active") return latest;
-      const clockOnlyStop = latest.exhaustedReason === "deadline";
+      const spentReason = latest.exhaustedReason !== null && latest.exhaustedReason !== "deadline";
+      const spentAttempts = latest.reservedAttempts >= latest.maxAttempts;
+      const drainedUnspent = latest.state === "completed" && !spentReason && !spentAttempts;
+      const clockOnlyStop = latest.exhaustedReason === "deadline" || drainedUnspent;
       if (window.remaining === 0 || !clockOnlyStop && now.getTime() < retryAt) return latest;
     }
     const nextWaveId = runWaveId(rootWaveId, nextRunSeq(db, rootWaveId));
