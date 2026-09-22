@@ -12127,6 +12127,7 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
       return Number(row?.n ?? 0);
     };
     let latest = latestMaintenanceBudget(db, parentWaveId);
+    if (input.holdActive === true && latest) return latest;
     const window = automaticMaintenanceWindow(db, now);
     const lastAttempt = latest ? db.prepare(`
       SELECT MAX(started_at) AS started_at FROM model_work_attempts WHERE budget_id = ?
@@ -29048,11 +29049,13 @@ var ABBREVIATIONS = /* @__PURE__ */ new Set([
   "st"
 ]);
 var WORD_BEFORE_TERMINATOR = /([A-Za-z][A-Za-z.]*)$/;
-function isSentenceEnd(flat, terminatorAt, stop) {
+var ENDS_IN_LIST_MARKER = /(?:^|[\s:])[([]?\d+[)\]]?$|(?:^|:\s*)[([]?[A-Za-z][)\]]?$/;
+function isSentenceEnd(flat, terminatorAt, stop, segmentStart) {
   const next = flat[stop];
   if (next !== void 0 && !/\s/.test(next)) return false;
   const rest = flat.slice(stop).trimStart();
   if (/^[a-z]/.test(rest)) return false;
+  if (ENDS_IN_LIST_MARKER.test(flat.slice(segmentStart, terminatorAt).trim())) return false;
   const before = WORD_BEFORE_TERMINATOR.exec(flat.slice(0, terminatorAt));
   if (!before) return true;
   return !ABBREVIATIONS.has(before[1].toLowerCase());
@@ -29068,7 +29071,7 @@ function truncateAtSentenceBoundary(text, maxChars, options = {}) {
   for (const match of head.matchAll(SENTENCE_END)) {
     const terminatorAt = match.index ?? 0;
     const stop = terminatorAt + match[0].length;
-    if (isSentenceEnd(flat, terminatorAt, stop)) sentenceEnd = stop;
+    if (isSentenceEnd(flat, terminatorAt, stop, sentenceEnd)) sentenceEnd = stop;
   }
   if (sentenceEnd > 0) return flat.slice(0, sentenceEnd) + ellipsis;
   if (/\s/.test(flat[budget] ?? "")) return head.trimEnd() + ellipsis;
@@ -33909,7 +33912,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.30"
+    version: "0.7.31"
   },
   {
     capabilities: {

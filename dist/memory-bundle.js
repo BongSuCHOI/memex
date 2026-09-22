@@ -70,17 +70,35 @@ const ABBREVIATIONS = new Set([
 /** The word immediately before a terminator, dots included (`e.g`, `paths.ts`). */
 const WORD_BEFORE_TERMINATOR = /([A-Za-z][A-Za-z.]*)$/;
 /**
+ * A segment that ENDS in a list marker, so the terminator after it belongs to
+ * the marker and not to a sentence (external review, round 2 of #185: the
+ * whole-segment form missed `Next steps: 1. Verify …`, whose segment is
+ * `Next steps: 1`). Two shapes:
+ *   - a numeric token as the last word — `1`, `12`, `(3)`, `Next steps: 1`,
+ *     `steps 1` — a number rarely ends a sentence, and a numbered instruction
+ *     losing its body is the worse mistake;
+ *   - a single Latin letter that is the whole segment or follows a colon —
+ *     `A`, `(a)`, `Steps: A` — while `Use option A` (a letter after an ordinary
+ *     word) stays a real sentence end, the round-2 case of v0.7.30.
+ */
+const ENDS_IN_LIST_MARKER = /(?:^|[\s:])[([]?\d+[)\]]?$|(?:^|:\s*)[([]?[A-Za-z][)\]]?$/;
+/**
  * 🚨 #182, external review: is the terminator at `terminatorAt` (whose match,
  * closers included, ends at `stop`) really the end of a sentence?
  *
- * Three conditions, because "followed by whitespace" alone accepted
+ * Four conditions. "Followed by whitespace" alone accepted
  * `Deployment may proceed in e.g. staging only after operator approval.` as
  * ending at `e.g.` and injected `Deployment may proceed in e.g.…` — the
  * condition dropped, which is the very inversion class #182 exists to prevent
  * (and the half-budget guard cannot catch it: a sentence candidate never
  * reaches the word-boundary fallback).
+ *
+ * `segmentStart` is the previous ACCEPTED boundary (0 for the start of the
+ * text), which is what makes condition (4) — the #185 list-marker rule —
+ * answerable at all: a terminator is only a sentence end if the text since the
+ * last one says something.
  */
-function isSentenceEnd(flat, terminatorAt, stop) {
+function isSentenceEnd(flat, terminatorAt, stop, segmentStart) {
     // (1) A sentence ends at whitespace or at the end of the text. This is also
     //     what keeps `0.7.29` and `src/paths.ts` out of the boundary set.
     const next = flat[stop];
@@ -91,6 +109,22 @@ function isSentenceEnd(flat, terminatorAt, stop) {
     //     means the period was inside the clause, so the cut is not taken.
     const rest = flat.slice(stop).trimStart();
     if (/^[a-z]/.test(rest))
+        return false;
+    // 🚨 (4) 이슈 #185 — a bare list marker is not a sentence.
+    //
+    // `1.` at the head of `1. Verify migration before deployment …` passed (1),
+    // (2) and (3) — whitespace follows, `V` is uppercase, `1` is no abbreviation
+    // (the word check only reads Latin words) — so an over-budget instruction
+    // rendered as `1.…` in [WORK NOW] and in the rehydration capsule: the whole
+    // instruction dropped, the #182 failure mode with a different trigger.
+    //
+    // The witness is the segment since the last accepted boundary: when all it
+    // holds is the marker itself there is no sentence to keep, so the cut falls
+    // through to the whitespace rule and the reader keeps the instruction.
+    // `Use option A.` survives — a single letter counts as a marker only when it
+    // is the whole segment or follows a colon (the v0.7.30 round-2 case that
+    // also forbids putting single letters in ABBREVIATIONS).
+    if (ENDS_IN_LIST_MARKER.test(flat.slice(segmentStart, terminatorAt).trim()))
         return false;
     // (3) An abbreviation is not a sentence end.
     const before = WORD_BEFORE_TERMINATOR.exec(flat.slice(0, terminatorAt));
@@ -134,8 +168,9 @@ export function truncateAtSentenceBoundary(text, maxChars, options = {}) {
         const stop = terminatorAt + match[0].length;
         // What proves a sentence end — the whitespace, and the letter that starts
         // the next sentence — may be the very characters the cut removes, so the
-        // predicate reads the FULL text, not `head`.
-        if (isSentenceEnd(flat, terminatorAt, stop))
+        // predicate reads the FULL text, not `head`. `sentenceEnd` doubles as the
+        // segment start for #185: the last boundary this loop accepted.
+        if (isSentenceEnd(flat, terminatorAt, stop, sentenceEnd))
             sentenceEnd = stop;
     }
     if (sentenceEnd > 0)

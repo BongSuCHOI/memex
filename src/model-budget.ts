@@ -2636,6 +2636,12 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
     now?: Date;
     /** #175: a lane has work the queue cannot show yet. Default `false`. */
     lanePending?: boolean;
+    /**
+     * #184: a model-config hold is live, so every model lane this wave exists
+     * for is being skipped. Default `false`. While it is true the wave is
+     * frozen — see the guard at the top of the transaction.
+     */
+    holdActive?: boolean;
   } = {},
 ): ModelWorkBudget {
   ensureModelBudgetSchema(db);
@@ -2712,6 +2718,26 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
       return Number(row?.n ?? 0);
     };
     let latest = latestMaintenanceBudget(db, parentWaveId);
+    // 🚨 이슈 #184 — hold 중에는 wave 가 아예 움직이지 않는다.
+    //
+    // hold 중인 `memory_jobs` 는 #177 부터 pending 에서 빠지지만,
+    // `model_work_targets` 의 `pending` 행(ontology/consolidation/relation)에는
+    // hold 표시가 없다. 그래서 provider 가 모델 설정을 거절한 상태에서도 그 target
+    // 들이 계속 `jobsPending` 으로 집계되고, 15분 데드라인마다 아래 롤오버가 새 run
+    // 을 열었다 — target 만 끌고 다니는 run 이 시간당 4개, 하루 96개, 모델 호출은
+    // 0회. #177/#180 이 job 에 대해 닫은 churn 이 target 으로 되돌아온 것이다.
+    //
+    // hold 는 이 wave 가 존재하는 이유인 모델 레인 **전부**를 건너뛰게 만들므로
+    // (scripts/session-start-maintenance.js `skipForConfigHold`), 그 동안에는
+    // 은퇴도, 재개방도, 롤오버도, 입양도 하지 않고 `latest` 를 그대로 돌려준다 —
+    // 쓰기가 한 번도 없다. 남은 일감은 그대로 남아 hold 가 풀린 첫 wake 에서
+    // 기존 경로(#146/#175/#180)가 run 을 열고 job·target 을 데려간다.
+    //
+    // 계보에 run 이 하나도 없을 때는 예외다: 훅이 `maintenanceBudget.budgetId` 를
+    // childEnv(MEMEX_MODEL_BUDGET_ID)로 자식에게 넘기므로 최초 1개는 hold 중에도
+    // 열린다. hold 가 모델 레인을 막는 것은 그 뒤의 게이트이고, 그 run 은 churn 이
+    // 아니다(계보당 한 번).
+    if (input.holdActive === true && latest) return latest;
     const window = automaticMaintenanceWindow(db, now);
     const lastAttempt = latest ? db.prepare(`
       SELECT MAX(started_at) AS started_at FROM model_work_attempts WHERE budget_id = ?

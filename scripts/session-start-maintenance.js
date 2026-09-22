@@ -178,6 +178,14 @@ async function main() {
       lanePending: configHeld
         ? false
         : Boolean(pendingExtract || (pendingOnto && isAutomaticOntologyEnabled())),
+      // 🚨 이슈 #184 — `lanePending: false` 만으로는 부족하다.
+      //
+      // 큐 쪽 절반(`countPendingModelWork`)은 hold 중인 `memory_jobs` 는 빼지만
+      // `model_work_targets` 의 pending 행에는 hold 표시가 없다. 그래서 hold 아래
+      // 에서도 파생 target 이 매 15분 데드라인마다 새 run 을 열었다(시간당 4개,
+      // 모델 호출 0회). 이 플래그는 hold 동안 wave 를 얼려, 위의 `skipForConfigHold`
+      // 가 건너뛸 레인을 위해 run 이 열리는 일이 없게 한다.
+      holdActive: Boolean(configHeld),
     });
     const childEnv = {
       ...process.env,
