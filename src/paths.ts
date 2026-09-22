@@ -179,9 +179,38 @@ export function isLlmWorkdirPath(project: string): boolean {
  * pendingExtractionCoreQuery and pipeline-status so the reserved workdir shape
  * cannot drift between the selection and status consumers again. Returns a
  * parenthesized clause; `column` defaults to the worker queries' alias.
+ *
+ * 🚨 Issue #181 — this used SQL `LIKE`, which is NOT the same predicate.
+ * `LIKE` ignores ASCII case and `'%/memex-llm-%'` is not anchored on the last
+ * path element, so the two sides disagreed on three reproduced shapes:
+ * `/project/MEMEX-LLM` and `/tmp/memex-llm-abc/project` were dropped from the
+ * pending set although the extractor would have indexed them (a real session
+ * silently never extracted), while `/tmp/memex-llm/` was selected and then
+ * skipped by the extractor — the #177 permanent-pending shape again.
+ *
+ * So the clause now computes the LAST path element and compares it exactly,
+ * mirroring `isLlmWorkdirPath` line for line:
+ *   - `rtrim(cwd, '/')` drops trailing slashes, exactly as the TS side's
+ *     `split("/").filter(Boolean)` drops empty segments (`/tmp/memex-llm/`
+ *     and `/tmp/memex-llm//` both reduce to the `memex-llm` element);
+ *   - `replace(p, rtrim(p, replace(p, '/', '')), '')` is the standard SQLite
+ *     basename: the inner `rtrim` strips every trailing NON-slash character
+ *     (the char set is `p` without its slashes), leaving `dirname/`, and
+ *     `replace` removes that one prefix occurrence — it cannot occur twice
+ *     because it ends with the last `/` and what follows holds none. A path
+ *     with no slash trims to `''`, and `replace(X, '', '')` returns `X`
+ *     unchanged, so the bare-basename case works too;
+ *   - `=` and `GLOB` are case-SENSITIVE, so only the exact reserved name and
+ *     the mkdtemp `memex-llm-XXXXXX` suffix form match, like `startsWith`.
+ * Keep this in step with isLlmWorkdirPath; test/extraction-workdir-gate.test.ts
+ * runs both over one cwd table and fails on any disagreement.
  */
 export function llmWorkdirCwdSql(column = "x.cwd"): string {
- return `(${column} LIKE '%/${LLM_WORKDIR_BASENAME}' OR ${column} LIKE '%/${LLM_WORKDIR_BASENAME}-%')`;
+ const trimmed = `rtrim(${column}, '/')`;
+ const lastElement =
+  `replace(${trimmed}, rtrim(${trimmed}, replace(${trimmed}, '/', '')), '')`;
+ return `(${lastElement} = '${LLM_WORKDIR_BASENAME}'`
+  + ` OR ${lastElement} GLOB '${LLM_WORKDIR_BASENAME}-*')`;
 }
 
 /**

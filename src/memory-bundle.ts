@@ -110,6 +110,69 @@ function normalizeLine(text: string, cap: number): string {
 }
 
 /**
+ * A sentence terminator, plus the closers that belong to the sentence it ends
+ * (`... signs off."` is one boundary, not a cut before the quote). `。！？` are
+ * the CJK forms; a Korean sentence ender (`…다.`, `…요.`) is terminated by the
+ * same ASCII period, so it needs no rule of its own.
+ */
+const SENTENCE_END = /[.!?。！？]+["'”’»）)\]]*/g;
+
+/**
+ * 🚨 Issue #182 — a scalar rendered from model text must never be cut inside a
+ * clause while a complete sentence fits.
+ *
+ * `[WORK NOW]` truncated the stored `currentState` again at the line budget:
+ * `Deployment is approved only after the operator signs off.` was injected as
+ * `Deployment is approved…`, so the model reading that context took a
+ * CONDITIONAL for a fact. The cut is what inverted the meaning, not the
+ * budget — the sentence before it was intact and shorter than the budget.
+ *
+ * So the cut is made at the LAST sentence boundary inside the budget (a
+ * terminator followed by whitespace or the end of the text, which is also what
+ * keeps `0.7.29` and `src/paths.ts` from counting as boundaries), falling back
+ * to the last whitespace, and only then to a hard cut for one unbroken token.
+ * The ellipsis is kept in every case, so the reader still knows text was
+ * dropped. Dropping the tail of a sentence is deliberate: a shorter complete
+ * statement is worth more to the reader than a longer inverted one.
+ *
+ * The result is never longer than `maxChars` (ellipsis included) and never
+ * longer than the input, so every caller's byte budget still holds.
+ */
+export function truncateAtSentenceBoundary(
+  text: string,
+  maxChars: number,
+  options: { ellipsis?: string } = {},
+): string {
+  const ellipsis = options.ellipsis ?? "…";
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= maxChars) return flat;
+  const budget = maxChars - ellipsis.length;
+  if (budget <= 0) return "";
+  const head = flat.slice(0, budget);
+  let sentenceEnd = 0;
+  for (const match of head.matchAll(SENTENCE_END)) {
+    const stop = (match.index ?? 0) + match[0].length;
+    // The whitespace that proves it is a sentence end may be the very
+    // character the cut removes, so it is read from the FULL text.
+    const next = flat[stop];
+    if (next === undefined || /\s/.test(next)) sentenceEnd = stop;
+  }
+  if (sentenceEnd > 0) return flat.slice(0, sentenceEnd) + ellipsis;
+  // The budget already ends on a word boundary: keep the whole last word.
+  if (/\s/.test(flat[budget] ?? "")) return head.trimEnd() + ellipsis;
+  // The word-boundary fallback is cosmetic where the sentence rule is
+  // semantic: it only exists so a cut does not land inside a word. So when the
+  // nearest word boundary would throw away most of the budget — one unbroken
+  // token, a URL, a CJK run without spaces — it is abandoned for the longer
+  // hard cut: `Verify` tells the reader less than `Verify journalxxxx…` does,
+  // and no clause is being inverted (test/continuity-rehydration-budget.test.ts
+  // renders exactly that shape, a 480-character token inside a 66-char slot).
+  const lastSpace = head.lastIndexOf(" ");
+  if (lastSpace >= Math.ceil(budget * 0.5)) return head.slice(0, lastSpace).trimEnd() + ellipsis;
+  return head + ellipsis;
+}
+
+/**
  * Keep the first renderer-owned section marker visible to existing host
  * consumers, then place every memory item inside the untrusted JSON envelope.
  * The marker is selected from BUNDLE_HEADINGS, never from item text, so this

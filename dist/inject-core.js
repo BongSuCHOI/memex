@@ -11,7 +11,7 @@ import { matchIncidentPatterns, readChronicleTimeline, recordTelemetrySample, } 
 import { applyPendingEpochAdvance, ensureSessionMemoryState, readResidentFactRevisions, readResidentRevisionCorrections, readWorkCapsule, recordResidentFactRevisions, } from "./continuity-core.js";
 import { commitHotEvidenceCursor, markSessionProjectRevisionSeen, readHotEvidence, sessionProjectRevisionState, } from "./continuity-identity.js";
 import { blobToEmbedding, decideRecall, embeddingToBlob, resolveAmbiguousDecision, tokenizePrompt, } from "./recall-gate.js";
-import { NORMAL_BUNDLE_BUDGET, renderMemoryBundle, } from "./memory-bundle.js";
+import { NORMAL_BUNDLE_BUDGET, renderMemoryBundle, truncateAtSentenceBoundary, } from "./memory-bundle.js";
 import { loadRecallGateOverlay, toUserIntentHits } from "./recall-gate-overlay.js";
 import { EMPTY_USER_PATTERN_HITS, oneShotMatcher, } from "./overlay-matcher.js";
 /** Measured outcome sample; never blocks or fails the prompt path. */
@@ -259,6 +259,18 @@ export async function commitInjectionBundle(db, commit, options = {}) {
 function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
     const t = text.replace(/\s+/g, " ").trim();
     return t.length > cap ? t.slice(0, cap - 1) + "…" : t;
+}
+/**
+ * 🚨 Issue #182: a SCALAR line rendered from model prose — the Capsule's
+ * objective / current state / blocker / next action, or a quoted earlier
+ * answer. `truncateFact` cut those at the raw character budget, and
+ * `Deployment is approved only after the operator signs off.` reached the
+ * model as `Deployment is approved…`: a conditional read as a fact. The rule
+ * itself lives in memory-bundle.ts beside the per-line truncation it belongs
+ * to, so every renderer shares one answer.
+ */
+function truncateScalar(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
+    return truncateAtSentenceBoundary(text, cap);
 }
 /**
  * Compute the UserPromptSubmit context block for a prompt.
@@ -757,13 +769,13 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         if (wantsWorkNow && capsule) {
             const lines = ["[WORK NOW]"];
             if (capsule.objective)
-                lines.push(`Objective: ${truncateFact(capsule.objective, 200)}`);
+                lines.push(`Objective: ${truncateScalar(capsule.objective, 200)}`);
             if (capsule.currentState)
-                lines.push(`State: ${truncateFact(capsule.currentState, 200)}`);
+                lines.push(`State: ${truncateScalar(capsule.currentState, 200)}`);
             if (capsule.blockers[0])
-                lines.push(`Blocker: ${truncateFact(capsule.blockers[0], 160)}`);
+                lines.push(`Blocker: ${truncateScalar(capsule.blockers[0], 160)}`);
             if (capsule.nextActions[0])
-                lines.push(`Next: ${truncateFact(capsule.nextActions[0], 160)}`);
+                lines.push(`Next: ${truncateScalar(capsule.nextActions[0], 160)}`);
             workNowRenderable = lines.length > 1;
             if (workNowRenderable)
                 sections.push({ kind: "WORK NOW", items: [{ text: lines.join("\n"), raw: true }] });
@@ -850,7 +862,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
                     sections.push({
                         kind: "ASSISTANT CONTEXT",
                         items: [{
-                                text: `Earlier answer (${match.timestamp.slice(0, 10)}, may be stale; verify with MCP search): "${truncateFact(match.assistantSummary, 200)}" — lines ${match.lineStart}-${match.lineEnd} in ${match.archivePath}`,
+                                text: `Earlier answer (${match.timestamp.slice(0, 10)}, may be stale; verify with MCP search): "${truncateScalar(match.assistantSummary, 200)}" — lines ${match.lineStart}-${match.lineEnd} in ${match.archivePath}`,
                             }],
                     });
                 }

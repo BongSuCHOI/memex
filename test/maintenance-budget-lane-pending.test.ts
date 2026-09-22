@@ -90,10 +90,10 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
    * budget is `completed` and the job queue is empty, because the previous
    * wake found nothing to do.
    */
-  const drainedToCompleted = () => {
+  const drainedToCompleted = (runLimits = limits) => {
     const first = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
-      limits,
+      limits: runLimits,
       now: T0,
     });
     expect(first.state).toBe("active");
@@ -101,7 +101,7 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
     // The next wake sees no job and no derived target: the run is retired.
     const drained = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
-      limits,
+      limits: runLimits,
       now: at(60_000),
     });
     expect(drained.budgetId).toBe(first.budgetId);
@@ -109,6 +109,20 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
     expect(budgetCount()).toBe(1);
     return drained;
   };
+
+  /** Unbound queue work of another lane — what mints the next run in #180-1. */
+  const unboundPendingJob = (jobId: string, kind = "capture_index") => {
+    db.prepare(`
+      INSERT INTO memory_jobs
+        (job_id, kind, partition_key, policy_version, state, available_at,
+         attempts, idempotency_key, created_at, updated_at)
+      VALUES (?, ?, ?, 'test', 'pending', ?, 0, ?, ?, ?)
+    `).run(jobId, kind, `session:${jobId}`, T0.toISOString(), jobId, T0.toISOString(), T0.toISOString());
+  };
+
+  const budgetRow = (budgetId: string) =>
+    db.prepare("SELECT state, run_seq FROM model_work_budgets WHERE budget_id = ?").get(budgetId) as
+      { state: string; run_seq: number };
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-lane-pending-"));
@@ -133,14 +147,18 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
   });
 
   it("rolls a completed run over to a new active run when a lane has work", () => {
-    const drained = drainedToCompleted();
+    // 이슈 #180-2: run 의 경계는 데드라인이다. 데드라인이 아직 열려 있으면 같은 run
+    // 을 되돌려 쓰므로(아래 "reopens the completed unspent run in place"), 롤오버를
+    // 보려면 run 1 의 창이 끝난 뒤의 wake 여야 한다.
+    const runOne = { maxAttempts: 8, deadlineAt: at(10 * 60_000).toISOString() };
+    const drained = drainedToCompleted(runOne);
 
     // A new session arrives. There is still no `fact_extract` job — only the
     // worker creates one — so the queue is the wrong place to ask.
     const reopened = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
       limits,
-      now: at(2 * 60_000),
+      now: at(11 * 60_000),
       lanePending: true,
     });
     expect(
@@ -359,7 +377,8 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
     expect(budgetCount()).toBe(1);
 
     // Releasing the hold turns it back into ordinary queued work, and the very
-    // next wake opens the run that will actually drain it.
+    // next wake opens the run that will actually drain it — 이슈 #180-2 이후로는
+    // 데드라인이 아직 열려 있는 미소비 run 을 **제자리에서** 다시 열어 쓴다.
     expect(releaseHeldJobs(db, "model_config_rejected")).toBe(1);
     const reopened = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
@@ -371,9 +390,10 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
       reopened.state,
       "once the hold is lifted the job is real work again and must reopen the wave",
     ).toBe("active");
-    expect(reopened.budgetId).not.toBe(drained.budgetId);
-    expect(reopened.runSeq).toBe(2);
-    expect(budgetCount()).toBe(2);
+    expect(reopened.budgetId, "an open unspent run is reused, not replaced (#180-2)")
+      .toBe(drained.budgetId);
+    expect(reopened.runSeq).toBe(1);
+    expect(budgetCount()).toBe(1);
   });
 
   /**
@@ -390,9 +410,12 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
    * and after it the claim is refused with `deadline` — forever.
    */
   it("a released held job bound to a retired run joins the wave's next run", () => {
+    // 이슈 #180-2 이후: 데드라인이 열려 있는 미소비 run 은 제자리에서 다시 열리므로,
+    // **다음 run** 으로의 이동을 보려면 run 1 의 창이 끝난 뒤에 hold 를 풀어야 한다.
+    const runOne = { maxAttempts: 8, deadlineAt: at(10 * 60_000).toISOString() };
     const first = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
-      limits,
+      limits: runOne,
       now: T0,
     });
     expect(first.state).toBe("active");
@@ -417,7 +440,7 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
     // The wake sees no runnable work (the only job is held) and retires run 1.
     const retired = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
-      limits,
+      limits: runOne,
       now: at(60_000),
       lanePending: false,
     });
@@ -428,7 +451,7 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
     // STILL HELD: nothing moves, nothing is minted, the hold is intact.
     const stillHeld = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
-      limits,
+      limits: runOne,
       now: at(2 * 60_000),
       lanePending: false,
     });
@@ -444,12 +467,12 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
       hold_reason: "model_config_rejected",
     });
 
-    // The operator fixes the setting.
+    // The operator fixes the setting, after run 1's window has ended.
     expect(releaseHeldJobs(db, "model_config_rejected")).toBe(1);
     const reopened = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: "maintenance",
       limits,
-      now: at(3 * 60_000),
+      now: at(11 * 60_000),
       lanePending: false,
     });
     expect(reopened.state, "the released job is real work and must open run 2").toBe("active");
@@ -473,10 +496,191 @@ describe("issue #175 — a completed automatic budget reopens for lane-level wor
       findExhaustedModelBudgetForClaim(db, {
         jobId: "job-bound-1",
         parentWaveId: "maintenance",
-        now: at(4 * 60_000),
+        now: at(12 * 60_000),
       }),
       "a job on the live run must not be refused",
     ).toBeNull();
+  });
+
+  /**
+   * 🚨 이슈 #180-1 — 해제된 hold job 이 **더 오래된** 은퇴 run 에 묶여 좌초한다.
+   *
+   * #177 라운드 2 는 `latest` 하나에서만 job 을 데려왔다. 리뷰어가 재현한 순서는
+   * 그 한 칸을 비켜간다: capsule job 이 run 1 에서 hold → run 1 이 `completed` 로
+   * 은퇴 → 무관한 **unbound** 작업이 run 2 를 연다 → hold 해제. 이제 job 이 묶인
+   * run 1 은 더 이상 `latest` 가 아니므로 어떤 wake 도 그것을 옮기지 않고,
+   * run 1 의 데드라인이 지나면 claim 이 `deadline` 으로 거절되어 **영구히** 멈춘다.
+   *
+   * 그래서 자동 wake 는 매번, 반환할 예산이 `active` 로 확정된 뒤, 같은 계보
+   * (`root_wave_id`)의 **모든** 비활성 run 에서 움직일 수 있는 job 을 데려온다.
+   */
+  it("adopts a released job stranded on an older retired run, not just on `latest`", () => {
+    // run 1: 10분 데드라인 — #180-2 의 재사용 창을 지나 run 2 가 열리게 한다.
+    const runOne = { maxAttempts: 8, deadlineAt: at(10 * 60_000).toISOString() };
+    const first = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits: runOne,
+      now: T0,
+    });
+    expect(first.state).toBe("active");
+    for (const jobId of ["job-capsule-1", "job-capsule-held"]) {
+      claimedBoundJob(jobId, first.budgetId, first.parentWaveId);
+      expect(
+        holdMemoryJob(db, {
+          jobId,
+          owner: "owner-1",
+          leaseGeneration: 1,
+          reason: jobId === "job-capsule-1" ? "model_config_rejected" : "extraction_rules_invalid",
+          detail: "held while run 1 retires",
+          now: T0,
+        }),
+        "the hold CAS must match the claim the fixture wrote",
+      ).toBe(true);
+    }
+
+    // 아무 실행 가능한 일감이 없다 → run 1 은 `completed` 로 은퇴한다.
+    const retired = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits: runOne,
+      now: at(60_000),
+      lanePending: false,
+    });
+    expect(retired.budgetId).toBe(first.budgetId);
+    expect(retired.state).toBe("completed");
+
+    // 무관한 unbound 작업이 run 2 를 연다(run 1 의 데드라인은 이미 지났다).
+    unboundPendingJob("job-index-1");
+    const second = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(11 * 60_000),
+      lanePending: false,
+    });
+    expect(second.budgetId).not.toBe(first.budgetId);
+    expect(second.state).toBe("active");
+    expect(second.runSeq).toBe(2);
+    expect(budgetCount()).toBe(2);
+    // 두 job 모두 아직 hold 중이므로 움직이지 않는다.
+    for (const jobId of ["job-capsule-1", "job-capsule-held"]) {
+      expect(jobRow(jobId).budget_id, "a held job must not be moved off its run").toBe(
+        first.budgetId,
+      );
+    }
+
+    // 운영자가 설정을 고친다 — 하나만 해제되고, 다른 하나는 hold 상태로 남는다.
+    expect(releaseHeldJobs(db, "model_config_rejected")).toBe(1);
+    const wake = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(13 * 60_000),
+      lanePending: false,
+    });
+    expect(wake.budgetId, "the live run is reused, not replaced").toBe(second.budgetId);
+    expect(wake.state).toBe("active");
+    expect(budgetCount()).toBe(2);
+    expect(
+      jobRow("job-capsule-1"),
+      "a released job left on an older retired run can never be claimed again",
+    ).toEqual({ budget_id: second.budgetId, state: "pending", hold_reason: null });
+    expect(
+      jobRow("job-capsule-held"),
+      "a job that is still held stays on its own run",
+    ).toEqual({
+      budget_id: first.budgetId,
+      state: "pending",
+      hold_reason: "extraction_rules_invalid",
+    });
+
+    // The claim path agrees: the job resolves to the LIVE run and is not refused.
+    const peeked = peekResolvedModelBudget(db, { jobId: "job-capsule-1" });
+    expect("budget" in peeked && peeked.budget.budgetId).toBe(second.budgetId);
+    expect(
+      findExhaustedModelBudgetForClaim(db, {
+        jobId: "job-capsule-1",
+        parentWaveId: "maintenance",
+        now: at(14 * 60_000),
+      }),
+      "a job on the live run must not be refused",
+    ).toBeNull();
+  });
+
+  /**
+   * 🚨 이슈 #180-2 — pending/idle 교대가 wake 마다 run 을 찍어냈다.
+   *
+   * 큐가 비면 run 은 `completed` 로 은퇴하고, 몇 분 뒤 레인 작업이 다시 나타나면
+   * (미소비 은퇴 run 은 쿨다운을 건너뛰도록 설계됐으므로) 즉시 **새** run 이
+   * 열렸다. 3분 wake 간격에서 작업이 교대하면 0/6/12분에 run 이 열려 하루 240개,
+   * 모델 호출 0회다. 데드라인이 아직 열려 있고 아무것도 소비되지 않았다면 같은
+   * run 을 다시 `active` 로 되돌려 쓴다(같은 id, 같은 원장).
+   */
+  it("reopens the completed unspent run in place while its deadline is open", () => {
+    const drained = drainedToCompleted();
+
+    const reopened = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(3 * 60_000),
+      lanePending: true,
+    });
+    expect(
+      reopened.budgetId,
+      "an open, unspent run must be reused instead of minting the next one",
+    ).toBe(drained.budgetId);
+    expect(reopened.state).toBe("active");
+    expect(reopened.runSeq).toBe(1);
+    expect(reopened.parentWaveId).toBe("maintenance");
+    expect(budgetCount()).toBe(1);
+    // 같은 원장: 생성 시각은 그대로, updated_at 만 움직인다.
+    expect(reopened.createdAt).toBe(drained.createdAt);
+    expect(Date.parse(reopened.updatedAt)).toBeGreaterThanOrEqual(Date.parse(drained.updatedAt));
+    expect(reopened.maxAttempts).toBe(drained.maxAttempts);
+    expect(reopened.deadlineAt).toBe(drained.deadlineAt);
+  });
+
+  it("mints the next run once the completed run's deadline has passed", () => {
+    const runOne = { maxAttempts: 8, deadlineAt: at(10 * 60_000).toISOString() };
+    const drained = drainedToCompleted(runOne);
+
+    const rolled = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: at(11 * 60_000),
+      lanePending: true,
+    });
+    expect(
+      rolled.budgetId,
+      "a run whose window has ended cannot be reused: its deadline fences the spend",
+    ).not.toBe(drained.budgetId);
+    expect(rolled.state).toBe("active");
+    expect(rolled.runSeq).toBe(2);
+    expect(budgetCount()).toBe(2);
+    expect(budgetRow(drained.budgetId).state).toBe("completed");
+  });
+
+  it("pending/idle alternation inside one deadline mints no run at all", () => {
+    const first = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits,
+      now: T0,
+    });
+    expect(first.state).toBe("active");
+
+    // 리뷰어가 관측한 모양: 3분 wake 간격에서 레인 작업이 교대한다.
+    for (let wake = 1; wake <= 5; wake++) {
+      const lanePending = wake % 2 === 1;
+      const seen = getOrCreateAutomaticMaintenanceModelBudget(db, {
+        parentWaveId: "maintenance",
+        limits,
+        now: at(wake * 3 * 60_000),
+        lanePending,
+      });
+      expect(seen.budgetId, `wake ${wake}`).toBe(first.budgetId);
+      expect(seen.state, `wake ${wake}`).toBe(lanePending ? "active" : "completed");
+    }
+    expect(
+      budgetCount(),
+      "one deadline window is one run, however often the queue empties",
+    ).toBe(1);
   });
 
   it("an active run with lane work is returned unchanged", () => {
@@ -685,14 +889,17 @@ describe("issue #175 — session-start-maintenance spawns the extract lane", () 
     expect(await waitFor(f.spawned), "the spawned worker must reach the disk").toBe(true);
     const check = new Database(f.dbFile);
     try {
+      // 이슈 #180-2: 시드된 run 은 미소비이고 15분 데드라인이 아직 열려 있으므로
+      // 다음 run 이 아니라 **같은 run** 이 다시 `active` 가 된다 — 행은 하나뿐이다.
+      expect(check.prepare("SELECT COUNT(*) AS n FROM model_work_budgets").get()).toEqual({ n: 1 });
       expect(
         check
           .prepare("SELECT state, run_seq FROM model_work_budgets ORDER BY run_seq DESC LIMIT 1")
           .get(),
-      ).toEqual({ state: "active", run_seq: 2 });
+      ).toEqual({ state: "active", run_seq: 1 });
       // The child is bound to the run the hook just opened.
       expect(fs.readFileSync(f.spawned, "utf8")).toBe(
-        (check.prepare("SELECT budget_id FROM model_work_budgets WHERE run_seq = 2").get() as {
+        (check.prepare("SELECT budget_id FROM model_work_budgets WHERE state = 'active'").get() as {
           budget_id: string;
         }).budget_id,
       );

@@ -2650,6 +2650,67 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
     // 계보로 정규화되므로 shared rolling cap의 전제가 깨지지 않는다.
     const rootWaveId = rootWaveIdOf(parentWaveId);
     db.prepare("UPDATE model_work_budgets SET automatic = 1 WHERE root_wave_id = ?").run(rootWaveId);
+    /**
+     * 🚨 이슈 #180-1 — `latest` 한 칸만 데려오는 것으로는 부족하다.
+     *
+     * #177 라운드 2 는 은퇴한 `latest` 에서만 job 을 재바인딩했다. 리뷰어가 재현한
+     * 순서는 그 칸을 비켜간다: capsule job 이 run 1 에서 hold → run 1 이 `completed`
+     * 로 은퇴 → 무관한 **unbound** 작업이 run 2 를 연다 → hold 해제. 이제 job 이
+     * 묶인 run 1 은 `latest` 가 아니므로 어떤 wake 도 그것을 옮기지 않고, run 1 의
+     * 데드라인이 지나면 claim 이 `deadline` 으로 거절되어 **영구히** 멈춘다.
+     *
+     * 그래서 모든 자동 wake 는 — 재사용이든 재개방이든 새로 찍은 run 이든 —
+     * 반환할 예산이 `active` 로 확정된 뒤 같은 계보(`root_wave_id`)의 **모든**
+     * 비활성 run 에서 움직일 수 있는 job 을 그 run 으로 데려온다. 술어와 쓰기는
+     * `movableWaveJobSql` / `rebindMovableWaveJobs` 라는 단일 소스이므로 hold 가
+     * 남아 있거나 살아 있는 리스를 든 job 은 여기서도 움직이지 않는다.
+     *
+     * 출처 상태는 `rebindSpentQueueJobsToBudget` 와 같은 집합
+     * ('exhausted','completed','cancelled')이다. `cancelled` 도 포함하는 이유는
+     * 그 쪽과 같다 — 운영자가 취소한 것은 **run** 이고 job 이 아니다. 취소된 예산
+     * 아래에서는 `nextJob` 이 claim 하지 않고 pre-claim 체크가 거절하므로, 두고 가면
+     * 그 job 은 영구 pending 이 된다. (계보의 `latest` 자체가 `cancelled` 이면 아래
+     * 이른 반환이 먼저 걸리므로 계보 전체가 얼어붙은 채 아무것도 움직이지 않는다.)
+     * 이미 active 예산에 있는 job 은 출처에서 제외되므로 두 번 옮겨지지 않는다.
+     */
+    const adoptLineageJobs = (budget: ModelWorkBudget): ModelWorkBudget => {
+      if (budget.state !== "active") return budget;
+      const sources = db.prepare(`
+        SELECT budget_id FROM model_work_budgets
+        WHERE root_wave_id = ? AND budget_id != ?
+          AND state IN ('exhausted','completed','cancelled')
+        ORDER BY run_seq, created_at, budget_id
+      `).all(rootWaveId, budget.budgetId) as Array<{ budget_id: string }>;
+      for (const source of sources) {
+        rebindMovableWaveJobs(db, {
+          fromBudgetId: String(source.budget_id),
+          toBudgetId: budget.budgetId,
+          toParentWaveId: budget.parentWaveId,
+          nowIso,
+        });
+      }
+      return budget;
+    };
+    /**
+     * #180-1, the other half: a movable job stranded on a NON-active run of
+     * this lineage is real pending work. Without this witness the wake that
+     * could adopt it never happens — `countPendingModelWork` asks only about
+     * `latest` and about unbound rows, so a released job parked on run 1 while
+     * run 2 is already retired keeps the whole lineage idle for ever. Same
+     * `movable` predicate, so a HELD job still counts as nothing (#177).
+     */
+    const strandedLineageJobs = (activeBudgetId: string | null): number => {
+      if (!tableExists(db, "memory_jobs")) return 0;
+      if (!columnNames(db, "memory_jobs").has("budget_id")) return 0;
+      const row = db.prepare(`
+        SELECT COUNT(*) AS n FROM memory_jobs j
+        JOIN model_work_budgets b ON b.budget_id = j.budget_id
+        WHERE b.root_wave_id = ? AND b.state IN ('exhausted','completed','cancelled')
+          AND (? IS NULL OR j.budget_id != ?)
+          AND ${movableWaveJobSql(db)}
+      `).get(rootWaveId, activeBudgetId, activeBudgetId, nowIso) as { n: number };
+      return Number(row?.n ?? 0);
+    };
     let latest = latestMaintenanceBudget(db, parentWaveId);
     const window = automaticMaintenanceWindow(db, now);
     const lastAttempt = latest ? db.prepare(`
@@ -2676,12 +2737,14 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
       const held = tableExists(db, "memory_jobs") && columnNames(db, "memory_jobs").has("lease_until")
         ? db.prepare("SELECT 1 FROM memory_jobs WHERE budget_id = ? AND lease_until > ? LIMIT 1").get(latest.budgetId, nowIso)
         : null;
-      if (held) return latest;
+      if (held) return adoptLineageJobs(latest);
       const reserved = countPendingModelWork(db, latest.budgetId).reserved;
       if (reserved > 0) {
         // Provider calls are bounded by the run deadline. Retain crashed
         // reservations as unknown usage, never free their spent attempts.
-        if (!latest.deadlineAt || now.getTime() < Date.parse(latest.deadlineAt) + 60_000) return latest;
+        if (!latest.deadlineAt || now.getTime() < Date.parse(latest.deadlineAt) + 60_000) {
+          return adoptLineageJobs(latest);
+        }
         db.prepare(`UPDATE model_work_attempts SET state = 'unknown', finished_at = ?,
           error_class = 'expired_reservation' WHERE budget_id = ? AND state = 'reserved'`)
           .run(nowIso, latest.budgetId);
@@ -2690,14 +2753,15 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
       // enqueued yet must keep this wave open, or the lane's own worker — the
       // only thing that can enqueue it — is never spawned again.
       const jobsPending = countPendingModelWork(db, latest.budgetId).pending > 0
-        || countPendingModelWork(db).unbound > 0;
+        || countPendingModelWork(db).unbound > 0
+        || strandedLineageJobs(latest.state === "active" ? latest.budgetId : null) > 0;
       const pending = jobsPending || input.lanePending === true;
       if (!pending) {
         db.prepare("UPDATE model_work_budgets SET state = 'completed', updated_at = ? WHERE budget_id = ? AND state != 'completed'")
           .run(nowIso, latest.budgetId);
         return readBudgetById(db, latest.budgetId)!;
       }
-      if (latest.state === "active") return latest;
+      if (latest.state === "active") return adoptLineageJobs(latest);
       // 🚨 Issue #146: the cooldown fences SPEND, not the clock.
       //
       // A run that stopped because its own 15-minute deadline passed spent
@@ -2731,6 +2795,32 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
       const drainedUnspent = latest.state === "completed" && !spentReason && !spentAttempts;
       const clockOnlyStop = latest.exhaustedReason === "deadline" || drainedUnspent;
       if (window.remaining === 0 || (!clockOnlyStop && now.getTime() < retryAt)) return latest;
+      // 🚨 이슈 #180-2 — pending/idle 교대가 wake 마다 run 을 찍어냈다.
+      //
+      // 큐가 비면 위의 `!pending` 블록이 run 을 `completed` 로 은퇴시키고, 몇 분 뒤
+      // 레인 작업이 돌아오면 미소비 은퇴 run 은 쿨다운을 건너뛰므로(#175/#177) 즉시
+      // **새** run 이 열렸다. 3분 wake 간격에서 작업이 교대하면 0/6/12분에 run 이
+      // 열린다 — 리뷰어의 시뮬레이션에서 하루 240개, 모델 호출은 0회였다. run 마다
+      // 원장이 갈라지므로 `attempts=N/M` 도, 쿨다운 기준 시각도 매번 리셋된다.
+      //
+      // run 의 경계는 **데드라인**이다. 데드라인이 아직 열려 있고 그 run 이
+      // 아무것도 소비하지 않았다면(`drainedUnspent`: 기록된 exhaustion 이유가 없고
+      // attempts 가 cap 아래) 다음 run 이 아니라 같은 run 을 다시 `active` 로
+      // 되돌린다 — 같은 id, 같은 원장, 같은 데드라인. `completed` 는 종료 상태가
+      // 아니라 "지금은 할 일이 없다"는 표시다(`selectWaveModelBudget` 도, 상태
+      // 카운터 `state = 'exhausted'` 도 그 전환을 전제하지 않는다).
+      //
+      // 데드라인이 지났거나 그 run 이 실제로 소비했다면 아래의 기존 롤오버가
+      // 그대로 다음 run 을 연다 — 소비된 정지의 쿨다운은 위에서 이미 지켰다.
+      const deadlineOpen = latest.deadlineAt !== null
+        && Date.parse(latest.deadlineAt) > now.getTime();
+      if (drainedUnspent && latest.exhaustedReason === null && deadlineOpen) {
+        db.prepare(`
+          UPDATE model_work_budgets SET state = 'active', updated_at = ?
+          WHERE budget_id = ? AND state = 'completed'
+        `).run(nowIso, latest.budgetId);
+        return adoptLineageJobs(readBudgetById(db, latest.budgetId)!);
+      }
     }
     // 이슈 #42: rollover는 접미사 누적이 아니라 run 번호 증가다.
     // `maintenance` → `maintenance#2` → `maintenance#3` — 길이가 유한하고
@@ -2756,17 +2846,12 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
     // 데드라인 전에는 `completed` 예산에 모델 호출이 과금되고, 데드라인 후에는
     // claim 이 `deadline` 으로 거절되어 그 job 은 영구히 멈춘다.
     //
-    // 술어·쓰기 모두 `rolloverSpentWaveBudgets` 와 같은 단일 소스이므로 `hold_reason`
-    // 이 남아 있는 job 은 여기서도 움직이지 않는다 — 해제된 뒤에만 옮겨진다.
-    if (latest && latest.state !== "exhausted") {
-      rebindMovableWaveJobs(db, {
-        fromBudgetId: latest.budgetId,
-        toBudgetId: next.budgetId,
-        toParentWaveId: next.parentWaveId,
-        nowIso,
-      });
-    }
-    return readBudgetById(db, next.budgetId)!;
+    // 이슈 #180-1: 그 재바인딩은 이제 `latest` 한 칸이 아니라 계보 전체를 본다
+    // (`adoptLineageJobs`). 새 run 이 `window.remaining === 0` 때문에 태어날 때부터
+    // `exhausted` 이면 아무것도 데려오지 않는다 — 그 run 에서는 claim 이 거절되므로
+    // job 을 옮기는 것이 곧 두 번째 좌초다. 그래서 상태를 쓴 **뒤에** 행을 다시 읽어
+    // 판단한다.
+    return adoptLineageJobs(readBudgetById(db, next.budgetId)!);
   });
   return maintain.immediate();
 }

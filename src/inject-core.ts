@@ -53,6 +53,7 @@ import {
 import {
   NORMAL_BUNDLE_BUDGET,
   renderMemoryBundle,
+  truncateAtSentenceBoundary,
   type BundleSection,
 } from "./memory-bundle.js";
 import { loadRecallGateOverlay, toUserIntentHits } from "./recall-gate-overlay.js";
@@ -451,6 +452,19 @@ export async function commitInjectionBundle(
 function truncateFact(text: string, cap = NORMAL_BUNDLE_BUDGET.lineChars): string {
   const t = text.replace(/\s+/g, " ").trim();
   return t.length > cap ? t.slice(0, cap - 1) + "…" : t;
+}
+
+/**
+ * 🚨 Issue #182: a SCALAR line rendered from model prose — the Capsule's
+ * objective / current state / blocker / next action, or a quoted earlier
+ * answer. `truncateFact` cut those at the raw character budget, and
+ * `Deployment is approved only after the operator signs off.` reached the
+ * model as `Deployment is approved…`: a conditional read as a fact. The rule
+ * itself lives in memory-bundle.ts beside the per-line truncation it belongs
+ * to, so every renderer shares one answer.
+ */
+function truncateScalar(text: string, cap = NORMAL_BUNDLE_BUDGET.lineChars): string {
+  return truncateAtSentenceBoundary(text, cap);
 }
 
 /**
@@ -942,10 +956,10 @@ export async function computeInjectContext(
     let workNowRenderable = false;
     if (wantsWorkNow && capsule) {
       const lines = ["[WORK NOW]"];
-      if (capsule.objective) lines.push(`Objective: ${truncateFact(capsule.objective, 200)}`);
-      if (capsule.currentState) lines.push(`State: ${truncateFact(capsule.currentState, 200)}`);
-      if (capsule.blockers[0]) lines.push(`Blocker: ${truncateFact(capsule.blockers[0], 160)}`);
-      if (capsule.nextActions[0]) lines.push(`Next: ${truncateFact(capsule.nextActions[0], 160)}`);
+      if (capsule.objective) lines.push(`Objective: ${truncateScalar(capsule.objective, 200)}`);
+      if (capsule.currentState) lines.push(`State: ${truncateScalar(capsule.currentState, 200)}`);
+      if (capsule.blockers[0]) lines.push(`Blocker: ${truncateScalar(capsule.blockers[0], 160)}`);
+      if (capsule.nextActions[0]) lines.push(`Next: ${truncateScalar(capsule.nextActions[0], 160)}`);
       workNowRenderable = lines.length > 1;
       if (workNowRenderable) sections.push({ kind: "WORK NOW", items: [{ text: lines.join("\n"), raw: true }] });
     }
@@ -1024,7 +1038,7 @@ export async function computeInjectContext(
           sections.push({
             kind: "ASSISTANT CONTEXT",
             items: [{
-              text: `Earlier answer (${match.timestamp.slice(0, 10)}, may be stale; verify with MCP search): "${truncateFact(match.assistantSummary, 200)}" — lines ${match.lineStart}-${match.lineEnd} in ${match.archivePath}`,
+              text: `Earlier answer (${match.timestamp.slice(0, 10)}, may be stale; verify with MCP search): "${truncateScalar(match.assistantSummary, 200)}" — lines ${match.lineStart}-${match.lineEnd} in ${match.archivePath}`,
             }],
           });
         }
