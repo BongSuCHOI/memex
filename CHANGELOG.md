@@ -2,6 +2,41 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.30 - 2026-09-22
+
+Post-release review of 0.7.29 (#180, #181, #182).
+
+### Maintenance
+
+- Every automatic wake rebinds runnable jobs from every retired run of the
+  lineage to the active run, not only from the latest one (#180). A job held
+  on run 1 while unrelated work minted run 2 stayed bound to run 1 after the
+  hold was released and was rejected with `deadline` once run 1 expired.
+- An unspent retired run whose deadline has not passed is reopened instead of
+  replaced (#180). Lane work that alternated with idle wakes minted a new run
+  every wake (240 runs in a simulated day with zero model calls); now the same
+  run is reused until its deadline passes.
+- The built-in LLM-workdir exclusion in the pending-extraction query is the
+  exact SQL twin of `isLlmWorkdirPath` (#181). `LIKE` was case-insensitive and
+  unanchored, so `/project/MEMEX-LLM` and `/tmp/memex-llm-abc/project` were
+  dropped from the pending set while the extractor would have processed them,
+  and `/tmp/memex-llm/` was the reverse.
+
+### Injection
+
+- Scalar lines rendered from model text (`objective`, `currentState`, hypothesis
+  and next-action text) are truncated at a sentence boundary when one fits the
+  line budget, else at whitespace, before the ellipsis (#182). "Deployment is
+  approved only after the operator signs off." was rendered as "Deployment is
+  approved…", a conditional read as a fact. A period after a known
+  abbreviation (`e.g.`, `Fig.`, `Dr.`, …) or before a lowercase continuation is
+  not a sentence end; a single-letter word such as `option A.` is (external
+  review, two rounds).
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.29 - 2026-09-22
 
 Post-release review of 0.7.28 (#177) and a dead capsule job seen on the primary
