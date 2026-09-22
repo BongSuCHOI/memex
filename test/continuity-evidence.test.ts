@@ -109,7 +109,6 @@ it.each([
   // worker's domain validator sees them; retain the fail-closed assertion at
   // that boundary while the remaining cases exercise domain validation.
   { change: { hypotheses: ["Unverified proposal"] }, error: "model output does not satisfy the requested schema" },
-  { change: { objective: "x".repeat(501) }, error: "objective must be text" },
   { change: { carryFactRevisions: [["fact", 1, "2"]] }, error: "invalid revision identity" },
   { change: { hypotheses: [{ text: "Proposal", sourceExchangeIds: ["foreign"] }], sourceExchangeIds: ["foreign"] }, error: "missing or outside workstream" },
 ])("still rejects invalid Capsule content after native generation: $error", async ({ change, error }) => {
@@ -121,6 +120,21 @@ it.each([
   expect(result[0].detail).toContain(error);
   expect(readWorkCapsule(db, workstream)).toBeNull();
   expect(frontier().through_seq).toBe(0);
+});
+
+it("clamps an over-long objective after native generation instead of rejecting it (#178)", async () => {
+  put("session-A", "source");
+  capture("session-A");
+  const objective = ("word ".repeat(120)).trim(); // 599 UTF-16 units, whitespace inside the bound
+  useFakeCodex({ ...patch, objective });
+  const result = await runContinuityWorker(db, { maxJobs: 1 });
+  expect(result[0].state).toBe("completed");
+  const capsule = readWorkCapsule(db, workstream);
+  expect(capsule).not.toBeNull();
+  expect(capsule!.objective.length).toBeLessThanOrEqual(500);
+  expect(capsule!.objective.endsWith("word")).toBe(true);
+  expect(capsule!.scalarClamps).toEqual({ objective: objective.length });
+  expect(frontier().through_seq).toBe(maximum());
 });
 
 it("drains twenty alternating A/C updates without repeating unchanged generations", async () => {
