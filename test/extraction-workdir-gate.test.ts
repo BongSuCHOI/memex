@@ -7,6 +7,7 @@ import {
   pendingExtractionCoreQuery,
   getExtractionConfig,
 } from "../src/pending-extraction.js";
+import { isLlmWorkdirPath, llmWorkdirCwdSql } from "../src/paths.js";
 
 /**
  * LLM workdir cwd 게이트 회귀 테스트.
@@ -122,6 +123,87 @@ describe("extraction gate: reserved LLM workdir cwd (basename + mkdtemp suffix)"
       const ids = pendingIds(db);
       expect(ids).toContain("sess-slug");
       expect(ids).not.toContain("sess-reserved");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * 이슈 #181 — 내장 LLM-workdir 제외 술어의 SQL 쌍둥이가 TS와 어긋났다.
+ *
+ * `llmWorkdirCwdSql`은 SQL `LIKE`를 썼다. `LIKE`는 ASCII에 대해
+ * 대소문자를 구분하지 않고, `'%/memex-llm-%'`는 마지막 경로 요소에 고정되지
+ * 않는다. 그래서 리뷰어가 재현한 세 가지 모양이 갈렸다:
+ *   `/project/MEMEX-LLM`        — SQL 제외 / 추출기 허용 (실제 세션이 조용히 사라짐)
+ *   `/tmp/memex-llm-abc/project` — SQL 제외 / 추출기 허용 (같은 손실)
+ *   `/tmp/memex-llm/`            — SQL 허용 / 추출기 제외 (#177의 영구 pending 모양)
+ *
+ * 두 술어는 하나의 규칙이어야 하므로, 같은 cwd 표를 양쪽에 돌려 **모든 행**에서
+ * 답이 같은지 고정한다.
+ */
+describe("issue #181 — llmWorkdirCwdSql is the exact twin of isLlmWorkdirPath", () => {
+  /** 이슈가 인용한 모양 + 대소문자 변형 + mkdtemp 접미사 + 후행 슬래시. */
+  const cwds = [
+    "/project/MEMEX-LLM",
+    "/tmp/memex-llm-abc/project",
+    "/tmp/memex-llm/",
+    "/tmp/memex-llm-abc123",
+    "/x/memex-llm",
+    "/x/memex-llm-suffix/",
+    "/x/notmemex-llm",
+    "/x/memex-llmx",
+    "/x/Memex-LLM-abc123",
+    "/x/MEMEX-LLM-abc/project",
+    "/tmp/memex-llm-a1b2c3/",
+    "/tmp/memex-llm//",
+    "memex-llm",
+    "memex-llm-a1b2c3",
+    "/tmp/-Users-x-memex-llm-docs",
+    "/tmp/real-project",
+    "/",
+    "",
+  ];
+
+  const sqlVerdict = (db: Database.Database, cwd: string): boolean => {
+    const row = db.prepare(
+      `SELECT ${llmWorkdirCwdSql("cwd")} AS hit FROM (SELECT ? AS cwd)`,
+    ).get(cwd) as { hit: number | null };
+    return Number(row.hit ?? 0) === 1;
+  };
+
+  it("SQL 게이트와 TS 추출기가 모든 cwd에서 같은 답을 낸다", () => {
+    const db = new Database(":memory:");
+    try {
+      const disagreements = cwds
+        .map((cwd) => ({ cwd, sql: sqlVerdict(db, cwd), ts: isLlmWorkdirPath(cwd) }))
+        .filter((row) => row.sql !== row.ts);
+      expect(
+        disagreements,
+        "the pending-set SQL and the extractor must exclude exactly the same cwds",
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("대소문자를 구분하고 마지막 경로 요소에 고정된다", () => {
+    const db = new Database(":memory:");
+    try {
+      // 대소문자: 예약 이름은 정확히 소문자 `memex-llm`뿐이다.
+      expect(sqlVerdict(db, "/project/MEMEX-LLM")).toBe(false);
+      expect(sqlVerdict(db, "/x/Memex-LLM-abc123")).toBe(false);
+      // 마지막 요소 고정: 상위 디렉터리가 workdir여도 프로젝트 cwd는 살아남는다.
+      expect(sqlVerdict(db, "/tmp/memex-llm-abc/project")).toBe(false);
+      // 후행 슬래시는 TS의 `split("/").filter(Boolean)`과 같게 취급한다.
+      expect(sqlVerdict(db, "/tmp/memex-llm/")).toBe(true);
+      expect(sqlVerdict(db, "/x/memex-llm-suffix/")).toBe(true);
+      // 예약 이름 자체와 mkdtemp 접미사 폼은 계속 제외된다.
+      expect(sqlVerdict(db, "/x/memex-llm")).toBe(true);
+      expect(sqlVerdict(db, "/tmp/memex-llm-abc123")).toBe(true);
+      // 과잉 매칭 방지: 접두/접미가 붙은 다른 이름은 실제 프로젝트다.
+      expect(sqlVerdict(db, "/x/notmemex-llm")).toBe(false);
+      expect(sqlVerdict(db, "/x/memex-llmx")).toBe(false);
     } finally {
       db.close();
     }

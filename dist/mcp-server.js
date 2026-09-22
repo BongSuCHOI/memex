@@ -12096,6 +12096,36 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
   const maintain = db.transaction(() => {
     const rootWaveId = rootWaveIdOf(parentWaveId);
     db.prepare("UPDATE model_work_budgets SET automatic = 1 WHERE root_wave_id = ?").run(rootWaveId);
+    const adoptLineageJobs = (budget) => {
+      if (budget.state !== "active") return budget;
+      const sources = db.prepare(`
+        SELECT budget_id FROM model_work_budgets
+        WHERE root_wave_id = ? AND budget_id != ?
+          AND state IN ('exhausted','completed','cancelled')
+        ORDER BY run_seq, created_at, budget_id
+      `).all(rootWaveId, budget.budgetId);
+      for (const source of sources) {
+        rebindMovableWaveJobs(db, {
+          fromBudgetId: String(source.budget_id),
+          toBudgetId: budget.budgetId,
+          toParentWaveId: budget.parentWaveId,
+          nowIso: nowIso2
+        });
+      }
+      return budget;
+    };
+    const strandedLineageJobs = (activeBudgetId) => {
+      if (!tableExists2(db, "memory_jobs")) return 0;
+      if (!columnNames2(db, "memory_jobs").has("budget_id")) return 0;
+      const row = db.prepare(`
+        SELECT COUNT(*) AS n FROM memory_jobs j
+        JOIN model_work_budgets b ON b.budget_id = j.budget_id
+        WHERE b.root_wave_id = ? AND b.state IN ('exhausted','completed','cancelled')
+          AND (? IS NULL OR j.budget_id != ?)
+          AND ${movableWaveJobSql(db)}
+      `).get(rootWaveId, activeBudgetId, activeBudgetId, nowIso2);
+      return Number(row?.n ?? 0);
+    };
     let latest = latestMaintenanceBudget(db, parentWaveId);
     const window = automaticMaintenanceWindow(db, now);
     const lastAttempt = latest ? db.prepare(`
@@ -12113,25 +12143,35 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
     }
     if (latest) {
       const held = tableExists2(db, "memory_jobs") && columnNames2(db, "memory_jobs").has("lease_until") ? db.prepare("SELECT 1 FROM memory_jobs WHERE budget_id = ? AND lease_until > ? LIMIT 1").get(latest.budgetId, nowIso2) : null;
-      if (held) return latest;
+      if (held) return adoptLineageJobs(latest);
       const reserved = countPendingModelWork(db, latest.budgetId).reserved;
       if (reserved > 0) {
-        if (!latest.deadlineAt || now.getTime() < Date.parse(latest.deadlineAt) + 6e4) return latest;
+        if (!latest.deadlineAt || now.getTime() < Date.parse(latest.deadlineAt) + 6e4) {
+          return adoptLineageJobs(latest);
+        }
         db.prepare(`UPDATE model_work_attempts SET state = 'unknown', finished_at = ?,
           error_class = 'expired_reservation' WHERE budget_id = ? AND state = 'reserved'`).run(nowIso2, latest.budgetId);
       }
-      const jobsPending = countPendingModelWork(db, latest.budgetId).pending > 0 || countPendingModelWork(db).unbound > 0;
+      const jobsPending = countPendingModelWork(db, latest.budgetId).pending > 0 || countPendingModelWork(db).unbound > 0 || strandedLineageJobs(latest.state === "active" ? latest.budgetId : null) > 0;
       const pending = jobsPending || input.lanePending === true;
       if (!pending) {
         db.prepare("UPDATE model_work_budgets SET state = 'completed', updated_at = ? WHERE budget_id = ? AND state != 'completed'").run(nowIso2, latest.budgetId);
         return readBudgetById(db, latest.budgetId);
       }
-      if (latest.state === "active") return latest;
+      if (latest.state === "active") return adoptLineageJobs(latest);
       const spentReason = latest.exhaustedReason !== null && latest.exhaustedReason !== "deadline";
       const spentAttempts = latest.reservedAttempts >= latest.maxAttempts;
       const drainedUnspent = latest.state === "completed" && !spentReason && !spentAttempts;
       const clockOnlyStop = latest.exhaustedReason === "deadline" || drainedUnspent;
       if (window.remaining === 0 || !clockOnlyStop && now.getTime() < retryAt) return latest;
+      const deadlineOpen = latest.deadlineAt !== null && Date.parse(latest.deadlineAt) > now.getTime();
+      if (drainedUnspent && latest.exhaustedReason === null && deadlineOpen) {
+        db.prepare(`
+          UPDATE model_work_budgets SET state = 'active', updated_at = ?
+          WHERE budget_id = ? AND state = 'completed'
+        `).run(nowIso2, latest.budgetId);
+        return adoptLineageJobs(readBudgetById(db, latest.budgetId));
+      }
     }
     const nextWaveId = runWaveId(rootWaveId, nextRunSeq(db, rootWaveId));
     const next = latest?.state === "exhausted" ? startNewModelWorkRunForBudget(db, {
@@ -12146,15 +12186,7 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
       now
     });
     db.prepare("UPDATE model_work_budgets SET automatic = 1, state = ? WHERE budget_id = ?").run(window.remaining === 0 ? "exhausted" : "active", next.budgetId);
-    if (latest && latest.state !== "exhausted") {
-      rebindMovableWaveJobs(db, {
-        fromBudgetId: latest.budgetId,
-        toBudgetId: next.budgetId,
-        toParentWaveId: next.parentWaveId,
-        nowIso: nowIso2
-      });
-    }
-    return readBudgetById(db, next.budgetId);
+    return adoptLineageJobs(readBudgetById(db, next.budgetId));
   });
   return maintain.immediate();
 }
@@ -28963,6 +28995,162 @@ function estimateContextTokens(text) {
   return Math.ceil(estimate * 1.25);
 }
 
+// src/memory-bundle.ts
+var BUNDLE_SECTION_ORDER = [
+  "CORRECTION",
+  "WORK NOW",
+  "CURRENT TRUTH",
+  "RAW EVIDENCE",
+  "WATCH",
+  "TRACE",
+  "RECENT EVIDENCE",
+  "ASSISTANT CONTEXT"
+];
+var BUNDLE_HEADINGS = {
+  CORRECTION: "[MEMEX CORRECTION]",
+  "WORK NOW": "[WORK NOW]",
+  "CURRENT TRUTH": "[CURRENT TRUTH]",
+  "RAW EVIDENCE": "[RAW EVIDENCE \u2014 CONTEXT-ONLY, MAY BE STALE]",
+  WATCH: "[WATCH \u2014 VERIFIED INCIDENT PATTERN]",
+  TRACE: "[TRACE \u2014 HISTORY AVAILABLE]",
+  "RECENT EVIDENCE": "[RECENT EVIDENCE \u2014 NOT YET DISTILLED]",
+  "ASSISTANT CONTEXT": "[ASSISTANT CONTEXT-ONLY \u2014 NOT AUTHORITATIVE]"
+};
+var NORMAL_BUNDLE_BUDGET = {
+  target: 700,
+  hard: 1e3,
+  lineChars: 160,
+  maxItems: { CORRECTION: 4, "WORK NOW": 1, "CURRENT TRUTH": 4, "RAW EVIDENCE": 2, WATCH: 2, TRACE: 2, "RECENT EVIDENCE": 2, "ASSISTANT CONTEXT": 1 },
+  contextLimits: NORMAL_CONTEXT_LIMITS
+};
+function normalizeLine(text, cap) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > cap ? flat.slice(0, cap - 1) + "\u2026" : flat;
+}
+var SENTENCE_END = /[.!?。！？]+["'”’»）)\]]*/g;
+var ABBREVIATIONS = /* @__PURE__ */ new Set([
+  "e.g",
+  "i.e",
+  "etc",
+  "vs",
+  "cf",
+  "mr",
+  "mrs",
+  "ms",
+  "dr",
+  "prof",
+  "no",
+  "fig",
+  "approx",
+  "incl",
+  "jr",
+  "sr",
+  "st"
+]);
+var WORD_BEFORE_TERMINATOR = /([A-Za-z][A-Za-z.]*)$/;
+function isSentenceEnd(flat, terminatorAt, stop) {
+  const next = flat[stop];
+  if (next !== void 0 && !/\s/.test(next)) return false;
+  const rest = flat.slice(stop).trimStart();
+  if (/^[a-z]/.test(rest)) return false;
+  const before = WORD_BEFORE_TERMINATOR.exec(flat.slice(0, terminatorAt));
+  if (!before) return true;
+  return !ABBREVIATIONS.has(before[1].toLowerCase());
+}
+function truncateAtSentenceBoundary(text, maxChars, options = {}) {
+  const ellipsis = options.ellipsis ?? "\u2026";
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= maxChars) return flat;
+  const budget = maxChars - ellipsis.length;
+  if (budget <= 0) return "";
+  const head = flat.slice(0, budget);
+  let sentenceEnd = 0;
+  for (const match of head.matchAll(SENTENCE_END)) {
+    const terminatorAt = match.index ?? 0;
+    const stop = terminatorAt + match[0].length;
+    if (isSentenceEnd(flat, terminatorAt, stop)) sentenceEnd = stop;
+  }
+  if (sentenceEnd > 0) return flat.slice(0, sentenceEnd) + ellipsis;
+  if (/\s/.test(flat[budget] ?? "")) return head.trimEnd() + ellipsis;
+  const lastSpace = head.lastIndexOf(" ");
+  if (lastSpace >= Math.ceil(budget * 0.5)) return head.slice(0, lastSpace).trimEnd() + ellipsis;
+  return head + ellipsis;
+}
+function wrapRenderedMemory(rawText, firstHeading) {
+  const newline = rawText.indexOf("\n");
+  const firstLine = newline < 0 ? rawText : rawText.slice(0, newline);
+  if (!firstHeading || firstLine !== firstHeading) return wrapMemoryContext(rawText);
+  const payload = newline < 0 ? "" : rawText.slice(newline + 1);
+  return `${firstLine}
+${wrapMemoryContext(payload)}`;
+}
+function renderMemoryBundle(sections, budget) {
+  const byKind = new Map(sections.map((section) => [section.kind, section]));
+  const blocks = [];
+  const report = [];
+  let truncated = false;
+  const contextLimits = budget.contextLimits ?? {
+    maxChars: budget.hard,
+    maxEstimatedTokens: Number.MAX_SAFE_INTEGER
+  };
+  for (const kind of BUNDLE_SECTION_ORDER) {
+    const section = byKind.get(kind);
+    if (!section || section.items.length === 0) continue;
+    const maxItems = budget.maxItems[kind] ?? section.items.length;
+    const heading = BUNDLE_HEADINGS[kind];
+    const accepted = [];
+    const emitted = [];
+    for (const item of section.items) {
+      if (emitted.length >= maxItems) {
+        truncated = true;
+        break;
+      }
+      const line = item.raw ? item.text.trim().slice(0, budget.hard) : `- ${normalizeLine(item.text, budget.lineChars)}`;
+      const prospectiveBlock = item.raw && accepted.length === 0 && line.startsWith("[") ? line : `${heading}
+${[...accepted, line].join("\n")}`;
+      const prospectiveRaw = blocks.length > 0 ? `${blocks.join("\n\n")}
+
+${prospectiveBlock}` : prospectiveBlock;
+      const prospectiveText = wrapRenderedMemory(
+        prospectiveRaw,
+        BUNDLE_HEADINGS[report[0]?.kind ?? kind]
+      );
+      if (prospectiveText.length > contextLimits.maxChars || estimateContextTokens(prospectiveText) > contextLimits.maxEstimatedTokens) {
+        truncated = true;
+        break;
+      }
+      if (prospectiveText.length > budget.target && line.length > budget.lineChars / 2 && accepted.length > 0) {
+        truncated = true;
+        break;
+      }
+      accepted.push(line);
+      emitted.push(item);
+    }
+    if (accepted.length === 0) continue;
+    const block = accepted.length === 1 && section.items[0]?.raw && accepted[0].startsWith("[") ? accepted[0] : `${heading}
+${accepted.join("\n")}`;
+    blocks.push(block);
+    report.push({ kind, emitted, chars: block.length });
+  }
+  const rawText = blocks.join("\n\n");
+  const text = wrapRenderedMemory(rawText, report[0] ? BUNDLE_HEADINGS[report[0].kind] : void 0);
+  const emittedRefs = [];
+  for (const section of report) {
+    for (const item of section.emitted) {
+      if (item.ref !== void 0) emittedRefs.push(item.ref);
+    }
+  }
+  return {
+    text,
+    rawText,
+    chars: text.length,
+    estimatedTokens: estimateContextTokens(text),
+    sections: report,
+    emittedRefs,
+    truncated
+  };
+}
+
 // src/continuity-core.ts
 init_paths();
 
@@ -29495,115 +29683,6 @@ function applyPendingEpochAdvance(db, sessionId, options = {}) {
 // src/inject-core.ts
 init_continuity_identity();
 init_recall_gate();
-
-// src/memory-bundle.ts
-var BUNDLE_SECTION_ORDER = [
-  "CORRECTION",
-  "WORK NOW",
-  "CURRENT TRUTH",
-  "RAW EVIDENCE",
-  "WATCH",
-  "TRACE",
-  "RECENT EVIDENCE",
-  "ASSISTANT CONTEXT"
-];
-var BUNDLE_HEADINGS = {
-  CORRECTION: "[MEMEX CORRECTION]",
-  "WORK NOW": "[WORK NOW]",
-  "CURRENT TRUTH": "[CURRENT TRUTH]",
-  "RAW EVIDENCE": "[RAW EVIDENCE \u2014 CONTEXT-ONLY, MAY BE STALE]",
-  WATCH: "[WATCH \u2014 VERIFIED INCIDENT PATTERN]",
-  TRACE: "[TRACE \u2014 HISTORY AVAILABLE]",
-  "RECENT EVIDENCE": "[RECENT EVIDENCE \u2014 NOT YET DISTILLED]",
-  "ASSISTANT CONTEXT": "[ASSISTANT CONTEXT-ONLY \u2014 NOT AUTHORITATIVE]"
-};
-var NORMAL_BUNDLE_BUDGET = {
-  target: 700,
-  hard: 1e3,
-  lineChars: 160,
-  maxItems: { CORRECTION: 4, "WORK NOW": 1, "CURRENT TRUTH": 4, "RAW EVIDENCE": 2, WATCH: 2, TRACE: 2, "RECENT EVIDENCE": 2, "ASSISTANT CONTEXT": 1 },
-  contextLimits: NORMAL_CONTEXT_LIMITS
-};
-function normalizeLine(text, cap) {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > cap ? flat.slice(0, cap - 1) + "\u2026" : flat;
-}
-function wrapRenderedMemory(rawText, firstHeading) {
-  const newline = rawText.indexOf("\n");
-  const firstLine = newline < 0 ? rawText : rawText.slice(0, newline);
-  if (!firstHeading || firstLine !== firstHeading) return wrapMemoryContext(rawText);
-  const payload = newline < 0 ? "" : rawText.slice(newline + 1);
-  return `${firstLine}
-${wrapMemoryContext(payload)}`;
-}
-function renderMemoryBundle(sections, budget) {
-  const byKind = new Map(sections.map((section) => [section.kind, section]));
-  const blocks = [];
-  const report = [];
-  let truncated = false;
-  const contextLimits = budget.contextLimits ?? {
-    maxChars: budget.hard,
-    maxEstimatedTokens: Number.MAX_SAFE_INTEGER
-  };
-  for (const kind of BUNDLE_SECTION_ORDER) {
-    const section = byKind.get(kind);
-    if (!section || section.items.length === 0) continue;
-    const maxItems = budget.maxItems[kind] ?? section.items.length;
-    const heading = BUNDLE_HEADINGS[kind];
-    const accepted = [];
-    const emitted = [];
-    for (const item of section.items) {
-      if (emitted.length >= maxItems) {
-        truncated = true;
-        break;
-      }
-      const line = item.raw ? item.text.trim().slice(0, budget.hard) : `- ${normalizeLine(item.text, budget.lineChars)}`;
-      const prospectiveBlock = item.raw && accepted.length === 0 && line.startsWith("[") ? line : `${heading}
-${[...accepted, line].join("\n")}`;
-      const prospectiveRaw = blocks.length > 0 ? `${blocks.join("\n\n")}
-
-${prospectiveBlock}` : prospectiveBlock;
-      const prospectiveText = wrapRenderedMemory(
-        prospectiveRaw,
-        BUNDLE_HEADINGS[report[0]?.kind ?? kind]
-      );
-      if (prospectiveText.length > contextLimits.maxChars || estimateContextTokens(prospectiveText) > contextLimits.maxEstimatedTokens) {
-        truncated = true;
-        break;
-      }
-      if (prospectiveText.length > budget.target && line.length > budget.lineChars / 2 && accepted.length > 0) {
-        truncated = true;
-        break;
-      }
-      accepted.push(line);
-      emitted.push(item);
-    }
-    if (accepted.length === 0) continue;
-    const block = accepted.length === 1 && section.items[0]?.raw && accepted[0].startsWith("[") ? accepted[0] : `${heading}
-${accepted.join("\n")}`;
-    blocks.push(block);
-    report.push({ kind, emitted, chars: block.length });
-  }
-  const rawText = blocks.join("\n\n");
-  const text = wrapRenderedMemory(rawText, report[0] ? BUNDLE_HEADINGS[report[0].kind] : void 0);
-  const emittedRefs = [];
-  for (const section of report) {
-    for (const item of section.emitted) {
-      if (item.ref !== void 0) emittedRefs.push(item.ref);
-    }
-  }
-  return {
-    text,
-    rawText,
-    chars: text.length,
-    estimatedTokens: estimateContextTokens(text),
-    sections: report,
-    emittedRefs,
-    truncated
-  };
-}
-
-// src/inject-core.ts
 init_recall_gate_overlay();
 init_overlay_matcher();
 function sampleTelemetry(db, input) {
@@ -29764,6 +29843,9 @@ async function commitInjectionBundle(db, commit, options = {}) {
 function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
   const t = text.replace(/\s+/g, " ").trim();
   return t.length > cap ? t.slice(0, cap - 1) + "\u2026" : t;
+}
+function truncateScalar(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
+  return truncateAtSentenceBoundary(text, cap);
 }
 async function computeInjectContext(userPrompt, project, via, sessionId, options = {}) {
   const t0 = Date.now();
@@ -30119,10 +30201,10 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     let workNowRenderable = false;
     if (wantsWorkNow && capsule) {
       const lines = ["[WORK NOW]"];
-      if (capsule.objective) lines.push(`Objective: ${truncateFact(capsule.objective, 200)}`);
-      if (capsule.currentState) lines.push(`State: ${truncateFact(capsule.currentState, 200)}`);
-      if (capsule.blockers[0]) lines.push(`Blocker: ${truncateFact(capsule.blockers[0], 160)}`);
-      if (capsule.nextActions[0]) lines.push(`Next: ${truncateFact(capsule.nextActions[0], 160)}`);
+      if (capsule.objective) lines.push(`Objective: ${truncateScalar(capsule.objective, 200)}`);
+      if (capsule.currentState) lines.push(`State: ${truncateScalar(capsule.currentState, 200)}`);
+      if (capsule.blockers[0]) lines.push(`Blocker: ${truncateScalar(capsule.blockers[0], 160)}`);
+      if (capsule.nextActions[0]) lines.push(`Next: ${truncateScalar(capsule.nextActions[0], 160)}`);
       workNowRenderable = lines.length > 1;
       if (workNowRenderable) sections.push({ kind: "WORK NOW", items: [{ text: lines.join("\n"), raw: true }] });
     }
@@ -30192,7 +30274,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
           sections.push({
             kind: "ASSISTANT CONTEXT",
             items: [{
-              text: `Earlier answer (${match.timestamp.slice(0, 10)}, may be stale; verify with MCP search): "${truncateFact(match.assistantSummary, 200)}" \u2014 lines ${match.lineStart}-${match.lineEnd} in ${match.archivePath}`
+              text: `Earlier answer (${match.timestamp.slice(0, 10)}, may be stale; verify with MCP search): "${truncateScalar(match.assistantSummary, 200)}" \u2014 lines ${match.lineStart}-${match.lineEnd} in ${match.archivePath}`
             }]
           });
         }
@@ -33827,7 +33909,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.29"
+    version: "0.7.30"
   },
   {
     capabilities: {

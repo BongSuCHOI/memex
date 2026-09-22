@@ -7,6 +7,7 @@ import { factMatchesReadScope, rowToFact } from './fact-db.js';
 import { readScopeForSession } from './read-scope.js';
 import { initDatabase, recordRecallEvent } from "./db.js";
 import { fitsContextBudget, REHYDRATION_CONTEXT_LIMITS, wrapMemoryContext, } from "./context-envelope.js";
+import { truncateAtSentenceBoundary } from "./memory-bundle.js";
 import { getMemexHome, getSessionsRoot } from "./paths.js";
 import { recordHookDone, recordHookStart } from "./observe-hook-event.js";
 import { busyTimeoutForRemaining, captureGapAlreadyRecorded, hookBudgetMs, HookCaptureFailed, HookCaptureNoTranscript, HookDeadlineExceeded, HookOversizeCapture, isSqliteBusyError, markCaptureGapRecorded, ingestFitsBudget, HOOK_PHASE_FLOOR_MS, HOOK_RETRY_FLOOR_MS, } from "./hook-budget.js";
@@ -1797,15 +1798,32 @@ function extractPlanLine(text) {
     return lines.find((line) => /(?:next|다음|todo|계속|해야)/i.test(line)) ?? null;
 }
 /** Flatten memory data before placing it beside structural context headings. */
-function contextData(value, max = 500) {
+function flattenContextData(value) {
     return String(value ?? "")
         .replace(/[\u0000-\u001f\u007f]/g, " ")
         .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, max);
+        .trim();
+}
+/** Flatten, then clamp on the raw character budget (lists, paths, tool output). */
+function contextData(value, max = 500) {
+    return flattenContextData(value).slice(0, max);
+}
+/**
+ * 🚨 Issue #182: the same flattening for a SCALAR rendered from prose — a
+ * Capsule field, the latest request, the next-action line. `contextData` cut
+ * those on the raw budget, so `Deployment is approved only after the operator
+ * signs off.` reached the model mid-clause and a conditional read as a fact.
+ * The boundary rule is memory-bundle.ts's, shared with the [WORK NOW] renderer
+ * in inject-core.ts, and it never returns more than `max` characters, so every
+ * field allowance below still holds. Tool output (`tool_result`) and path lists
+ * keep `contextData`: they have no clauses to invert, and a stack trace cut at
+ * its first period would lose the evidence it exists for.
+ */
+function contextScalar(value, max = 500) {
+    return truncateAtSentenceBoundary(flattenContextData(value), max);
 }
 function compactField(values, fallback) {
-    const items = values.map((value) => contextData(value)).filter(Boolean);
+    const items = values.map((value) => contextScalar(value)).filter(Boolean);
     return items.length > 0 ? items.join("; ") : fallback;
 }
 export function buildDeterministicTailBaton(db, input) {
@@ -1829,14 +1847,14 @@ export function buildDeterministicTailBaton(db, input) {
     const lines = ["[WORK NOW — DETERMINISTIC TAIL BATON]"];
     lines.push(input.pending?.length ? "Status: stale/context-only" : "Status: context-only");
     for (const pending of input.pending ?? []) {
-        const text = contextData(pending, 300);
+        const text = contextScalar(pending, 300);
         if (text)
             lines.push(`Pending: ${text}`);
     }
     if (latestUser)
-        lines.push(`Request: ${contextData(latestUser)}`);
+        lines.push(`Request: ${contextScalar(latestUser)}`);
     if (plan)
-        lines.push(`Next: ${contextData(plan, 300)}`);
+        lines.push(`Next: ${contextScalar(plan, 300)}`);
     if (touched.length)
         lines.push(`Touched: ${touched.join(", ")}`);
     if (trustedTest?.tool_result) {
@@ -1888,7 +1906,7 @@ function renderCapsule(capsule, maxChars, options = {}) {
     // richer seven-field view used at the normal budget.
     if (options.stale && maxChars < 700) {
         const compactFields = [
-            ["Current goal", capsule.objective ? `Objective: ${contextData(capsule.objective, 48)}` : ""],
+            ["Current goal", capsule.objective ? `Objective: ${contextScalar(capsule.objective, 48)}` : ""],
             ["Next", capsule.nextActions[0] ?? ""],
             ["Current state", capsule.currentState ? `State: ${capsule.currentState}` : ""],
         ].filter((entry) => !!entry[1]);
@@ -1897,7 +1915,7 @@ function renderCapsule(capsule, maxChars, options = {}) {
             const valueBudget = Math.max(0, maxChars - block.length - prefix.length);
             if (valueBudget <= 0)
                 break;
-            const text = contextData(value, valueBudget);
+            const text = contextScalar(value, valueBudget);
             if (!text)
                 break;
             block += `${prefix}${text}`;
@@ -1914,7 +1932,7 @@ function renderCapsule(capsule, maxChars, options = {}) {
         const fixed = compactFields.reduce((sum, [label]) => sum + label.length + 2, 0) + compactFields.length;
         const valueBudget = Math.floor(Math.max(0, maxChars - block.length - fixed) / Math.max(1, compactFields.length));
         for (const [label, value] of compactFields) {
-            const text = contextData(value, valueBudget);
+            const text = contextScalar(value, valueBudget);
             if (text)
                 block += `\n${label}: ${text}`;
         }
@@ -1922,7 +1940,7 @@ function renderCapsule(capsule, maxChars, options = {}) {
     }
     for (const [index, [label, value]] of fields.entries()) {
         const allowance = Math.floor((maxChars - block.length) / (fields.length - index));
-        const text = contextData(value, Math.max(0, allowance - label.length - 2));
+        const text = contextScalar(value, Math.max(0, allowance - label.length - 2));
         if (text)
             block += `\n${label}: ${text}`;
     }

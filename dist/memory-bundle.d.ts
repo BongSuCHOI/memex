@@ -53,6 +53,30 @@ export interface RenderedBundle<T = unknown> {
     emittedRefs: T[];
     truncated: boolean;
 }
+/**
+ * 🚨 Issue #182 — a scalar rendered from model text must never be cut inside a
+ * clause while a complete sentence fits.
+ *
+ * `[WORK NOW]` truncated the stored `currentState` again at the line budget:
+ * `Deployment is approved only after the operator signs off.` was injected as
+ * `Deployment is approved…`, so the model reading that context took a
+ * CONDITIONAL for a fact. The cut is what inverted the meaning, not the
+ * budget — the sentence before it was intact and shorter than the budget.
+ *
+ * So the cut is made at the LAST sentence boundary inside the budget — see
+ * `isSentenceEnd` for what counts as one, which is where `0.7.29`, `e.g.` and
+ * `Fig.` are kept out — falling back to the last whitespace, and only then to
+ * a hard cut for one unbroken token.
+ * The ellipsis is kept in every case, so the reader still knows text was
+ * dropped. Dropping the tail of a sentence is deliberate: a shorter complete
+ * statement is worth more to the reader than a longer inverted one.
+ *
+ * The result is never longer than `maxChars` (ellipsis included) and never
+ * longer than the input, so every caller's byte budget still holds.
+ */
+export declare function truncateAtSentenceBoundary(text: string, maxChars: number, options?: {
+    ellipsis?: string;
+}): string;
 /** Render sections in priority order under the budget. Deterministic for identical input. */
 export declare function renderMemoryBundle<T = unknown>(sections: BundleSection<T>[], budget: BundleBudget): RenderedBundle<T>;
 export declare function estimateTokens(chars: number): number;

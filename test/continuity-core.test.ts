@@ -492,6 +492,35 @@ describe("epoch, residency, rehydration, and Capsule", () => {
     expect(baton.length).toBeLessThanOrEqual(1_200);
   });
 
+  /**
+   * 이슈 #182 — baton 의 스칼라 라인도 절 중간에서 잘렸다.
+   *
+   * `Pending:` 은 300자에서 하드 슬라이스됐다: 생략 기호도 없이 다음 문장 중간에서
+   * 끊기므로, 그 컨텍스트를 받는 모델은 조건절을 사실로 읽는다(관측된 결함은
+   * `Deployment is approved only after the operator signs off.` → `Deployment is
+   * approved…`). 예산 안에 완결된 문장이 있으면 거기서 끊고 생략 기호를 남긴다.
+   */
+  it("cuts a tail-baton scalar at a sentence boundary, not mid-clause", () => {
+    putExchange();
+    const first = "Deployment is approved only after the operator signs off.";
+    const second = `Rollback ${"is rehearsed ".repeat(10)}and signed.`;
+    // 300자 예산 안에 두 문장이 들어가고, 세 번째 문장은 경계를 넘긴다.
+    const third = `Verification ${"of the gate ".repeat(20)}is pending.`;
+    const pending = `${first} ${second} ${third}`;
+    expect(`${first} ${second}`.length).toBeLessThan(300);
+    expect(pending.length).toBeGreaterThan(300);
+
+    const baton = buildDeterministicTailBaton(db, {
+      sessionId: "session-core-1",
+      pending: [pending],
+    });
+    const line = baton.split("\n").find((row) => row.startsWith("Pending: "))!;
+    expect(line).toBe(`Pending: ${first} ${second}…`);
+    expect(line, "a truncated scalar must not end inside the next clause")
+      .not.toContain("Verification");
+    expect(line.length - "Pending: ".length).toBeLessThanOrEqual(300);
+  });
+
   it("adds a deterministic tail baton when the latest Capsule is stale", () => {
     putExchange();
     const capsuleBoundary = captureTranscriptPrefix(db, {
