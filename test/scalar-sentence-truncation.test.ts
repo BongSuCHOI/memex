@@ -121,10 +121,20 @@ describe("issue #182 — scalar model text is cut at a sentence boundary", () =>
     expect(truncateAtSentenceBoundary(text, 26)).toBe("The API (v2) is stable.…");
   });
 
-  it("treats no listed abbreviation or initial as a sentence end", () => {
+  it("keeps a single-letter word as a real sentence end (external review round 2)", () => {
+    // `option A.` ends a sentence; rejecting it as an initial dropped the
+    // condition that followed and re-created the #182 inversion.
+    const text = "Use option A. Deployment is approved only after sign-off.";
+    expect(truncateAtSentenceBoundary(text, 37)).toBe("Use option A.…");
+    // An initial followed by a lowercase word is still not a boundary (rule 2).
+    const initial = "Ask A. the owner about the staged rollout before merging.";
+    expect(truncateAtSentenceBoundary(initial, 22)).not.toBe("Ask A.…");
+  });
+
+  it("treats no listed abbreviation as a sentence end", () => {
     const abbreviations = [
       "e.g.", "i.e.", "etc.", "vs.", "cf.", "Mr.", "Mrs.", "Ms.", "Dr.", "Prof.",
-      "No.", "Fig.", "approx.", "incl.", "Jr.", "Sr.", "St.", "A.",
+      "No.", "Fig.", "approx.", "incl.", "Jr.", "Sr.", "St.",
     ];
     for (const abbreviation of abbreviations) {
       const head = `Ask ${abbreviation}`;

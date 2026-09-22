@@ -29055,9 +29055,7 @@ function isSentenceEnd(flat, terminatorAt, stop) {
   if (/^[a-z]/.test(rest)) return false;
   const before = WORD_BEFORE_TERMINATOR.exec(flat.slice(0, terminatorAt));
   if (!before) return true;
-  const word = before[1];
-  if (word.length === 1) return false;
-  return !ABBREVIATIONS.has(word.toLowerCase());
+  return !ABBREVIATIONS.has(before[1].toLowerCase());
 }
 function truncateAtSentenceBoundary(text, maxChars, options = {}) {
   const ellipsis = options.ellipsis ?? "\u2026";

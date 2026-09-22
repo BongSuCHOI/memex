@@ -56,8 +56,12 @@ function normalizeLine(text, cap) {
 const SENTENCE_END = /[.!?。！？]+["'”’»）)\]]*/g;
 /**
  * Words whose period ends an abbreviation, not a sentence (compared in lower
- * case, without the period). A single Latin letter — an initial, `Ask A. Smith`
- * — is rejected by the same rule, by length.
+ * case, without the period). A single Latin letter is deliberately NOT on this
+ * list: `Use option A. Deployment is approved only after sign-off.` ends a real
+ * sentence at `A.`, and rejecting it re-created the inversion (external review,
+ * round 2). An initial such as `Ask A. Smith` is still caught by rule (2) when
+ * a lowercase word follows; a capitalized surname after an initial is accepted
+ * as a boundary, the cheaper of the two mistakes.
  */
 const ABBREVIATIONS = new Set([
     "e.g", "i.e", "etc", "vs", "cf", "mr", "mrs", "ms", "dr", "prof",
@@ -88,14 +92,11 @@ function isSentenceEnd(flat, terminatorAt, stop) {
     const rest = flat.slice(stop).trimStart();
     if (/^[a-z]/.test(rest))
         return false;
-    // (3) An abbreviation or an initial is not a sentence end.
+    // (3) An abbreviation is not a sentence end.
     const before = WORD_BEFORE_TERMINATOR.exec(flat.slice(0, terminatorAt));
     if (!before)
         return true;
-    const word = before[1];
-    if (word.length === 1)
-        return false;
-    return !ABBREVIATIONS.has(word.toLowerCase());
+    return !ABBREVIATIONS.has(before[1].toLowerCase());
 }
 /**
  * 🚨 Issue #182 — a scalar rendered from model text must never be cut inside a
