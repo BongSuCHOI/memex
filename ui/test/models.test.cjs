@@ -69,8 +69,9 @@ function insertHold(fingerprint){
   try{
     db.prepare(`INSERT INTO model_config_holds (selection_fingerprint,held_at,model,reasoning_effort,provider_status,
         provider_type,provider_message,observed_count,last_observed_at) VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run(fingerprint,'2026-09-10T01:00:00.000Z','gpt-6-astraX','max',400,'invalid_request_error',
-        "The 'gpt-6-astraX' model is not supported",3,'2026-09-10T02:00:00.000Z');
+      // This fixture tests manual release, so keep the hold inside its 30-day TTL.
+      .run(fingerprint,new Date(Date.now()-3600000).toISOString(),'gpt-6-astraX','max',400,'invalid_request_error',
+        "The 'gpt-6-astraX' model is not supported",3,new Date().toISOString());
   }finally{db.close();}
 }
 
