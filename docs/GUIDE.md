@@ -22,6 +22,8 @@ codex plugin add memex@memex
 
 plugin은 manifest, MCP declaration, 3개 skills, hooks, UI launcher를 Codex cache에 설치합니다. 설치 절차가 production dependencies를 materialize한 뒤 `cli/runtime-exec.js`는 동일한 설치 artifact의 로컬 binary를 우선 실행합니다. 아직 materialize되지 않은 raw plugin registration만 `github:BongSuCHOI/memex#main`을 `npx` isolated cache에서 실행하는 compatibility fallback을 사용합니다.
 
+0.7.32부터 설치·업데이트·`memex deps materialize`는 의존성 설치가 끝난 뒤 npm의 `.bin` 심볼릭 링크를 제거합니다(중첩 의존성 포함). Memex 런타임은 스크립트를 직접 실행하므로 이 링크를 사용하지 않습니다. Codex가 플러그인 전체를 fingerprint할 때 심볼릭 링크를 거부해 훅 13개를 모두 건너뛰던 문제를 막습니다. 이미 의존성이 완성된 설치도 `memex deps materialize --no-warm`으로 복구할 수 있고, `--dry-run`은 파일을 바꾸지 않습니다. `.bin` 밖의 심볼릭 링크나 특수 파일은 따라가거나 삭제하지 않고 설치 오류로 보고합니다.
+
 첫 실행은 native dependency와 npm cache 준비로 평소보다 오래 걸릴 수 있습니다. MCP manifest는 이를 고려해 startup timeout을 넉넉하게 둡니다.
 
 ### 개발용 local marketplace

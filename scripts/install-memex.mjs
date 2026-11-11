@@ -292,9 +292,9 @@ function materializeRuntime(installedRoot) {
     const packaged = materializePluginDependencies(REPO, installedRoot);
     return {
       changed: packaged.changed,
-      detail: packaged.changed
+      detail: packaged.packages > 0
         ? `${packaged.packages} preinstalled production packages copied into Codex cache (no npm install/network)`
-        : "installed cache dependency tree already complete",
+        : `installed cache dependency tree already complete; removed ${packaged.removedBinLinks} npm bin links`,
     };
   }
   const result = spawnSync(
@@ -504,8 +504,9 @@ try {
     `${pluginWasInstalled ? "already installed" : "installed"} at ${installedRoot}`,
   );
 
+  const hadDependencies = fs.existsSync(path.join(installedRoot, 'node_modules'));
   const packaged = materializeRuntime(installedRoot);
-  dependenciesMaterializedThisRun = packaged.changed;
+  dependenciesMaterializedThisRun = !hadDependencies && packaged.changed;
   ok("runtime dependency packaging", packaged.detail);
 
   const toolCount = verifyMcpHandshake(installedRoot);

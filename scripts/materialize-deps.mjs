@@ -18,6 +18,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { sanitizePluginDependencies } from './materialize-plugin-dependencies.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LAUNCHER_ROOT = path.resolve(HERE, '..');
@@ -85,6 +86,14 @@ function fail(message) {
   if (JSON_OUT) console.log(JSON.stringify({ ok: false, root, error: message }, null, 2));
   else console.error(`memex deps materialize failed: ${message}`);
   process.exit(1);
+}
+
+function sanitizeRuntime() {
+  try {
+    return sanitizePluginDependencies(path.join(root, 'node_modules'));
+  } catch (error) {
+    fail(error.message);
+  }
 }
 
 /**
@@ -191,13 +200,14 @@ if (DRY) {
 }
 
 if (alreadyComplete && !FORCE) {
+  const removedBinLinks = sanitizeRuntime();
   // The warm step still runs: the dependency closure and the model cache are two
   // different kinds of "materialized", and after an update the closure is often
   // already copied while the cache is empty.
   const warm = await warmStep();
-  const result = { ok: true, root, source: resolved.source, changed: false, missing: [], warm };
+  const result = { ok: true, root, source: resolved.source, changed: removedBinLinks > 0, removedBinLinks, missing: [], warm };
   if (JSON_OUT) console.log(JSON.stringify(result, null, 2));
-  else console.log(`Runtime dependencies already materialized at ${path.join(root, 'node_modules')} (${resolved.source}).`);
+  else console.log(`Runtime dependencies already materialized at ${path.join(root, 'node_modules')} (${resolved.source}); removed ${removedBinLinks} npm bin links for Codex hook fingerprinting.`);
   process.exit(0);
 }
 
@@ -222,7 +232,8 @@ if (missingAfter.length > 0) {
   fail(`runtime closure still incomplete after npm install: ${missingAfter.join(', ')}`);
 }
 
+const removedBinLinks = sanitizeRuntime();
 const warm = await warmStep();
-const result = { ok: true, root, source: resolved.source, changed: true, missing: [], warm };
+const result = { ok: true, root, source: resolved.source, changed: true, removedBinLinks, missing: [], warm };
 if (JSON_OUT) console.log(JSON.stringify(result, null, 2));
 else console.log(`Runtime dependencies materialized at ${path.join(root, 'node_modules')}.`);
