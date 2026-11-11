@@ -2,6 +2,22 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.32 - 2026-11-11
+
+### Fixes
+
+- Remove npm `.bin` symbolic links after dependency installation and production
+  copying, including complete installations and nested dependencies. Codex's
+  plugin fingerprint rejected these links and skipped all 13 Memex hooks.
+- Refuse other dependency symlinks and special files without following them.
+- Verify all 13 hook fingerprints through the real Codex `hooks/list` API after
+  reproducing and repairing an npm bin link in an isolated installation.
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change. Existing installations
+can also be repaired with `memex deps materialize --no-warm` from this version.
+
 ## 0.7.31 - 2026-09-22
 
 Post-release review of 0.7.30 (#184, #185).

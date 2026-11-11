@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Explicit isolated substitute for Codex CLI versions that do not expose
 // `codex plugin validate`. It never touches the user's real Codex registry.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -54,6 +54,52 @@ function jsonCommand(commandName, args, options = {}) {
     throw new Error(
       `${commandName} ${args.join(" ")} returned invalid JSON: ${e.message}`,
     );
+  }
+}
+
+/** Discover hooks through Codex itself; manifest shape alone misses fingerprint failures. */
+async function discoverPluginHooks() {
+  const child = spawn('codex', ['app-server', '--stdio'], { cwd: ROOT, env: ENV, stdio: ['pipe', 'pipe', 'pipe'] });
+  let buffer = '';
+  let stderr = '';
+  try {
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`hooks/list timed out: ${stderr.slice(-1000)}`)), 20_000);
+      const fail = (error) => { clearTimeout(timeout); reject(error); };
+      child.on('error', fail);
+      child.on('exit', (code) => fail(new Error(`hooks/list host exited: ${code}; ${stderr.slice(-1000)}`)));
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.stdout.on('data', (chunk) => {
+        buffer += chunk;
+        let newline;
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          let message;
+          try { message = JSON.parse(line); } catch (error) { fail(error); return; }
+          if (message.error) { fail(new Error(JSON.stringify(message.error))); return; }
+          if (message.id === 1) {
+            child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
+            child.stdin.write(JSON.stringify({ id: 2, method: 'hooks/list', params: { cwds: [ROOT] } }) + '\n');
+          } else if (message.id === 2) {
+            clearTimeout(timeout);
+            const entries = message.result?.data ?? [];
+            const diagnostics = entries.flatMap((entry) => [...(entry.warnings ?? []), ...(entry.errors ?? [])]);
+            const hooks = entries.flatMap((entry) => entry.hooks ?? []).filter((hook) => hook.pluginId === PLUGIN_ID);
+            if (diagnostics.length || hooks.length !== 13 || hooks.some((hook) => !hook.currentHash?.startsWith('sha256:'))) {
+              fail(new Error(`Codex hook discovery failed: ${hooks.length}/13 hooks; ${JSON.stringify(diagnostics)}`));
+              return;
+            }
+            resolve({ hooks: hooks.length, fingerprinted: true, warnings: [], errors: [] });
+          }
+        }
+      });
+      child.stdin.write(JSON.stringify({ id: 1, method: 'initialize', params: {
+        clientInfo: { name: 'memex-plugin-validator', version: '1.0' }, capabilities: { experimentalApi: true },
+      } }) + '\n');
+    });
+  } finally {
+    child.kill();
   }
 }
 
@@ -342,6 +388,13 @@ async function main() {
     installedRoot,
   );
 
+  // Reproduce an npm-generated bin link, then exercise the complete-tree repair path.
+  fs.mkdirSync(path.join(installedRoot, 'node_modules', '.bin'), { recursive: true });
+  fs.symlinkSync('../marked/bin/marked.js', path.join(installedRoot, 'node_modules', '.bin', 'marked'));
+  const repairedDependencies = materializePluginDependencies(ROOT, installedRoot);
+  if (repairedDependencies.removedBinLinks !== 1) throw new Error('complete-tree bin link repair was not observed');
+  const discoveredHooks = await discoverPluginHooks();
+
   const pluginManifest = validateManifest(installedRoot);
   const mcpCommand = validateMcpManifest(installedRoot);
   const skills = validateSkills(installedRoot);
@@ -397,6 +450,11 @@ async function main() {
         "Codex CLI lacks the command; the acceptance SSOT authorizes the isolated substitute contract below for this version only.",
     },
     checks: [
+      {
+        name: "Codex hooks/list after npm bin link repair",
+        status: "PASS",
+        observed: { ...discoveredHooks, removedBinLinks: repairedDependencies.removedBinLinks },
+      },
       {
         name: "manifest schema and plugin hook discovery",
         status: "PASS",
@@ -457,12 +515,7 @@ async function main() {
     conclusion:
       "The formal validator command is unavailable in this exact CLI version; every pre-authorized installed-artifact substitute check passed. Re-run the formal validator when a future CLI exposes it.",
   };
-  const receiptPath = path.join(
-    ROOT,
-    "docs",
-    "verification",
-    "plugin-validation.json",
-  );
+  const receiptPath = process.env.MEMEX_PLUGIN_VALIDATION_RECEIPT || path.join(ROOT, "docs", "verification", "plugin-validation.json");
   fs.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n");
   process.stdout.write(JSON.stringify(receipt, null, 2) + "\n");
 }

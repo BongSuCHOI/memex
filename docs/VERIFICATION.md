@@ -70,6 +70,7 @@ data root(`MEMEX_HOME` > `$XDG_CONFIG_HOME/memex` > `~/.config/memex`)의 파일
 줄을 넣으십시오(`test/e2e-model-cache-pin-slice.test.mjs`가 다섯 스크립트 모두에서 이를 확인합니다).
 
 변경 범위에 따라 plugin validation, browser E2E, benchmark, specialized regression suite를 추가합니다.
+`node scripts/validate-plugin.mjs`는 격리된 설치에 npm `.bin/marked` 링크를 재현한 뒤 이미 완성된 의존성 트리의 복구 경로를 실행합니다. 실제 Codex app-server의 `hooks/list`에서 플러그인 훅 13개의 fingerprint와 warnings/errors 0건을 확인합니다. manifest JSON 검사나 MCP handshake만으로 훅 로딩을 PASS 처리하지 않습니다. `MEMEX_PLUGIN_VALIDATION_RECEIPT`로 receipt 출력 경로를 지정하면 committed tree를 변경하지 않고 게이트를 실행할 수 있습니다. `test/plugin-fingerprint.test.mjs`는 신규 npm 설치·기존 설치 복구·복사 설치·중첩/끊어진 bin 링크·다른 심볼릭 링크 거부·dry-run과 반복 실행을 검증합니다.
 Memex Workspace UI surface를 변경한 release는 다음 gate도 포함합니다.
 
 ```bash

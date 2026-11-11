@@ -15,13 +15,37 @@ export function runtimeDependenciesReady(installedRoot) {
   return REQUIRED_RUNTIME_FILES.every((relative) => fs.existsSync(path.join(installedRoot, 'node_modules', relative)));
 }
 
+/** Codex fingerprints the whole plugin tree and rejects symbolic links. */
+export function sanitizePluginDependencies(modulesRoot) {
+  const binLinks = [];
+  const visit = (entry) => {
+    const stat = fs.lstatSync(entry);
+    if (stat.isSymbolicLink() && entry !== modulesRoot && path.basename(path.dirname(entry)) === '.bin') {
+      binLinks.push(entry);
+    } else if (stat.isDirectory()) {
+      for (const name of fs.readdirSync(entry)) visit(path.join(entry, name));
+    } else if (!stat.isFile()) {
+      throw new Error(`unsupported plugin dependency entry: ${entry}; install regular files inside the plugin root`);
+    }
+  };
+  // Preflight before removing anything, and never follow links into another tree.
+  visit(modulesRoot);
+  // simplified: runtime entry points are invoked directly, without npm .bin.
+  // If a runtime dependency needs a CLI, package a regular-file launcher first.
+  for (const link of binLinks) fs.unlinkSync(link);
+  return binLinks.length;
+}
+
 /**
  * Copy the already-installed production dependency closure into Codex's cache.
  * This is packaging, not dependency installation: no registry/network access,
  * package-manager mutation, lifecycle script, or version resolution occurs.
  */
 export function materializePluginDependencies(sourceRoot, installedRoot) {
-  if (runtimeDependenciesReady(installedRoot)) return { changed: false, packages: 0 };
+  if (runtimeDependenciesReady(installedRoot)) {
+    const removedBinLinks = sanitizePluginDependencies(path.join(installedRoot, 'node_modules'));
+    return { changed: removedBinLinks > 0, packages: 0, removedBinLinks };
+  }
   const destination = path.join(installedRoot, 'node_modules');
   if (fs.existsSync(destination)) {
     throw new Error(`installed cache contains an incomplete node_modules tree: ${destination}`);
@@ -60,6 +84,7 @@ export function materializePluginDependencies(sourceRoot, installedRoot) {
         mode: fs.constants.COPYFILE_FICLONE,
       });
     }
+    sanitizePluginDependencies(stage);
     fs.renameSync(stage, destination);
   } catch (error) {
     fs.rmSync(stage, { recursive: true, force: true });

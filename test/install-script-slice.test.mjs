@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { materializePluginDependencies } from '../scripts/materialize-plugin-dependencies.mjs';
 
 const REPO = path.resolve(new URL('.', import.meta.url).pathname, '..');
 
@@ -25,7 +26,7 @@ function fixture(t, { brokenMcp = false } = {}) {
   fs.copyFileSync(path.join(REPO, '.mcp.json'), path.join(installed, '.mcp.json'));
   fs.copyFileSync(path.join(REPO, 'hooks.json'), path.join(installed, 'hooks.json'));
   fs.copyFileSync(path.join(REPO, 'package.json'), path.join(installed, 'package.json'));
-  fs.symlinkSync(path.join(REPO, 'node_modules'), path.join(installed, 'node_modules'), 'dir');
+  materializePluginDependencies(REPO, installed);
   if (brokenMcp) fs.writeFileSync(path.join(installed, 'dist', 'mcp-server.js'), 'process.exit(3);\n');
   fs.writeFileSync(path.join(market, '.agents', 'plugins', 'marketplace.json'), JSON.stringify({
     name: 'memex-test',
@@ -84,6 +85,19 @@ test('installer rejects a broken installed-root MCP and rolls back registrations
   assert.deepEqual(state, { marketplace: false, plugin: false });
   const hooks = path.join(f.codexHome, 'hooks.json');
   assert.equal(fs.existsSync(hooks) && fs.readFileSync(hooks, 'utf8').includes('_memex'), false);
+});
+
+test('a later install failure preserves existing dependencies after bin link repair', (t) => {
+  const f = fixture(t, { brokenMcp: true });
+  fs.writeFileSync(f.statePath, JSON.stringify({ marketplace: true, plugin: true }));
+  const bin = path.join(f.installed, 'node_modules', '.bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.symlinkSync('../marked/bin/marked.js', path.join(bin, 'marked'));
+  const result = runInstaller(f);
+  assert.notEqual(result.status, 0);
+  assert.equal(fs.existsSync(path.join(f.installed, 'node_modules', 'marked', 'package.json')), true);
+  assert.equal(fs.existsSync(path.join(bin, 'marked')), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.statePath, 'utf8')), { marketplace: true, plugin: true });
 });
 
 test('installer uses the authoritative installed root for MCP, plugin hooks, sync and status', (t) => {

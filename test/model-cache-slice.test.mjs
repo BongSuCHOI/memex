@@ -29,6 +29,14 @@ function isolated(t) {
   const memexHome = path.join(tmp, 'memex-home');
   const codexHome = path.join(tmp, 'codex-home');
   const cacheDir = path.join(tmp, 'model-cache');
+  const pluginRoot = path.join(tmp, 'plugin');
+  for (const directory of ['cli', '.codex-plugin', 'node_modules/better-sqlite3', 'node_modules/@xenova/transformers', 'node_modules/sqlite-vec']) {
+    fs.mkdirSync(path.join(pluginRoot, directory), { recursive: true });
+  }
+  for (const file of ['package.json', '.codex-plugin/plugin.json', 'node_modules/better-sqlite3/package.json', 'node_modules/@xenova/transformers/package.json', 'node_modules/sqlite-vec/package.json']) {
+    fs.writeFileSync(path.join(pluginRoot, file), JSON.stringify({ name: 'memex', version: '0.0.0' }));
+  }
+  fs.writeFileSync(path.join(pluginRoot, 'cli/memex.js'), '');
   fs.mkdirSync(memexHome, { recursive: true });
   fs.mkdirSync(codexHome, { recursive: true });
   return {
@@ -41,7 +49,7 @@ function isolated(t) {
       ...process.env,
       MEMEX_HOME: memexHome,
       CODEX_HOME: codexHome,
-      MEMEX_PLUGIN_ROOT: REPO,
+      MEMEX_PLUGIN_ROOT: pluginRoot,
       // Every case decides for itself what the cache holds; nothing may fall
       // back to the developer's real `~/.config/memex/models`.
       MEMEX_MODEL_CACHE_DIR: cacheDir,
